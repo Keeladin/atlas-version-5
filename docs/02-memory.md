@@ -61,3 +61,9 @@ The memory system must understand the role information plays, not merely whether
 Atlas should not copy every external fact it encounters into long-term memory. Gmail, Drive, GitHub, filesystems, databases, and other connected systems remain authoritative for their own current state.
 
 Memory should preserve what improves future reasoning, continuity, or personalization without turning Atlas into an uncontrolled duplicate of every source it can read.
+
+## Lifecycle refinement
+
+The detailed lifecycle for temporary transcripts, context capsules, indexed short-term memory, TTL, promotion and discard is defined in `13-memory-lifecycle.md`.
+
+The key refinement is that recent conversation is not automatically long-term memory. Atlas first retains it as temporary, searchable short-term context; only later background processing decides what deserves promotion or deletion.
