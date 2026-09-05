@@ -2,9 +2,9 @@
 
 ## Status
 
-The initial architecture discovery and review phases are complete. The project has passed the **architecture gate** and is ready for implementation planning.
+The architecture discovery, review, and implementation-planning phases are complete. The project has passed both the **architecture gate** and the **implementation-plan gate**.
 
-The accepted architecture authorities are `15-pre-implementation-baseline.md` and `17-runtime-constitution.md`. The current implementation-plan review target is `18-implementation-plan.md`.
+The accepted design authorities are `15-pre-implementation-baseline.md`, `17-runtime-constitution.md`, and `18-implementation-plan.md`. Implementation may now begin from those documents.
 
 ## Completed design areas
 
@@ -20,17 +20,15 @@ The accepted architecture authorities are `15-pre-implementation-baseline.md` an
 - first-class multimodal conversation/artifact handling;
 - heliocentric implementation philosophy.
 
-## Accepted architecture
+## Accepted design
 
-The owner accepted the baseline and Runtime Constitution on 2026-09-05. Future changes to those documents are deliberate architecture amendments, not incidental implementation choices.
+The owner accepted the baseline, Runtime Constitution, and implementation plan on 2026-09-05. Future changes to those documents are deliberate design amendments, not incidental implementation choices.
 
 Operational values such as TTLs, chunk sizes, embedding choice, ranking weights, indexing windows, panel geometry, and model-routing heuristics remain deliberately unfrozen.
 
-## Implementation planning
+## Implementation next
 
-A concrete heliocentric implementation plan has been drafted in `18-implementation-plan.md`. It remains a review document until the owner accepts its stack, service topology, build phases and cutover approach.
-
-Implementation planning should translate the accepted architecture into a heliocentric build sequence rather than a use-case vertical slice.
+Implementation now follows the accepted heliocentric sequence in `18-implementation-plan.md` rather than a use-case vertical slice.
 
 The centre is a working model and direct multimodal interface, with the minimum runtime execution spine required to preserve identity, transcript/artifact continuity, secrets, capability enablement, effect truth/recovery, and owner-visible failure state. The first orbit is the primary provider's native capabilities. The next orbit is MCP, connected services, and useful local software. Runtime evolves in parallel as each capability needs execution, persistence, authority, or observability support.
 

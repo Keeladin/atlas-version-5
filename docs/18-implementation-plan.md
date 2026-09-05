@@ -1,6 +1,6 @@
 # Atlas V5 Implementation Plan
 
-Status: **Draft for owner review — implementation has not started**
+Status: **Accepted implementation plan — implementation may begin**
 Date: 2026-09-05
 
 ## 1. Purpose
