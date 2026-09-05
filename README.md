@@ -24,6 +24,6 @@ Normal use centres on one multimodal Atlas/chat page. A separate Control page ex
 - Existing provider abilities, MCPs, services, and local software are preferred over Atlas reimplementation.
 - Implementation grows heliocentrically from the working model and interface.
 
-The accepted architecture is defined by `docs/15-pre-implementation-baseline.md` together with `docs/17-runtime-constitution.md`. The consolidation history and runtime-guardrail review are recorded in `docs/16-architecture-review-notes.md`.
+The accepted architecture is defined by `docs/15-pre-implementation-baseline.md` together with `docs/17-runtime-constitution.md`. The draft implementation plan is `docs/18-implementation-plan.md`; consolidation history and runtime-guardrail review are recorded in `docs/16-architecture-review-notes.md`.
 
-Status: **architecture accepted; implementation planning next**.
+Status: **architecture accepted; implementation plan drafted for owner review**.

@@ -4,7 +4,7 @@
 
 The initial architecture discovery and review phases are complete. The project has passed the **architecture gate** and is ready for implementation planning.
 
-The accepted architecture authorities are `15-pre-implementation-baseline.md` and `17-runtime-constitution.md`.
+The accepted architecture authorities are `15-pre-implementation-baseline.md` and `17-runtime-constitution.md`. The current implementation-plan review target is `18-implementation-plan.md`.
 
 ## Completed design areas
 
@@ -27,6 +27,8 @@ The owner accepted the baseline and Runtime Constitution on 2026-09-05. Future c
 Operational values such as TTLs, chunk sizes, embedding choice, ranking weights, indexing windows, panel geometry, and model-routing heuristics remain deliberately unfrozen.
 
 ## Implementation planning
+
+A concrete heliocentric implementation plan has been drafted in `18-implementation-plan.md`. It remains a review document until the owner accepts its stack, service topology, build phases and cutover approach.
 
 Implementation planning should translate the accepted architecture into a heliocentric build sequence rather than a use-case vertical slice.
 
