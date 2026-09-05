@@ -1,69 +1,69 @@
-# Atlas V5 Memory Model
+# Atlas V5 Memory Architecture
 
 ## 1. Principle
 
-Atlas memory is divided conceptually into **contextual memory** and **embedded memory**.
+Atlas separates immediate conversational continuity from durable memory.
 
-The computer analogy is deliberate:
+The active model should not perform memory housekeeping while it is working. The transcript records experience; an asynchronous memory processor later interprets that experience and decides what should survive.
 
-- contextual memory is RAM;
-- embedded memory is long-term storage.
+The computer analogy remains useful:
 
-The active model should not perform memory housekeeping while it is trying to answer or work. Memory write-back is an asynchronous side process outside the active context frame.
+- live/contextual state behaves like working memory/RAM;
+- indexed short-term memory is recent searchable history;
+- embedded and canonical long-term memory behave like durable storage.
 
-## 2. Contextual memory
+## 2. Live transcript
 
-Contextual memory is the current seat state presented to the model. It is small enough to read in one sweep and rich enough for a model to enter an ongoing task without reconstructing the world.
+Atlas maintains a temporary append-only transcript for the current coherent conversation/session. It records owner turns, Atlas responses, relevant tool observations, and references to artifacts.
 
-It may contain:
+The transcript is descriptive, not interpretive. It does not decide what is important or write durable owner memory while the conversation is active.
 
-- current conversation and immediate intent;
-- active objective and workspace state;
-- recent tool results;
-- unresolved questions or decisions;
-- relevant owner preferences already known to matter;
-- current capability and authority summaries;
-- selected material retrieved from embedded memory.
+Provider conversation state may keep the active model session warm, but Atlas owns the canonical transcript so continuity survives restart, compaction, model change, or provider change.
 
-It changes continuously and is not automatically permanent.
+## 3. Context assembly
 
-## 3. Embedded memory
+Early in a session the model-visible context may contain the whole transcript. As it grows, Atlas can provide a smaller relevant view while preserving the complete temporary transcript outside the model.
 
-Embedded memory is durable, large, semantically retrievable memory. It is not injected wholesale into prompts. Relevant material is retrieved when needed and promoted into contextual memory.
-## 4. Memory write-back
+A new or resumed transcript may begin with a compact context capsule plus a small exact tail of recent turns when verbatim continuity is useful.
+## 4. Short-term memory
 
-When information is no longer needed in active context, it can enter a memory outbox. A background processor then decides what happens to it.
+When a transcript closes, Atlas associates a context capsule with it and retains the closed transcript in short-term memory for a configurable TTL.
 
-Possible outcomes include:
+Short-term memory is indexed so Atlas does not have to read many daily/session transcripts sequentially. Retrieval should combine metadata, lexical/full-text search, and semantic/vector search.
 
-- embed/index for future semantic recall;
-- preserve as a canonical durable fact, preference, decision, or record;
-- merge or supersede an existing memory;
-- retain only as ordinary conversation or execution history;
-- discard as temporary conversational debris.
+The capsule can act as a cheap first-stage locator. Atlas drills into exact transcript chunks only when precision is needed.
 
-This process should be asynchronous and batchable. A reply should not wait while Atlas decides whether every sentence deserves long-term memory.
+## 5. Durable memory substrate
 
-The original source should remain traceable. Derived memory should retain provenance to the conversation, document, tool result, or owner statement from which it came.
+PostgreSQL is the intended durable memory substrate from the beginning rather than an interim SQLite store.
 
-## 5. Three similar statements, three different states
+PostgreSQL holds canonical records, transcript/index metadata, provenance, relationships, retention state, and structured memory. pgvector supplies semantic vector search. PostgreSQL full-text/lexical search and ordinary SQL/metadata filtering handle exact identifiers and structured retrieval.
 
-"Send an email to Daniel" is immediate intent. It belongs in current context while Atlas performs the task. The resulting send receipt may be durable evidence, but the instruction itself is not a long-term owner memory.
+Retrieval is therefore hybrid. Vectors help Atlas find memory; vectors are not the memory itself.
 
-"What was the last email Daniel sent me?" is a retrieval request. Gmail is the authoritative source. The retrieved email may enter contextual memory temporarily, then expire.
+Large artifacts such as images, PDFs, documents, audio, or generated files remain in file/object storage. PostgreSQL stores artifact metadata, hashes, provenance, relationships, and storage references rather than making the database a blob store by default.
 
-"Emails from Daniel are important to me" is a durable owner preference. It should influence future behavior and therefore belongs in long-term memory.
+## 6. Durable memory writes
 
-The memory system must understand the role information plays, not merely whether a sentence contains a fact.
+The active model is not the normal writer to durable memory. Its natural write surface is the transcript.
 
-## 6. External truth is not automatically memory
+A separate memory processor reads closed or aging transcripts and may discard information, retain it temporarily, promote it to embedded long-term recall, preserve it as canonical durable memory, or merge/supersede an existing memory.
+Explicit owner statements such as "remember this" remain transcript events but are strong retention signals for the processor. Corrections and later statements can supersede earlier memories without erasing provenance.
 
-Atlas should not copy every external fact it encounters into long-term memory. Gmail, Drive, GitHub, filesystems, databases, and other connected systems remain authoritative for their own current state.
+The model may receive broad read access to memory through safe database views/tools or higher-level retrieval tools. Ordinary durable writes remain controlled by the memory-processing path.
 
-Memory should preserve what improves future reasoning, continuity, or personalization without turning Atlas into an uncontrolled duplicate of every source it can read.
+## 7. Provenance and external truth
 
-## Lifecycle refinement
+Every derived durable memory should remain traceable to its source transcript, artifact, document, tool result, or owner statement.
 
-The detailed lifecycle for temporary transcripts, context capsules, indexed short-term memory, TTL, promotion and discard is defined in `13-memory-lifecycle.md`.
+External systems such as Gmail, Drive, GitHub, or another live database remain authoritative for their own current state. Atlas memory should preserve what improves future reasoning and continuity rather than duplicate every external fact it encounters.
 
-The key refinement is that recent conversation is not automatically long-term memory. Atlas first retains it as temporary, searchable short-term context; only later background processing decides what deserves promotion or deletion.
+## 8. Promotion and indexing
+
+Promotion from short-term to long-term memory should reuse valid chunk boundaries, lexical indexes, embeddings, entity metadata, and provenance already created during short-term indexing.
+
+Re-embedding is needed only when the representation contract changes or an index/model migration requires it.
+
+Retention TTL, chunk sizes, overlap, ranking weights, summary lengths, embedding choice, and similar values are configurable operational parameters rather than architecture constants.
+
+For the detailed lifecycle see `13-memory-lifecycle.md`.

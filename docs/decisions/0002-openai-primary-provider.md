@@ -5,24 +5,24 @@ Date: 2026-09-05
 
 ## Decision
 
-Atlas V5 will use OpenAI as its primary and reference inference provider.
+Atlas V5 uses OpenAI as its primary and reference inference provider for the first implementation.
 
-OpenAI is the default provider against which the first Atlas V5 provider adapter, model routing strategy, situated-context contract, tool exposure model, and acceptance scenarios will be designed.
+The first provider adapter and heliocentric build are designed around OpenAI's current capabilities while preserving an Atlas-owned seat that another compatible provider can occupy.
 
 ## Constraint
 
 Atlas must not become an OpenAI application.
 
-Atlas owns identity, conversation state, contextual memory, embedded memory, workspace state, schedules, authority, credentials, tool inventory, continuity, and user-facing product semantics.
+Atlas owns identity, transcript continuity, Environment Registry, workspace state, artifacts, memory, schedules, authority, credentials, capability enablement, and user-facing product semantics.
 
-Provider-specific features may enrich the active model seat, but they must not become canonical Atlas state.
-
-A compatible provider must be able to occupy the same Atlas seat without redesigning memory, workspace, schedules, authority, or tool ownership.
+Provider-specific conversation state, tools, modalities, and reasoning controls are accelerators, not canonical Atlas state.
 
 ## Compatibility target
 
 Anthropic is the first compatibility provider and architectural cross-check.
 
-If Claude cannot occupy the same contextual seat without architectural surgery, the provider boundary is considered too coupled.
+If it cannot occupy the same Atlas-owned seat without redesigning memory, workspace, schedules, authority, artifacts, or tool ownership, the provider boundary is too coupled.
 
-Gemini and xAI remain valid optional providers and may be selected for specialist workloads where their capabilities are advantageous.
+Gemini and xAI remain valid later providers or specialists where their capabilities are useful.
+
+Specific model names and provider feature lists are time-sensitive and do not become product semantics.

@@ -1,61 +1,51 @@
-# Atlas V5 Capability Map
+# Atlas V5 Capability Projection
 
 ## Purpose
 
-The capability map is the model's compact awareness of what it can currently do. It is maintained by Atlas outside the reasoning path and supplied as part of situated context.
+Capabilities are one projection of the Environment Registry. They describe what the agent can meaningfully do without dumping every raw tool definition into the model's context.
 
-It is not a workflow registry and it does not tell the model what step comes next.
+The capability layer is not a workflow registry and does not decide what step comes next.
 
-## Capability classes
+## Capability sources
 
-A useful first classification is:
+Capabilities may originate from:
 
-- **model-native** — reasoning, vision, document understanding, audio, structured output, or other abilities intrinsic to the selected model;
-- **provider-hosted** — web search, code execution, file search, computer use, image generation, and similar server-side provider tools;
-- **Atlas-local/MCP** — local filesystem, shell, Git, services, or other tools exposed through an Atlas-owned MCP/client boundary;
-- **external-service** — Gmail, Drive, Calendar, GitHub, databases, SaaS APIs, and similar connected systems;
-- **local-software** — LibreOffice, Python, Docker, Git, ffmpeg, a normalizer, or another installed program Atlas can use through a suitable interface.
+- the selected model itself;
+- provider-hosted tools;
+- Atlas-owned MCP/client integrations;
+- connected external services;
+- installed local software or CLIs;
+- a small Atlas-native function only where no better existing boundary exists.
 
-These classes describe origin and execution boundary, not importance.
+Origin and transport are metadata. The model primarily needs a clear semantic description of what the capability accomplishes.
 
-## What the model needs to know
+## Meaningful grouping
 
-The compact map should emphasize semantic usefulness rather than transport detail. For each capability the model may need:
+Raw functions should be grouped into capabilities humans and models can understand. For example, a mail-read capability may contain search, get-message, read-thread, attachment retrieval, or related raw operations.
 
-- what it can accomplish;
-- whether it is currently available;
-- important scope or resource boundaries;
-- whether use causes side effects;
-- whether owner confirmation may be required;
-- whether more detailed tool definitions can be loaded on demand.
+The owner enables the meaningful capability rather than choosing which raw function Atlas must use. The model may choose any enabled underlying operation or combination that achieves the objective.
 
-Atlas retains transport, credentials, protocol details, exact schemas, health checks, and provider metadata unless the model actually needs them.
-## Deferred detail
+Atlas may replace vague upstream descriptions with clearer local descriptions while retaining the authoritative upstream schemas underneath.
+## Enabled projection
 
-Large tool catalogs should not be dumped into every prompt. Atlas can supply a stable high-level map and let the model request detailed definitions for a relevant tool family when needed.
+Control may know that a capability is installed or configured while disabled. The agent-facing Environment Registry exposes only capabilities the owner has enabled.
 
-Provider-native tool-search/deferred-loading features may accelerate this, but Atlas must keep the same conceptual behavior across providers that lack those features.
+Enabled but temporarily unhealthy capabilities may remain visible with precise availability state so the model can reason about authentication or service failure. Disabled capabilities are absent and not callable.
 
-## Availability
+## Progressive detail
 
-Capability awareness should be refreshed independently of user requests where practical. MCP connect/disconnect events, credential health, local service state, installed software, and provider/model changes can update the map in the background.
+Large tool catalogs should use progressive disclosure. The registry may say that Google Workspace Mail is enabled without loading every Gmail schema.
 
-Availability is advisory context, not a guarantee. The execution boundary remains the final source of truth.
+When inference decides mail is relevant, Atlas can expose the applicable tool family or use provider-native tool search/deferred-loading features where available.
 
-## Model switching
+## Model changes
 
-Switching models changes model-native and provider-hosted abilities. Atlas-local, external-service, and local-software capabilities generally remain attached to the Atlas environment.
+Changing the selected model can change model-native and provider-hosted capabilities. Atlas-owned MCP, services, local software, workspace, memory, and schedules remain part of the surrounding Atlas environment.
 
-The capability map is therefore rebuilt or amended when the selected model changes, without redefining the task or workspace.
+The Environment Registry updates the capability projection without redefining the owner's task.
 
-## Tool choice principle
+## Tool priority
 
-The model should choose an ability based on the objective, evidence needed, cost/latency, and quality. Atlas may provide metadata that helps that choice, but should not replace it with a hard-coded workflow router.
+Before creating an Atlas-specific implementation, prefer native model capability, provider-native capability, existing MCP/service, then ordinary local software.
 
-If two tools provide equivalent outcomes, implementation can later support preferences or ranking. Those preferences should be operating policy, not task semantics.
-
-## Environment awareness
-
-Atlas may know about independent second-cousin utilities even when they are not always connected as callable tools. That knowledge can still support useful suggestions.
-
-Example: Atlas may recognize a directory of raw mixed documents and know that a separate normalizer exists. It can suggest using the normalizer and, if an interface is available and authority permits, offer to invoke or feed it. The normalizer remains a separate product regardless.
+A capability being usable by Atlas does not make its implementation part of Atlas.

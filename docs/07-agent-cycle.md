@@ -1,64 +1,51 @@
 # Atlas V5 Agent Cycle
 
-This document defines the conceptual flow of one agent interaction. It is deliberately not an API schema or implementation plan.
+This document defines the thin conceptual loop. It is deliberately not a workflow engine or implementation schema.
 
-## 1. Before inference
+## 1. Context
 
-Atlas prepares the model's current operating picture outside the active reasoning step.
+Atlas supplies a small seat bootstrap plus the relevant model-visible portion of the live transcript. The Environment Registry, workspace state, memory, and detailed tool schemas remain outside the prompt until inference decides they are needed.
 
-That preparation may include:
+Atlas may retrieve or expose additional context on demand without deciding what the model should conclude from it.
 
-- the owner's current message and relevant conversation;
-- a compact contextual-memory snapshot;
-- current objective and useful workspace state;
-- a capability map covering native model abilities and available tools;
-- effective authority/restrictions that materially affect choices;
-- selected embedded-memory recall where relevance warrants it;
-- recent tool results or failures needed to continue an existing task.
+## 2. Inference
 
-The purpose is orientation, not instruction-by-runtime.
+The model interprets the owner's request and owns semantic branching: what matters, what to inspect, which capability to use, what sequence makes sense, whether more evidence is needed, when to adapt, whether clarification is necessary, and when the objective is satisfied.
 
-## 2. Inference owns the workflow
+Runtime does not predeclare steps, obligations, or capability routes.
 
-The model interprets the request and decides the useful next action. It may answer directly, use a native ability, call one or more tools, inspect more context, ask the owner a genuine question, or change approach after new evidence.
+## 3. Tool/action
 
-Atlas does not predeclare the sequence of steps and does not require a separate planner to approve each reasoning transition.
+When the model requests an enabled capability, Atlas resolves the request to the underlying provider-native tool, MCP operation, service API, database access, or local software interface and executes it within the real authority boundary.
 
-The model may use multiple independent tools in parallel where the provider supports it and where the calls do not depend on one another.
+The model may use more than one underlying tool to satisfy one meaningful capability. The owner does not need to choose between raw operations such as mail search versus mail get/read.
 
-## 3. Tool execution
+## 4. Result
 
-When the model requests a tool, Atlas resolves the requested ability to its actual transport and executes it within the effective authority boundary.
-Execution returns concrete results to the model: success, data, denial, authentication failure, missing resource, timeout, partial result, or another exact outcome.
+Runtime returns exact results in the vocabulary of the boundary that produced them: data, success, permission denial, authentication requirement, timeout, missing resource, unavailable capability, partial result, or other concrete outcome.
 
-Runtime does not reinterpret that result into the next workflow step. The model reasons over it.
+Runtime does not translate the result into a semantic next step. The model reasons over the result.
+## 5. Continue or complete
 
-## 4. Continuing the task
+The cycle repeats as needed:
 
-The model may continue using tools until it has enough evidence to complete the objective or until a genuine blocker requires owner input.
+`context → inference → tool/action → result → inference`
 
-There may be provider-specific limits on one inference/tool sequence. Atlas may continue the same task with another inference while preserving the same contextual state and workspace. A provider turn limit must not become a product-level task model.
+Provider turn limits, continuation APIs, or background modes are transport concerns rather than Atlas task semantics. Atlas owns enough transcript/workspace state to reseat another inference when required.
 
-If Atlas changes models or providers, the next model receives the same Atlas-owned operating picture rather than a vendor-specific handover narrative.
+The model decides completion. Deterministic checks such as hashes, diffs, IDs, status codes, or query results may be exposed as facts when exact verification is useful.
 
-## 5. Completion
+## 6. Transcript
 
-The model decides when the requested objective is satisfied, using tool results and available evidence.
+Owner messages, Atlas responses, artifact references, and relevant tool observations are appended to the live transcript. The transcript records the interaction; it does not perform memory classification.
 
-Where an effect can be checked exactly, Atlas may expose deterministic verification as another fact or tool result. For example, a Git diff, file hash, HTTP status, calendar event ID, or sent-message receipt can establish what actually happened.
+When the transcript later closes, asynchronous memory processing occurs outside this cycle.
 
-Verification should improve truth without turning into a universal runtime workflow that the model must service.
+## 7. Ownership rule
 
-## 6. After inference
+A useful architectural test is:
 
-Atlas updates conversational state and contextual memory. Information that leaves active relevance can enter the asynchronous memory outbox for classification, embedding, durable preservation, merge, or discard.
+- if the question requires meaning, judgment, relevance, adaptation, or sufficiency, it belongs to inference;
+- if it requires exact execution, iteration, persistence, triggering, validation, or enforcement, it belongs to runtime/software.
 
-Execution/activity metadata may be retained for observability and diagnosis without being promoted into owner memory.
-
-The owner receives the answer or result without waiting for background memory housekeeping.
-
-## 7. Failure principle
-
-Failures should be returned in the vocabulary of the failed boundary. An expired Google token is an authentication failure; a denied path is a filesystem permission problem; a missing tool is unavailable capability; a provider timeout is a provider failure.
-
-The model decides how to adapt. Atlas should not hide precise failures behind generic states such as "unserviced" when a more useful technical truth is available.
+This boundary is more important than the mechanics of the loop itself.

@@ -1,29 +1,32 @@
-# Atlas V5 Schedules
+# Atlas V5 Schedules and Passive Automation
 
 ## Principle
 
-Scheduling is a passive Atlas faculty. The owner expresses intent in ordinary language; Atlas translates that intent into durable timing or trigger state behind the scenes.
+A schedule is persisted intent bound to a deterministic trigger or execution window.
 
-The owner may inspect, edit, pause, run, or delete schedules through Control when useful, but ordinary use should not require interacting with a scheduling subsystem.
+The owner expresses the intent naturally. Runtime stores and triggers it. When due, Atlas wakes a model with the stored intent and normal current environment; inference decides what the intent means and how to achieve it.
 
-## Examples
+The scheduler does not encode the future workflow.
 
-"Every morning at 07:00 summarize my important emails" should create a durable scheduled trigger and enough task intent for a future model to perform the job.
+## Trigger forms
 
-"When new normalized manuals appear in this folder, index the documents I mark as worth remembering" may create an event-driven trigger plus a model-led task when the condition occurs.
+The architecture should support simple forms such as:
 
-"Remind me tomorrow afternoon" is a simple deferred event and should not require the machinery of a general workflow graph.
+- one-off date/time;
+- recurring time/date rule;
+- execution window;
+- event-driven trigger where a future condition or event creates the wake-up.
 
-## Separation of concerns
+The exact representation is an implementation choice.
 
-The scheduler decides that a trigger is due. It does not decide how the objective should be achieved.
+## Example
 
-When a trigger fires, Atlas prepares the relevant contextual state, capabilities, workspace/resource references, and authority, then gives the objective to the selected model. The model works out the workflow at execution time.
+"Every morning at 07:00 summarize important mail" stores the intent and recurrence. At execution time, the model decides what counts as important, what mail capability to use, what period to inspect, and how to present the result.
 
-This preserves the owner's durable intent without freezing a reasoning path months in advance.
+A heavy indexing job may instead be allowed only within a configured overnight window. Window times, batch size, throttling, and similar operational policy remain tunable rather than architectural constants.
 
-## Schedule state
+## Control
 
-A schedule may need durable metadata such as owner intent, trigger definition, enabled state, next run, last run, model-routing preference if overridden, relevant resource references, and recent outcome.
+Schedules remain passive. The normal user creates them through conversation; Control may list, enable/disable, edit, run, inspect, or delete them when needed.
 
-The exact schema is an implementation concern for later design. The architecture should keep it substantially smaller than V4 Cadence/Work machinery unless real use cases prove otherwise.
+Runtime owns due-time/event detection and persistence. Model inference owns semantic execution.

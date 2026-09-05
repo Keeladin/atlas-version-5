@@ -1,89 +1,88 @@
-# Memory Lifecycle
+# Atlas V5 Memory Lifecycle
 
-This document defines how Atlas V5 moves information from live conversation into recent searchable context and, only when justified, into long-term memory.
+This document defines how Atlas moves information from live conversation into recent searchable context and, only when justified, into long-term memory.
 
 ## 1. Principle
 
 Conversation is not automatically permanent memory.
 
-Atlas keeps a temporary working transcript while a conversation or session is active. When that transcript closes, Atlas derives a compact handover summary and moves the closed transcript into short-term memory for a limited retention period.
+The live transcript acts as a scribe. It records what was said and what happened, including references to artifacts and relevant tool observations, without interpreting those events into durable memory during active work.
 
-Short-term memory is searchable and may be indexed immediately. Promotion to long-term memory therefore reuses work already done instead of reprocessing the same material from scratch.
+When a transcript closes, Atlas creates a compact context capsule and retains the transcript temporarily in indexed short-term memory. A separate asynchronous memory processor later decides what deserves promotion, extension, correction, merge, or discard.
 
-## 2. Memory layers
+## 2. Lifecycle
 
-1. **Live transcript** — current conversational history used for immediate continuity.
-2. **Context capsule** — compact handover summary written when a transcript closes.
-3. **Short-term memory** — recent closed transcripts and capsules retained for a configurable TTL.
+1. **Live transcript** — current temporary conversational/work history.
+2. **Context capsule** — compact handover/orientation summary associated with a closed transcript.
+3. **Indexed short-term memory** — recent transcripts/capsules with configurable retention.
 4. **Embedded long-term memory** — selected durable semantic recall.
-5. **Canonical durable memory** — explicit facts, preferences, decisions or records that must remain authoritative.
+5. **Canonical durable memory** — explicit facts, preferences, decisions, or records that should remain authoritative until changed.
 
-The Environment Registry is separate from these layers. It describes what exists and how Atlas can reach it; it is not conversational memory.
-## 3. Live transcript
+The Environment Registry and external source systems are separate from this lifecycle.
 
-The live transcript is temporary working history, not long-term memory.
+## 3. Transcript rollover
 
-It accumulates owner turns, Atlas responses and relevant tool observations while the current conversational context remains coherent. Early in a session the model-visible context may simply contain the whole transcript.
+A transcript may close at a natural session/topic boundary, when context size makes continuation inefficient, or at a configured rollover boundary.
 
-Atlas may close a transcript when:
+No particular clock time, number of turns, token threshold, or retention duration is architectural. These are configurable and should be tuned from real use.
 
-- a natural conversational/session boundary is reached;
-- a materially different topic begins;
-- context size makes continuation inefficient;
-- a configured daily rollover occurs, with midnight as a simple guaranteed boundary.
-
-Closing a transcript does not delete it. It moves it out of the model's immediate working set.
-
+Closing a transcript removes it from the immediate working set; it does not immediately delete it.
 ## 4. Context capsule
 
-Before a transcript is closed, Atlas derives a compact context capsule and appends or associates it with the closed transcript.
+The capsule records only what a future model needs to regain orientation: current topics, decisions, unresolved matters, relevant workspace/resources, important entities, and any clear continuation point.
 
-The capsule records only what a future model needs to regain orientation: current topics, decisions, unresolved matters, active workspace or resources, relevant people/entities and any clear continuation point.
+A new transcript can use the previous capsule plus a small exact tail of recent turns when verbatim continuity matters. The full prior transcript remains searchable while it is retained.
 
-A new transcript may begin with the previous capsule plus a small raw tail of exact recent turns when verbatim continuity is useful.
 ## 5. Indexed short-term memory
 
-Closed transcripts and capsules enter short-term memory for a configurable TTL, for example 14 or 30 days.
+Closed transcripts and capsules are indexed so recent recall does not require scanning many transcript files sequentially.
 
-Short-term memory should be searchable without reading every transcript sequentially. Retrieval should combine:
+Retrieval should combine:
 
-- metadata filtering such as date, workspace and entities;
-- lexical search for exact names, identifiers and phrases;
-- semantic/vector search for conceptually similar wording.
+- metadata such as time, workspace, entity, artifact, or source;
+- lexical/full-text search for exact identifiers and phrases;
+- semantic/vector search for conceptually related wording.
 
-The daily/session capsule can be embedded as a cheap first-stage locator. If a capsule matches, Atlas can then search or read only the relevant raw transcript chunks.
+The capsule can locate the likely transcript first; Atlas can then retrieve only the relevant raw chunks.
 
-The index is temporary with the memory it serves. Expiry of a short-term item removes its temporary index entries unless that item has been promoted.
+Temporary index entries share the retention lifecycle of the short-term material they serve unless promoted.
 
-## 6. Background memory processing
+## 6. Artifact references
 
-Memory classification runs outside the active conversational inference path.
+Binary artifacts do not live inside transcript text. A transcript records an artifact identity plus useful metadata and conversational context.
 
-When a transcript closes or during a later maintenance pass, a background process can classify recent memory as:
+The artifact bytes live in temporary or durable artifact storage. Memory processing may preserve captions, extracted text, semantic representations, provenance, or the artifact reference itself when useful.
 
-- discard when its TTL expires;
-- retain in short-term memory longer;
-- promote into embedded long-term memory;
-- promote into canonical durable memory;
-- merge or supersede an existing long-term memory.
-## 7. Promotion should reuse existing indexing
+## 7. Background processing
 
-Promotion is a retention decision, not a second ingestion pipeline.
+The memory processor operates outside the active conversational inference path and is the normal writer to durable memory.
+It may:
 
-By the time short-term memory is evaluated for promotion it may already have chunk boundaries, timestamps, provenance, lexical terms, embeddings and entity metadata. Atlas should preserve and reuse those derived representations when they remain valid.
+- allow short-term material to expire;
+- extend short-term retention;
+- promote material to embedded long-term recall;
+- preserve a canonical durable memory;
+- merge or supersede an existing durable memory;
+- retain provenance without retaining all raw conversational detail.
 
-Re-embedding is required only when the long-term index deliberately uses a different representation contract or when an embedding/index version has changed.
+Explicit owner requests to remember something are strong retention signals but still enter through the transcript rather than direct model database writes.
 
-Canonical source content and provenance remain separate from derived indexes so indexes can be rebuilt without rewriting memory history.
+## 8. Promotion reuse
 
-## 8. Retrieval path
+Promotion is a lifecycle decision, not a second ingestion pipeline.
 
-A normal recall path is:
+Existing chunking, timestamps, provenance, lexical indexes, embeddings, and entity metadata should be reused whenever their representation remains valid.
 
-1. Use live transcript and current context when sufficient.
-2. Search short-term capsules/index for recent context.
-3. Drill into only the relevant transcript chunks when exact detail is needed.
-4. Search embedded long-term memory when the information is older or durable.
-5. Prefer canonical durable records when an authoritative fact or decision exists.
+Canonical source content stays separable from derived indexes so indexes can be rebuilt without rewriting history.
 
-This gives Atlas continuity without making every conversation permanent and without forcing the active model to perform memory housekeeping while it is working.
+## 9. Retrieval order
+
+Normal recall prefers the cheapest sufficient source:
+
+1. current model-visible transcript/context;
+2. indexed short-term capsules and transcript chunks;
+3. embedded long-term memory;
+4. canonical durable records where authoritative state exists;
+5. external authoritative systems when the question is about their live state.
+
+This preserves continuity without making every conversation permanent or turning memory housekeeping into part of the active agent cycle.

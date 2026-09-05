@@ -2,58 +2,45 @@
 
 ## Purpose
 
-A workspace is the environment Atlas places around an objective so the model can work without repeatedly rediscovering the same local state.
+A workspace is Atlas's maintained field of action around current work. It situates the model's capabilities in the files, artifacts, resources, instructions, and operational state that are relevant now.
 
-It is primarily an internal faculty. The owner may inspect it when useful, but normal interaction should not require creating, naming, or managing workspaces manually.
+It is primarily an internal working construct. The owner should not have to create or manage a workspace before asking Atlas to do ordinary work.
 
-## Workspace contents
+## Three overlapping concerns
 
-A workspace may hold references to:
+A workspace can combine:
 
-- current objective and relevant conversation;
-- filesystem roots and working directories;
-- repository, branch, diff, build, or test state;
-- documents, rendered views, exports, and scratch material;
-- available tools or environment-specific capabilities;
-- recent tool results and failures;
-- external resource identifiers needed to continue;
-- temporary working notes that should survive provider/model switching.
+1. **Storage references** — files, documents, artifacts, generated outputs, scratch material, and external resource identities.
+2. **Operational state** — working directory, repository/branch, recent results, open resources, research state, execution context, and other situational facts worth preserving.
+3. **UI projections** — temporary views such as a mail list, file browser, document preview, research sources, generated artifact, or repo/file view.
 
-The workspace should point to durable or external resources rather than duplicate them unnecessarily.
+These concerns may use different physical stores. "Workspace" is the conceptual boundary around what is currently relevant to doing the work.
 
-## Workspace types are descriptive, not rigid classes
+## No rigid workspace classes
 
-Software, Documents, Research, Operations, and similar labels are useful ways to understand common environments. V5 should avoid hard-coding a separate workflow engine for each type.
+Software, documents, research, operations, and ad hoc work are useful descriptions, not hard-coded workflow classes.
 
-A single objective may move across environments. For example, research may produce a document, or a software task may need browser research and then a Git repository. The model should be able to combine capabilities without crossing artificial product silos.
+One piece of work may move naturally between research, documents, code, mail, and local software. The model decides what resources it needs; the runtime preserves the state that emerges without routing through workspace-specific planners.
+## Resource ownership
 
-## Lifecycle
+Workspaces point to resources rather than duplicating them unnecessarily. A Gmail message can remain authoritative in Gmail; a repository remains on disk/Git; a generated PDF lives in artifact storage; PostgreSQL stores metadata and relationships where useful.
 
-Atlas may establish a workspace when the current objective benefits from persistent working state. Lightweight conversation may need no explicit workspace beyond conversational context.
-A workspace can remain warm while a task is active, suspend when idle, and be retired when its working state no longer matters. Retirement does not delete durable outputs or owner memory.
+Large artifacts should not be copied into contextual memory just because they belong to the workspace. Context assembly selects only what the current inference needs.
 
-## Provider switching
+## Local instructions
 
-The workspace belongs to Atlas, not to the model provider. If Atlas changes provider or model, the next model receives the relevant workspace summary and continues in the same environment.
+For software workspaces, Atlas should prefer the existing `AGENTS.md` convention for repository/directory-scoped working instructions rather than invent an Atlas-specific equivalent.
 
-Provider-native conversation state may be used as an optimization, but it must never be the only place where task continuity exists.
+Atlas resolves the relevant workspace/path first, then supplies only applicable instruction files from parent to child scope. `AGENTS.md` is local working guidance, not global identity, memory, authority, or live registry state.
 
-## Context relationship
+## Continuity
 
-Contextual memory and workspace overlap but are not identical.
+Workspace state belongs to Atlas, not to the model provider. A model/provider change should inherit the same relevant working environment without requiring expensive rediscovery.
 
-Contextual memory is the compact information the model needs in its head now. Workspace is the broader working environment and state from which that context can be assembled.
-
-A large Git diff, document collection, or directory tree may belong to the workspace while only a summary and the immediately relevant files are loaded into contextual memory.
+The workspace can remain warm while useful and be retired when its situational state no longer matters. Retirement does not delete durable artifacts or memory.
 
 ## Owner visibility
 
-Control may expose active and recent workspaces for diagnosis. Useful inspection includes current objective, model/provider, working paths/resources, recent tools, failures, changes made, and current status.
+The main Atlas page may expose useful workspace projections contextually. Control may provide deeper inspection for diagnosis, but workspace internals should not become mandatory navigation.
 
-This visibility is analogous to opening a process monitor or terminal when diagnosing a computer. It is not meant to become the normal way to tell Atlas what to do.
-
-## Design test
-
-If the owner must manually construct the workspace before Atlas can handle a normal request, the abstraction is leaking.
-
-If the model repeatedly rediscovers a repository, document set, or external resource that Atlas already encountered during the same objective, the workspace is not preserving enough useful state.
+If the owner must manually build a workspace before Atlas can work, or if the model repeatedly rediscovers state Atlas already knows, the workspace abstraction is failing.

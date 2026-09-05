@@ -1,37 +1,28 @@
-# Open Design Questions
+# Remaining Open Questions
 
-These are intentionally unresolved. They should be answered during planning rather than hidden inside implementation choices.
+Most first-pass architecture questions are now resolved. The remaining items are either review questions or implementation choices that should not be frozen prematurely.
 
-## Provider and model routing
+## Architecture review questions
 
-- What is the minimum provider-adapter contract?
-- Which provider-specific abilities should Atlas expose directly rather than normalize away?
-- How should automatic model escalation consider complexity, risk, latency, and cost?
-- How does an owner override interact with automatic routing?
+- Is the Environment Registry boundary small enough that it remains a map rather than another loaded context bundle?
+- Can OpenAI and the first compatibility provider occupy the same Atlas-owned seat without moving continuity or memory into provider state?
+- Are any supporting faculties still making semantic decisions that belong to inference?
+- Does any proposed UI surface expose an internal subsystem merely because it exists?
+- Are any enabled-capability controls too granular for a human owner to understand naturally?
+- Does the memory design preserve provenance and correction without making the active model a database writer?
 
-## Capability map
+## Implementation choices to defer
 
-- What information must always be present in the compact capability map?
-- When should detailed schemas be deferred until the model asks for them?
-- How are model-native, provider-hosted, MCP, API, and local-software abilities represented consistently?
-- How quickly should availability changes propagate into contextual state?
+- exact provider-adapter API shapes;
+- database table/index layout;
+- embedding provider/model and dimensions;
+- transcript rollover thresholds and short-term retention TTL;
+- chunking and retrieval ranking parameters;
+- artifact-store implementation and retention policy;
+- exact model-routing and cost/latency heuristics;
+- schedule/indexing windows and resource throttling;
+- main-page panel geometry and responsive behavior;
+- Control information architecture;
+- health-check frequencies and observability retention.
 
-## Workspace
-
-- What creates, reuses, suspends, and retires a workspace?
-- What state belongs in a workspace versus contextual memory?
-- How does a provider switch inherit the same working environment without expensive rediscovery?
-
-## Memory
-
-- What deterministic filters run before model-assisted memory classification?
-- When is a fact canonical long-term memory versus merely embedded for recall?
-- What gets discarded, and when?
-- How are owner correction, forgetting, provenance, and supersession represented?
-
-## Authority and automation
-
-- Which effects can rely entirely on OS/service permissions?
-- Which effects deserve a thin Atlas policy or owner confirmation layer?
-- How are schedules and event triggers represented without recreating V4 Work/Cadence machinery?
-- What observability is necessary to diagnose a failed autonomous run without making the owner operate it manually?
+These choices may be tested and tuned during implementation as long as they do not violate the accepted architecture baseline.

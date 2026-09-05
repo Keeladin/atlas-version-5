@@ -2,28 +2,28 @@
 
 Atlas V5 is a clean architectural restart of Atlas.
 
-The project is intentionally documentation-only during the design phase. No runtime, UI, database, provider adapter, tool host, or migration code should be added until the architecture is explicitly accepted.
+The repository remains documentation-only until the pre-implementation architecture baseline is reviewed and accepted. No runtime, UI, database, provider adapter, tool host, or migration code should be added before that gate.
 
 ## Product direction
 
-Atlas is a persistent local agent environment in which the model is the primary decision-maker.
+Atlas is a persistent local agent environment in which the selected model is the primary semantic decision-maker.
 
-The model enters inference already aware of its useful native abilities, available tools, current workspace, relevant context, and effective authority. It decides how to achieve the owner's request. The runtime provides state, tools, execution, boundaries, persistence, scheduling mechanics, and observability; it does not act as the planner.
+The model interprets intent, chooses workflows and tools, adapts to results, and decides when work is complete. The runtime provides deterministic orchestration, execution, persistence, scheduling, authority enforcement, environment state, and observability without becoming a competing planner.
 
-## Design shorthand
+Normal use centres on one multimodal Atlas/chat page. A separate Control page exists for configuration, health, capability enablement, memory/schedule inspection, usage, and diagnostics.
 
-- The model is the agent.
-- Tools are abilities, not workflows.
-- Workspaces are where the agent works, mostly behind the scenes.
-- Authority is enforced at the effect boundary.
-- Contextual memory is RAM; embedded memory is long-term storage.
-- Memory housekeeping happens asynchronously outside the active context frame.
-- Schedules are passive Atlas machinery, exposed only when useful to inspect or control.
-- Existing software should be used rather than reimplemented.
-- Deterministic adjacent utilities are "second cousins", not Atlas subsystems.
+## Core shorthand
 
-## Planning documents
+- The model is the cognitive centre.
+- Runtime governs execution and reality, not thought.
+- The Environment Registry is a map consulted on demand.
+- The transcript records experience; the memory processor interprets it.
+- Workspaces preserve the current field of action.
+- Enabled capabilities are usable; disabled capabilities are absent from the agent view.
+- Schedules bind intent to triggers rather than encode workflows.
+- Existing provider abilities, MCPs, services, and local software are preferred over Atlas reimplementation.
+- Implementation grows heliocentrically from the working model and interface.
 
-See `docs/` for the architecture, memory model, provider/tool survey, V4 lessons, and design roadmap.
+Review `docs/15-pre-implementation-baseline.md` first. The consolidation contradictions and their resolutions are recorded in `docs/16-architecture-review-notes.md`.
 
-Status: **architecture and planning only**.
+Status: **architecture review candidate; no implementation yet**.

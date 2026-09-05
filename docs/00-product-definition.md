@@ -2,30 +2,26 @@
 
 ## Product promise
 
-Atlas is a persistent local agent environment that lets a capable model work naturally with the owner's machine, tools, connected services, context, and schedules without making the owner operate the underlying machinery.
+Atlas is a persistent local agent environment that lets a capable model work naturally with the owner's machine, connected services, files, artifacts, memory, and schedules without making the owner operate the underlying machinery.
 
 The model is the agent. Atlas is the environment around it.
 
-## What the owner experiences
+## Owner experience
 
-Normal use should feel simple:
+Normal use happens on one main Atlas page centred on multimodal chat. The owner can type, attach images/documents and other supported artifacts, receive generated artifacts, and see useful workspace projections such as mail, files, previews, research, or runtime health around the conversation.
 
-- talk to Atlas;
-- give it an objective;
-- provide or point it to material when useful;
-- inspect results;
-- intervene only when authority, ambiguity, or failure genuinely requires it.
+A separate Control page exists for deliberate configuration, observability, diagnostics, and capability enablement. Ordinary work should not require navigating runtime subsystems.
 
-The owner may inspect internals for diagnosis and configuration, but ordinary work must not require understanding Atlas runtime concepts.
+## Behind the scenes
 
-## What Atlas does behind the scenes
+Atlas maintains the Environment Registry, transcript continuity, workspace state, artifact references/storage, provider/tool execution, credentials and authority boundaries, asynchronous memory processing, schedules, persistence, usage information, and diagnostics.
 
-Atlas maintains the model's operating context, capability awareness, workspace, credentials and authority boundaries, tool execution, memory processing, scheduling mechanics, persistence, usage information, and diagnostics.
-
-These are faculties of Atlas, not a menu of workflows the owner must drive.
+These are supporting faculties, not a menu of workflows the owner must drive.
 
 ## Product boundary
 
-Atlas should become more capable by learning to use the surrounding software ecosystem, not by absorbing that ecosystem into itself.
+Atlas becomes more capable by exploiting the selected model/provider's native abilities first, then by adding MCPs, connected services, and useful local software.
 
-A useful adjacent utility can remain entirely independent. Atlas may know it exists and use it when appropriate without owning its implementation or lifecycle.
+Independent deterministic utilities can remain separate products. Atlas may know they exist and use them without owning their implementation or lifecycle.
+
+**Atlas should know its environment, not absorb its environment.**

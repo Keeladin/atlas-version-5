@@ -2,62 +2,50 @@
 
 ## Authority principle
 
-Atlas should enforce authority at the point where an effect occurs, using the simplest trustworthy boundary available.
+Authority is established primarily by provisioning and enforced at the real effect boundary.
 
-The model may decide what action is useful. It does not decide whether it has permission to exceed the owner's configured authority.
+If the owner does not want Atlas to use a capability, that capability should be disabled and absent from the agent-visible Environment Registry. If it is enabled, Atlas may use it within the actual technical permissions that still apply.
 
-## Local authority
+V5 has no general `CONFIRM` authority state. Repeated confirmation prompts would make the owner part of the runtime loop and recreate machinery the architecture is deliberately removing.
 
-For machine-local work, the Atlas service identity and ordinary operating-system controls should carry as much of the real boundary as practical:
+## Enabled versus disabled
 
-- filesystem permissions;
-- executable permissions;
-- service/socket access;
-- user/group membership;
-- container or sandbox boundaries where useful.
+Control may show configured capabilities as ON or OFF. The agent sees only the enabled projection.
 
-Atlas should not duplicate an OS restriction with a second elaborate policy engine unless there is a product-level reason to do so.
+For large integrations, the owner should control meaningful capability groups rather than hundreds of ambiguous raw tool functions. Finer read/write or sub-capability switches may exist when they are useful and understandable.
 
-## External authority
+An enabled capability may still be temporarily unavailable. Authentication failure, stopped services, missing resources, or OS permission changes are reported precisely rather than treated as semantic policy decisions.
 
-Gmail, Drive, GitHub, databases, and other services retain their own authentication, OAuth scopes, tokens, account roles, and service policies.
+## Local and external boundaries
 
-Atlas stores and refreshes credentials locally where practical, but possession of a credential does not require Atlas to invent another workflow around it.
+Local authority should rely on the Atlas service identity, filesystem permissions, executable/service/socket access, database roles, and container/sandbox boundaries where useful.
 
-## Thin owner policy
+External systems retain their OAuth scopes, API keys, account roles, and service policies. Atlas should not duplicate these with a second elaborate policy engine.
+## Model/runtime boundary
 
-Some consequential effects may deserve an Atlas-level standing rule or confirmation even when the underlying credential permits them.
+The model decides whether an action is useful. Runtime answers only deterministic authority questions such as whether the tool is enabled, the path is writable, the database role permits the query, or the credential contains the required scope.
 
-Examples may include sending external communications, destructive deletion, publishing, financial actions, or changes to Atlas's own authority. The exact list is a design decision, not assumed here.
+A denial or failure is returned to inference as a concrete technical fact. The model decides how to adapt.
 
-The policy should answer a narrow question: may Atlas perform this effect under the current owner rule? It should not decide the workflow leading to that effect.
-## Failure feedback
-
-A denied action should return a precise technical reason to the model and owner. Atlas should distinguish policy denial, OS permission denial, expired authentication, unavailable service, invalid resource, and provider/tool failure.
-
-That distinction lets the model reason about the next useful move instead of entering a generic blocked state.
+For Atlas's own durable memory, the active model is normally read-only. New durable memory is derived from the transcript by the asynchronous memory processor rather than arbitrary model-generated database writes.
 
 ## Control surface
 
-Control is the owner's engineering panel over Atlas. It is primarily for configuration, observability, diagnosis, and exceptional intervention.
+Control is the owner's engineering/configuration page, separate from the normal Atlas/chat page.
 
-Potential areas include:
+It may expose:
 
-- providers, models, routing, and reasoning effort;
-- credentials and connected accounts;
-- MCP servers and discovered capability families;
-- local software/tool availability;
-- authority and confirmation rules;
+- provider/model configuration and usage;
+- capability groups and ON/OFF state;
+- MCP servers, connected services, credentials, and authentication health;
+- Environment Registry state and local software availability;
+- memory inspection/correction/forgetting and retention settings;
 - schedules and automation status;
-- memory inspection/correction/forgetting;
-- active workspaces and recent activity;
-- model/tool usage, latency, token counts, and estimated/reconciled cost;
-- errors, authentication health, and service state.
+- workspace/storage information;
+- runtime/service health, logs, errors, latency, tokens, and cost.
 
 The normal task path should not require visiting Control.
 
 ## Explainability target
 
-When something goes wrong, the owner should be able to answer: which model was in the seat, what context/workspace was active, what it tried, which tool boundary handled the action, what permission applied, what exact result came back, and what Atlas did next.
-
-Observability should explain the machine without forcing the owner to operate the machine manually.
+When something fails, Control should make it possible to determine which model was in the seat, what context/workspace was relevant, what capability/tool was attempted, which boundary handled it, and what exact result came back.
