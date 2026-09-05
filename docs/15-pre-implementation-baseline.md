@@ -1,6 +1,6 @@
 # Atlas V5 Pre-Implementation Architecture Baseline
 
-Status: **Review candidate — no implementation yet**
+Status: **Accepted architecture baseline — implementation planning may begin**
 
 This document consolidates the architectural direction reached during the V5 design pass. It is the reference against which the remaining planning documents should be read.
 
@@ -129,6 +129,6 @@ They should be selected experimentally during implementation and remain configur
 
 ## 13. Implementation gate
 
-No runtime implementation should begin until this baseline and `17-runtime-constitution.md` have been reviewed and accepted together.
+This baseline and `17-runtime-constitution.md` were accepted by the owner on 2026-09-05. Implementation planning may now begin from these documents without reopening settled architecture by default.
 
-After acceptance, the implementation plan should translate these decisions into a heliocentric build sequence without reopening settled semantics through code-first experimentation. The constitution supplies runtime guardrails; it does not add a second semantic planner.
+The implementation plan should translate these decisions into a heliocentric build sequence without reopening settled semantics through code-first experimentation. The constitution supplies runtime guardrails; it does not add a second semantic planner.

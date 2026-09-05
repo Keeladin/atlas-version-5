@@ -2,9 +2,9 @@
 
 ## Status
 
-The initial architecture discovery list has been completed. The project is now at the **pre-implementation architecture review** gate.
+The initial architecture discovery and review phases are complete. The project has passed the **architecture gate** and is ready for implementation planning.
 
-The consolidated review targets are `15-pre-implementation-baseline.md` and `17-runtime-constitution.md`. Implementation remains prohibited until both are accepted.
+The accepted architecture authorities are `15-pre-implementation-baseline.md` and `17-runtime-constitution.md`.
 
 ## Completed design areas
 
@@ -20,13 +20,13 @@ The consolidated review targets are `15-pre-implementation-baseline.md` and `17-
 - first-class multimodal conversation/artifact handling;
 - heliocentric implementation philosophy.
 
-## Review phase
+## Accepted architecture
 
-The review should look for contradictions, missing ownership boundaries, hidden workflow engines, provider lock-in, and places where implementation detail has been mistaken for architecture.
+The owner accepted the baseline and Runtime Constitution on 2026-09-05. Future changes to those documents are deliberate architecture amendments, not incidental implementation choices.
 
-Operational values such as TTLs, chunk sizes, embedding choice, ranking weights, indexing windows, panel geometry, and model-routing heuristics are deliberately not frozen.
+Operational values such as TTLs, chunk sizes, embedding choice, ranking weights, indexing windows, panel geometry, and model-routing heuristics remain deliberately unfrozen.
 
-## After architecture acceptance
+## Implementation planning
 
 Implementation planning should translate the accepted architecture into a heliocentric build sequence rather than a use-case vertical slice.
 

@@ -2,7 +2,7 @@
 
 Atlas V5 is a clean architectural restart of Atlas.
 
-The repository remains documentation-only until the pre-implementation architecture baseline and Runtime Constitution are reviewed and accepted. No runtime, UI, database, provider adapter, tool host, or migration code should be added before that gate.
+The architecture gate has passed. `docs/15-pre-implementation-baseline.md` and `docs/17-runtime-constitution.md` were accepted on 2026-09-05. Implementation planning may now begin; runtime code should follow the accepted baseline and constitution rather than rediscover architecture in code.
 
 ## Product direction
 
@@ -24,6 +24,6 @@ Normal use centres on one multimodal Atlas/chat page. A separate Control page ex
 - Existing provider abilities, MCPs, services, and local software are preferred over Atlas reimplementation.
 - Implementation grows heliocentrically from the working model and interface.
 
-Review `docs/15-pre-implementation-baseline.md` together with `docs/17-runtime-constitution.md`. The consolidation history and later runtime-guardrail review are recorded in `docs/16-architecture-review-notes.md`.
+The accepted architecture is defined by `docs/15-pre-implementation-baseline.md` together with `docs/17-runtime-constitution.md`. The consolidation history and runtime-guardrail review are recorded in `docs/16-architecture-review-notes.md`.
 
-Status: **architecture review candidate; no implementation yet**.
+Status: **architecture accepted; implementation planning next**.

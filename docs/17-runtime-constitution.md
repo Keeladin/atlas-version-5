@@ -1,6 +1,6 @@
 # Atlas V5 Runtime Constitution
 
-Status: **Draft for owner review — no implementation yet**
+Status: **Accepted runtime constitution**
 Date: 2026-09-05
 
 ## 1. Purpose
@@ -146,6 +146,6 @@ It also does not restore V4's obligation planner, mandatory Work objects, confir
 
 ## 17. Review rule
 
-Before implementation begins, the owner should review this constitution together with `15-pre-implementation-baseline.md`.
+This constitution and `15-pre-implementation-baseline.md` were accepted by the owner on 2026-09-05.
 
 During implementation, any proposed shortcut that weakens one of these guarantees must be surfaced as an explicit design change rather than introduced silently in code.

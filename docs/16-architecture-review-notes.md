@@ -1,7 +1,7 @@
 # Atlas V5 Architecture Review Notes
 
 Date: 2026-09-05
-Status: consolidation pass complete; runtime guardrails added; baseline and constitution awaiting owner review
+Status: consolidation and runtime-guardrail review complete; baseline and constitution accepted by owner
 
 This document records contradictions and drift found while consolidating the first V5 design pass into `15-pre-implementation-baseline.md`.
 
@@ -73,6 +73,6 @@ Independent architecture reviews after commit `1425447` did not overturn the mod
 
 Those findings are treated as advisory gap detection rather than implementation prescriptions. V5's response is the dedicated `17-runtime-constitution.md`, which states the required execution guarantees without restoring a runtime planner, mandatory Work objects, or a general confirmation state.
 
-The supporting architecture documents were reconciled to that constitution. The architecture is therefore still a review candidate rather than declared contradiction-free until the owner has reviewed the revised baseline and Runtime Constitution together.
+The supporting architecture documents were reconciled to that constitution. The owner reviewed and accepted the revised baseline and Runtime Constitution together on 2026-09-05.
 
-Remaining questions in `06-open-design-questions.md` are implementation choices or acceptance questions unless review identifies a genuine architectural conflict.
+Remaining questions in `06-open-design-questions.md` are implementation choices unless implementation exposes a genuine architectural conflict that warrants an explicit amendment.
