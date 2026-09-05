@@ -10,6 +10,7 @@ Most first-pass architecture questions are now resolved. The remaining items are
 - Does any proposed UI surface expose an internal subsystem merely because it exists?
 - Are any enabled-capability controls too granular for a human owner to understand naturally?
 - Does the memory design preserve provenance and correction without making the active model a database writer?
+- Can every consequential execution path satisfy the Runtime Constitution without adding semantic planning to runtime?
 
 ## Implementation choices to defer
 
@@ -25,4 +26,4 @@ Most first-pass architecture questions are now resolved. The remaining items are
 - Control information architecture;
 - health-check frequencies and observability retention.
 
-These choices may be tested and tuned during implementation as long as they do not violate the accepted architecture baseline.
+These choices may be tested and tuned during implementation as long as they do not violate the accepted architecture baseline or Runtime Constitution.

@@ -1,7 +1,7 @@
 # Atlas V5 Architecture Review Notes
 
 Date: 2026-09-05
-Status: consolidation pass complete; baseline awaiting owner review
+Status: consolidation pass complete; runtime guardrails added; baseline and constitution awaiting owner review
 
 This document records contradictions and drift found while consolidating the first V5 design pass into `15-pre-implementation-baseline.md`.
 
@@ -67,8 +67,12 @@ Earlier provider-selection text still described OpenAI as a recommendation pendi
 
 Final direction: OpenAI is accepted as the primary/reference provider. Anthropic is the first compatibility check. Provider choice remains replaceable and does not own Atlas continuity or semantics.
 
-## No unresolved architectural contradiction found
+## Post-consolidation red-team review
 
-After consolidation, the reviewed documents now agree on the major ownership, continuity, memory, workspace, authority, scheduling, interface, multimodality, provider, and implementation principles.
+Independent architecture reviews after commit `1425447` did not overturn the model-led direction, but they exposed runtime contracts that the baseline had left implicit: hard credential/configuration isolation, crash-safe consequential effects, schedule/run concurrency, untrusted-content boundaries, explicit memory-command completion, persistence topology, and durable owner-attention state.
 
-Remaining questions in `06-open-design-questions.md` are deliberately deferred implementation choices or review questions rather than competing architectural directions.
+Those findings are treated as advisory gap detection rather than implementation prescriptions. V5's response is the dedicated `17-runtime-constitution.md`, which states the required execution guarantees without restoring a runtime planner, mandatory Work objects, or a general confirmation state.
+
+The supporting architecture documents were reconciled to that constitution. The architecture is therefore still a review candidate rather than declared contradiction-free until the owner has reviewed the revised baseline and Runtime Constitution together.
+
+Remaining questions in `06-open-design-questions.md` are implementation choices or acceptance questions unless review identifies a genuine architectural conflict.

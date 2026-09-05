@@ -23,7 +23,7 @@ The runtime owns deterministic orchestration: context assembly, provider calls, 
 
 The runtime may contain substantial software, but it must not become a semantic planner competing with inference.
 
-**Runtime governs execution and reality, not thought.**
+**Runtime governs execution and reality, not thought.** Its non-negotiable execution conduct is defined separately in `17-runtime-constitution.md`.
 ## 3. Context and continuity
 
 Atlas owns continuity. The active provider may maintain conversational state as an optimization, but Atlas keeps the canonical temporary transcript and can reseat a model or provider without depending on hidden provider memory.
@@ -38,6 +38,8 @@ The live transcript is the scribe: it records what happened in order without dec
 
 A separate asynchronous memory processor interprets closed or aging transcripts. It may discard information, retain it temporarily, promote it to embedded long-term memory, or preserve it as canonical durable memory. The active model is not the normal writer to durable memory.
 
+Explicit owner instructions to remember, correct, or forget are durable commands with observable completion state and precedence over stale derived memory. Forgetting/correction must prevent queued or older derived representations from resurrecting superseded information.
+
 The durable memory substrate is PostgreSQL. Semantic retrieval uses pgvector; exact and lexical retrieval use PostgreSQL search and metadata. Retrieval is hybrid rather than vector-only.
 
 Large artifacts remain outside the database; PostgreSQL stores their metadata, provenance, relationships, hashes, and storage references. Embeddings are indexes over memory, not memory itself.
@@ -51,7 +53,7 @@ A workspace is Atlas's maintained field of action around current work. It can co
 Workspace labels such as software, documents, research, and operations are descriptive rather than rigid workflow classes. The model decides what resources it needs; the runtime preserves the situated state that emerges.
 Artifacts are first-class conversation/workspace objects. Images, documents, audio, generated files, and other binary content live in temporary or durable artifact storage; transcripts refer to them by artifact identity and metadata rather than embedding their bytes.
 
-The main interface may project useful workspace views such as recent or important mail, file browsing, document previews, research sources, generated artifacts, or a small runtime-health strip around the central chat.
+The main interface may project useful workspace views such as recent or important mail, file browsing, document previews, research sources, generated artifacts, a small runtime-health strip, or a compact Needs You view for blocked/uncertain work around the central chat.
 
 ## 6. Multimodality
 
@@ -67,16 +69,16 @@ The Environment Registry is the agent's compact map of enabled capabilities and 
 
 Capabilities are grouped semantically. The owner enables meaningful abilities; the model chooses the exact underlying tools and sequence. Large MCP catalogs should use progressive disclosure and clear Atlas-side descriptions rather than expose hundreds of ambiguous raw functions at once.
 
-Authority is primarily established by provisioning. If a capability is disabled, it is absent from the agent-visible environment and is not callable. If enabled, Atlas is authorised to use it within the real OS, credential, scope, database, and service boundaries that still apply.
+Authority is primarily established by owner enablement over provisioned capabilities. Atlas distinguishes provisioned, enabled, available, and usable-at-this-boundary state. Disabled capabilities are absent from the agent-visible environment and not callable through Atlas-controlled alternate paths.
 
-There is no general `CONFIRM` authority state in V5. Runtime enforcement remains as defence in depth and reports exact technical failures back to inference.
+Enabled capability does not override hard runtime containment. Secrets, protected configuration, privileged internal state, and sensitive runtime interfaces remain inaccessible to ordinary model-facing tools. There is no general `CONFIRM` authority state in V5; runtime enforcement reports exact technical failures back to inference.
 
 For Atlas's own durable memory, the active model may have broad read access but is not the normal writer. Its natural write surface is the transcript; the asynchronous memory processor owns durable memory mutation.
 ## 8. Schedules and passive automation
 
 A schedule is persisted intent bound to a deterministic trigger or execution window. Triggers may be one-off, recurring, time-windowed, or event-driven.
 
-The runtime determines when a trigger is due and wakes Atlas with the stored intent. The model interprets that intent and decides how to achieve it using the capabilities available at execution time.
+The runtime determines when a trigger is due and creates a distinct run with the stored intent. The model interprets that intent and decides how to achieve it using the capabilities available at execution time. Current authority applies at execution time; overlap, cancellation, missed/duplicate trigger handling, and shared-resource mutation are deterministic runtime concerns.
 
 Operational details such as indexing windows, batch sizes, resource limits, or preferred run periods remain configurable rather than architectural constants.
 
@@ -92,7 +94,9 @@ Software workspaces should use existing conventions where useful. `AGENTS.md` is
 
 Implementation is heliocentric rather than use-case vertical-slice driven.
 
-The centre is a working model with a usable multimodal interface and a thin runtime. The first orbit is the selected model/provider's native capabilities. The next orbit is MCP, connected services, and useful local software or independent utilities. Runtime capability grows in parallel with every orbit.
+The centre is a working model with a usable multimodal interface and the minimum runtime execution spine required for identity, transcript/artifact continuity, Environment Registry state, secret isolation, capability enablement, durable action/effect truth, recovery, and owner-visible failure state.
+
+The first orbit is the selected model/provider's native capabilities. The next orbit is MCP, connected services, and useful local software or independent utilities. Runtime capability grows in parallel with every orbit. Consequential capabilities are enabled only when the runtime can preserve the constitution's execution guarantees.
 
 Memory, workspace state, scheduling, Control, and diagnostics mature around the functioning agent. They support the centre; they do not become competing centres of decision-making.
 
@@ -110,7 +114,10 @@ The following are baseline decisions, not tuning knobs:
 - multimodal artifacts are first-class and referenced from transcripts;
 - disabled capabilities are absent from the agent-visible environment;
 - authority is enforced at real effect boundaries without a general confirmation loop;
-- schedules wake intent rather than encode workflows;
+- secrets and protected runtime state remain outside ordinary model-facing tools;
+- consequential effects have durable identity, exact evidence, and crash-safe recovery semantics;
+- untrusted external content is data rather than runtime/owner authority;
+- schedules wake intent rather than encode workflows and each wake has distinct run identity;
 - workspaces preserve the field of action rather than impose task classes;
 - implementation grows heliocentrically around the model.
 
@@ -122,6 +129,6 @@ They should be selected experimentally during implementation and remain configur
 
 ## 13. Implementation gate
 
-No runtime implementation should begin until this baseline has been reviewed and accepted as the intended V5 architecture.
+No runtime implementation should begin until this baseline and `17-runtime-constitution.md` have been reviewed and accepted together.
 
-After acceptance, the implementation plan should translate these decisions into a heliocentric build sequence without reopening settled semantics through code-first experimentation.
+After acceptance, the implementation plan should translate these decisions into a heliocentric build sequence without reopening settled semantics through code-first experimentation. The constitution supplies runtime guardrails; it does not add a second semantic planner.

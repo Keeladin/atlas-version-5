@@ -33,11 +33,11 @@ The cycle repeats as needed:
 
 Provider turn limits, continuation APIs, or background modes are transport concerns rather than Atlas task semantics. Atlas owns enough transcript/workspace state to reseat another inference when required.
 
-The model decides completion. Deterministic checks such as hashes, diffs, IDs, status codes, or query results may be exposed as facts when exact verification is useful.
+The model decides semantic completion. For consequential effects, runtime action/evidence state establishes whether the effect actually occurred; a model completion statement is not an execution receipt. Deterministic checks such as hashes, diffs, IDs, status codes, or query results may be exposed as exact facts.
 
 ## 6. Transcript
 
-Owner messages, Atlas responses, artifact references, and relevant tool observations are appended to the live transcript. The transcript records the interaction; it does not perform memory classification.
+Owner messages, Atlas responses, artifact references, tool requests, and all tool observations are appended to the live transcript. Large or binary observations may be represented by stable artifact references. The transcript records the interaction; it does not decide relevance or perform memory classification.
 
 When the transcript later closes, asynchronous memory processing occurs outside this cycle.
 
@@ -48,4 +48,4 @@ A useful architectural test is:
 - if the question requires meaning, judgment, relevance, adaptation, or sufficiency, it belongs to inference;
 - if it requires exact execution, iteration, persistence, triggering, validation, or enforcement, it belongs to runtime/software.
 
-This boundary is more important than the mechanics of the loop itself.
+This boundary is more important than the mechanics of the loop itself. Runtime execution guarantees, crash recovery, effect truth, trust boundaries, and concurrency are governed by `17-runtime-constitution.md`.

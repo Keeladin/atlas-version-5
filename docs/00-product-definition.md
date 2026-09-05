@@ -8,7 +8,7 @@ The model is the agent. Atlas is the environment around it.
 
 ## Owner experience
 
-Normal use happens on one main Atlas page centred on multimodal chat. The owner can type, attach images/documents and other supported artifacts, receive generated artifacts, and see useful workspace projections such as mail, files, previews, research, or runtime health around the conversation.
+Normal use happens on one main Atlas page centred on multimodal chat. The owner can type, attach images/documents and other supported artifacts, receive generated artifacts, and see useful workspace projections such as mail, files, previews, research, runtime health, or a compact Needs You view for blocked/uncertain work around the conversation.
 
 A separate Control page exists for deliberate configuration, observability, diagnostics, and capability enablement. Ordinary work should not require navigating runtime subsystems.
 

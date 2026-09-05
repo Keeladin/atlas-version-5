@@ -2,7 +2,7 @@
 
 Atlas V5 is a clean architectural restart of Atlas.
 
-The repository remains documentation-only until the pre-implementation architecture baseline is reviewed and accepted. No runtime, UI, database, provider adapter, tool host, or migration code should be added before that gate.
+The repository remains documentation-only until the pre-implementation architecture baseline and Runtime Constitution are reviewed and accepted. No runtime, UI, database, provider adapter, tool host, or migration code should be added before that gate.
 
 ## Product direction
 
@@ -15,7 +15,7 @@ Normal use centres on one multimodal Atlas/chat page. A separate Control page ex
 ## Core shorthand
 
 - The model is the cognitive centre.
-- Runtime governs execution and reality, not thought.
+- Runtime governs execution and reality, not thought, and is bound by a separate Runtime Constitution.
 - The Environment Registry is a map consulted on demand.
 - The transcript records experience; the memory processor interprets it.
 - Workspaces preserve the current field of action.
@@ -24,6 +24,6 @@ Normal use centres on one multimodal Atlas/chat page. A separate Control page ex
 - Existing provider abilities, MCPs, services, and local software are preferred over Atlas reimplementation.
 - Implementation grows heliocentrically from the working model and interface.
 
-Review `docs/15-pre-implementation-baseline.md` first. The consolidation contradictions and their resolutions are recorded in `docs/16-architecture-review-notes.md`.
+Review `docs/15-pre-implementation-baseline.md` together with `docs/17-runtime-constitution.md`. The consolidation history and later runtime-guardrail review are recorded in `docs/16-architecture-review-notes.md`.
 
 Status: **architecture review candidate; no implementation yet**.

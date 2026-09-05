@@ -20,7 +20,7 @@ Entries carry compact semantic metadata and references. Detailed schemas, filesy
 
 ## 4. Enabled projection
 
-Control may know about configured or installed capabilities that are disabled. The agent-facing registry exposes only capabilities that the owner has enabled for use.
+Control may know about provisioned capabilities that are disabled. The agent-facing registry exposes only capabilities that the owner has enabled for use. Provisioned, enabled, available, and usable-at-this-boundary are distinct runtime facts.
 
 Disabled capabilities are not callable and need not occupy model attention. Enabled but temporarily unhealthy capabilities may remain visible with precise state such as `authentication_required` or `unavailable` so the model can reason about a real failure.
 ## 5. Capability grouping and tool detail
@@ -29,7 +29,7 @@ Raw tool catalogs are mechanisms, not the owner-facing model. Atlas groups them 
 
 The owner may enable capabilities such as Mail read, Mail send, Drive read, or Drive modify without choosing between raw functions such as `search_message`, `get_message`, and `get_thread`.
 
-The model sees the meaningful capability and may load the underlying tool definitions only when required. Atlas may override vague upstream tool descriptions with clearer local metadata while preserving the original schema and transport.
+The model sees the meaningful capability and may load the underlying tool definitions only when required. Atlas may override vague upstream tool descriptions with clearer local metadata while preserving the original schema and transport. Capability families do not become alternate executable aliases.
 
 ## 6. Workspace-local instructions
 
@@ -39,7 +39,7 @@ The registry tells the model that a workspace exists and how to enter it. Once a
 
 ## 7. Runtime ownership
 
-Atlas updates the registry from deterministic reality: configured providers, MCP connections, credentials, installed software, filesystem/workspace registration, runtime health, and owner enablement.
+Atlas updates the registry from deterministic reality: configured providers, MCP connections, credential health (never secret values), installed software, filesystem/workspace registration, runtime health, and owner enablement.
 
 The model does not maintain the registry. It consults the registry and decides what capabilities or resources are useful.
 

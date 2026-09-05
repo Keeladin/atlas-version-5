@@ -25,10 +25,10 @@ Raw functions should be grouped into capabilities humans and models can understa
 
 The owner enables the meaningful capability rather than choosing which raw function Atlas must use. The model may choose any enabled underlying operation or combination that achieves the objective.
 
-Atlas may replace vague upstream descriptions with clearer local descriptions while retaining the authoritative upstream schemas underneath.
+Atlas may replace vague upstream descriptions with clearer local descriptions while retaining the authoritative upstream schemas underneath. Capability families are descriptive/control metadata, not a second executable tool protocol; the actual operation retains its real schema, transport, provenance, and effect identity.
 ## Enabled projection
 
-Control may know that a capability is installed or configured while disabled. The agent-facing Environment Registry exposes only capabilities the owner has enabled.
+Control may know that a capability is provisioned while disabled. The agent-facing Environment Registry exposes only capabilities the owner has enabled. Availability is tracked separately from enablement, and hard runtime boundaries remain authoritative at execution.
 
 Enabled but temporarily unhealthy capabilities may remain visible with precise availability state so the model can reason about authentication or service failure. Disabled capabilities are absent and not callable.
 

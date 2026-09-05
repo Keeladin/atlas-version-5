@@ -4,7 +4,7 @@
 
 The initial architecture discovery list has been completed. The project is now at the **pre-implementation architecture review** gate.
 
-The consolidated review target is `15-pre-implementation-baseline.md`. Implementation remains prohibited until that baseline is accepted.
+The consolidated review targets are `15-pre-implementation-baseline.md` and `17-runtime-constitution.md`. Implementation remains prohibited until both are accepted.
 
 ## Completed design areas
 
@@ -30,6 +30,6 @@ Operational values such as TTLs, chunk sizes, embedding choice, ranking weights,
 
 Implementation planning should translate the accepted architecture into a heliocentric build sequence rather than a use-case vertical slice.
 
-The centre is a working model and direct multimodal interface. The first orbit is the primary provider's native capabilities. The next orbit is MCP, connected services, and useful local software. Runtime evolves in parallel as each capability needs execution, persistence, authority, or observability support.
+The centre is a working model and direct multimodal interface, with the minimum runtime execution spine required to preserve identity, transcript/artifact continuity, secrets, capability enablement, effect truth/recovery, and owner-visible failure state. The first orbit is the primary provider's native capabilities. The next orbit is MCP, connected services, and useful local software. Runtime evolves in parallel as each capability needs execution, persistence, authority, or observability support.
 
 Validation is derived from the capabilities actually present. Test scenarios prove architecture; they do not define Atlas's product semantics.

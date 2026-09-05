@@ -37,7 +37,9 @@ Atlas resolves the relevant workspace/path first, then supplies only applicable 
 
 Workspace state belongs to Atlas, not to the model provider. A model/provider change should inherit the same relevant working environment without requiring expensive rediscovery.
 
-The workspace can remain warm while useful and be retired when its situational state no longer matters. Retirement does not delete durable artifacts or memory.
+A workspace has stable identity when state must survive beyond one inference. Foreground and scheduled runs may bind to the same workspace while retaining separate run/transcript identity. Runtime coordinates conflicting mutations to shared resources; workspace identity does not become a planner or mandatory Work object.
+
+The workspace can remain warm while useful and be retired when its situational state no longer matters. Retirement does not delete durable artifacts, effect records, or memory.
 
 ## Owner visibility
 

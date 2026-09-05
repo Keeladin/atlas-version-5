@@ -48,7 +48,7 @@ The portable core owns:
 - credentials/authority boundaries;
 - user-facing product semantics.
 
-Provider adapters advertise their native modalities, tools, reasoning controls, context behavior, and other accelerators. The active model may exploit those strengths without making them canonical Atlas state.
+Provider adapters advertise their native modalities, tools, reasoning controls, context behavior, and other accelerators. The active model may exploit those strengths without making them canonical Atlas state. A provider-native consequential effect is exposed only if it can satisfy the same Atlas enablement, isolation, durable action/evidence, and recovery guarantees as an Atlas-owned execution path.
 ## 6. Re-evaluation
 
 Provider capabilities change quickly. Atlas should re-survey them periodically and can change its preferred provider without changing the architecture.

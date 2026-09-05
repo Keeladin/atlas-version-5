@@ -2,9 +2,9 @@
 
 ## Authority principle
 
-Authority is established primarily by provisioning and enforced at the real effect boundary.
+Authority is established primarily by owner enablement and enforced at the real effect boundary.
 
-If the owner does not want Atlas to use a capability, that capability should be disabled and absent from the agent-visible Environment Registry. If it is enabled, Atlas may use it within the actual technical permissions that still apply.
+Atlas distinguishes provisioned, enabled, available, and usable-at-this-boundary state. If the owner does not want Atlas to use a capability, that capability is disabled and absent from the agent-visible Environment Registry. Enabled capability does not override hard runtime containment or protected internal boundaries.
 
 V5 has no general `CONFIRM` authority state. Repeated confirmation prompts would make the owner part of the runtime loop and recreate machinery the architecture is deliberately removing.
 
@@ -18,16 +18,18 @@ An enabled capability may still be temporarily unavailable. Authentication failu
 
 ## Local and external boundaries
 
-Local authority should rely on the Atlas service identity, filesystem permissions, executable/service/socket access, database roles, and container/sandbox boundaries where useful.
+Local authority should rely on service/process identity, filesystem containment, executable/service/socket access, database roles, and appropriate container/sandbox boundaries. Runtime secrets, protected configuration, privileged internal state, and sensitive control interfaces remain outside ordinary model-facing tools even when broad shell/filesystem/code capabilities are enabled.
 
-External systems retain their OAuth scopes, API keys, account roles, and service policies. Atlas should not duplicate these with a second elaborate policy engine.
+External systems retain their OAuth scopes, API keys, account roles, and service policies. Atlas should not duplicate these with a second semantic policy engine, but runtime must broker credentials and prevent alternate Atlas-controlled paths from bypassing disabled capabilities.
 ## Model/runtime boundary
 
 The model decides whether an action is useful. Runtime answers only deterministic authority questions such as whether the tool is enabled, the path is writable, the database role permits the query, or the credential contains the required scope.
 
 A denial or failure is returned to inference as a concrete technical fact. The model decides how to adapt.
 
-For Atlas's own durable memory, the active model is normally read-only. New durable memory is derived from the transcript by the asynchronous memory processor rather than arbitrary model-generated database writes.
+For Atlas's own durable memory, the active model is normally read-only. New durable memory is derived from the transcript by the asynchronous memory processor rather than arbitrary model-generated database writes. Explicit owner remember/correct/forget instructions have a durable completion state and precedence over stale derived memory.
+
+Consequential effects use durable action identity, exact evidence, and recovery rules defined by `17-runtime-constitution.md`; the transcript alone is not the source of effect truth.
 
 ## Control surface
 
@@ -48,4 +50,6 @@ The normal task path should not require visiting Control.
 
 ## Explainability target
 
-When something fails, Control should make it possible to determine which model was in the seat, what context/workspace was relevant, what capability/tool was attempted, which boundary handled it, and what exact result came back.
+When something fails, Control should make it possible to determine which model was in the seat, what context/workspace was relevant, what capability/tool was attempted, which boundary handled it, what durable action/run state exists, and what exact result came back.
+
+The runtime's non-negotiable execution rules are defined in `17-runtime-constitution.md`.

@@ -6,7 +6,7 @@ This document defines how Atlas moves information from live conversation into re
 
 Conversation is not automatically permanent memory.
 
-The live transcript acts as a scribe. It records what was said and what happened, including references to artifacts and relevant tool observations, without interpreting those events into durable memory during active work.
+The live transcript acts as a scribe. It records what was said and what happened, including tool requests, all tool observations, and references to artifacts, without interpreting those events into durable memory during active work.
 
 When a transcript closes, Atlas creates a compact context capsule and retains the transcript temporarily in indexed short-term memory. A separate asynchronous memory processor later decides what deserves promotion, extension, correction, merge, or discard.
 
@@ -30,6 +30,8 @@ Closing a transcript removes it from the immediate working set; it does not imme
 ## 4. Context capsule
 
 The capsule records only what a future model needs to regain orientation: current topics, decisions, unresolved matters, relevant workspace/resources, important entities, and any clear continuation point.
+
+A capsule is a derived, versioned summary with provenance back to its source transcript. It is replaceable orientation material rather than canonical owner memory, even when a model helps write the narrative summary.
 
 A new transcript can use the previous capsule plus a small exact tail of recent turns when verbatim continuity matters. The full prior transcript remains searchable while it is retained.
 
@@ -65,7 +67,7 @@ It may:
 - merge or supersede an existing durable memory;
 - retain provenance without retaining all raw conversational detail.
 
-Explicit owner requests to remember something are strong retention signals but still enter through the transcript rather than direct model database writes.
+Explicit owner requests to remember, correct, or forget still enter through the transcript rather than direct model database writes, but runtime records them as durable memory commands with pending/applied/failed state. Corrections and forgetting take precedence over queued or stale derived material.
 
 ## 8. Promotion reuse
 
@@ -75,14 +77,16 @@ Existing chunking, timestamps, provenance, lexical indexes, embeddings, and enti
 
 Canonical source content stays separable from derived indexes so indexes can be rebuilt without rewriting history.
 
-## 9. Retrieval order
+## 9. Retrieval order and authority
 
-Normal recall prefers the cheapest sufficient source:
+Retrieval is constrained before relevance ranking by explicit owner corrections/forgetting, supersession/tombstones, source authority, and freshness. A semantically strong older match must not override a newer canonical correction or a live authoritative source.
 
-1. current model-visible transcript/context;
+Within the set of still-valid sources, normal recall prefers the cheapest sufficient path:
+
+1. current model-visible transcript/context when it is not known to be stale;
 2. indexed short-term capsules and transcript chunks;
 3. embedded long-term memory;
-4. canonical durable records where authoritative state exists;
-5. external authoritative systems when the question is about their live state.
+4. canonical durable records where authoritative owner state exists;
+5. external authoritative systems whenever the question requires their current state.
 
-This preserves continuity without making every conversation permanent or turning memory housekeeping into part of the active agent cycle.
+This preserves continuity without making every conversation permanent or turning memory housekeeping into part of the active agent cycle. Memory mutation/recovery guarantees are further constrained by `17-runtime-constitution.md`.

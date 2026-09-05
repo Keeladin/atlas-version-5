@@ -15,7 +15,7 @@ The architecture should support simple forms such as:
 - one-off date/time;
 - recurring time/date rule;
 - execution window;
-- event-driven trigger where a future condition or event creates the wake-up.
+- event-driven trigger where a deterministic future event creates the wake-up; semantic conditions are evaluated by inference after a wake, not by the scheduler itself.
 
 The exact representation is an implementation choice.
 
@@ -29,4 +29,8 @@ A heavy indexing job may instead be allowed only within a configured overnight w
 
 Schedules remain passive. The normal user creates them through conversation; Control may list, enable/disable, edit, run, inspect, or delete them when needed.
 
-Runtime owns due-time/event detection and persistence. Model inference owns semantic execution.
+Each firing receives its own durable run identity and conversational/execution context. Current capability enablement, credentials, containment, and effect rules apply at execution time.
+
+Runtime owns due-time/event detection, duplicate/missed-trigger handling, cancellation, overlap policy, and persistence. Model inference owns semantic execution. Conflicting foreground/background mutations must be coordinated deterministically rather than allowed to race silently.
+
+Blocked, failed, uncertain, or waiting-for-owner runs remain observable after the model turn ends. The runtime rules are defined in `17-runtime-constitution.md`.

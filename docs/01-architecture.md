@@ -14,7 +14,7 @@ The model owns interpretation, relevance, workflow, tool choice, adaptation, cla
 
 The runtime owns deterministic context assembly, provider calls, tool execution, persistence, schedule triggering, exact checks, permission enforcement, health state, and faithful result reporting.
 
-A mechanical loop exists: prepare context, call model, execute requested actions, return results, continue as needed. The loop does not predeclare the workflow.
+A mechanical loop exists: prepare context, call model, execute requested actions, return results, continue as needed. The loop does not predeclare the workflow. Runtime conduct is constrained by `17-runtime-constitution.md`, which defines hard isolation, effect truth/recovery, trust, concurrency, and persistence guarantees without adding semantic planning.
 
 ## 3. Seat bootstrap and Environment Registry
 
@@ -27,9 +27,9 @@ The model consults that map on demand. Detailed schemas, files, mail, database r
 
 Capability descriptions are semantic and grouped. The owner enables meaningful abilities; the model chooses the exact underlying tools and sequence. Large raw catalogs use progressive disclosure rather than occupying context wholesale.
 
-Disabled capabilities are absent from the agent-visible environment. Enabled capabilities remain subject to real OS permissions, credential scopes, database roles, service policy, and runtime availability.
+Disabled capabilities are absent from the agent-visible environment. Enabled capabilities remain subject to hard runtime containment, real OS permissions, credential scopes, database roles, service policy, and runtime availability. Provisioned, enabled, available, and usable-at-this-boundary are separate facts.
 
-V5 has no general confirmation state. Authority is established primarily by provisioning and enforced mechanically at the effect boundary.
+V5 has no general confirmation state. Owner enablement is the discretionary capability gate; secrets and protected runtime state remain outside ordinary model-facing tools regardless of enablement.
 
 ## 5. Workspaces and artifacts
 
@@ -45,7 +45,7 @@ Software workspaces may use applicable `AGENTS.md` files as local working instru
 
 Atlas owns the canonical temporary transcript. Provider conversation state is an optimization, not the source of continuity.
 
-The transcript records experience without interpreting it. Closed transcripts produce context capsules and enter indexed short-term memory. A separate asynchronous memory processor decides what is discarded, retained, promoted, merged, or superseded.
+The transcript records experience without interpreting it. Closed transcripts produce context capsules and enter indexed short-term memory. A separate asynchronous memory processor decides what is discarded, retained, promoted, merged, or superseded. Explicit remember/correct/forget instructions have durable command state and precedence over stale derived memory.
 Durable memory uses PostgreSQL as the canonical substrate, with pgvector for semantic retrieval and PostgreSQL lexical/full-text plus metadata search for exact retrieval. Large artifacts remain in file/object storage with database metadata.
 
 The active model is not the normal writer to durable memory. Its natural write surface is the transcript; the memory processor performs durable memory mutation.
@@ -64,8 +64,8 @@ Control may expose providers/models, capability enablement, connections/credenti
 
 ## 9. Implementation posture
 
-Implementation is heliocentric. Begin with a working model and direct multimodal interaction, support the selected provider's immediate/native capabilities, then expand outward through MCP, connected services, and local software while the runtime evolves in parallel.
+Implementation is heliocentric. Begin with a working model and direct multimodal interaction together with the minimum runtime execution spine needed for identity, transcript/artifact continuity, secret isolation, capability enablement, durable effect truth/recovery, and observable failure state. Then support the selected provider's immediate/native capabilities and expand outward through MCP, connected services, and local software while the runtime evolves in parallel.
 
 No hard-coded workflow should be introduced merely to make one example task pass. Capability-derived validation follows architecture; it does not define it.
 
-For the consolidated review baseline, see `15-pre-implementation-baseline.md`.
+For the consolidated review baseline, see `15-pre-implementation-baseline.md`. For runtime invariants, see `17-runtime-constitution.md`.

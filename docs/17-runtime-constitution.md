@@ -1,0 +1,151 @@
+# Atlas V5 Runtime Constitution
+
+Status: **Draft for owner review — no implementation yet**
+Date: 2026-09-05
+
+## 1. Purpose
+
+This constitution defines the non-negotiable conduct of the Atlas V5 runtime. It does not define workflows and it does not compete with the model for semantic control.
+
+The architecture says what Atlas is. This constitution says what must remain true while the runtime executes, persists, schedules, exposes tools, and survives failure.
+
+If an implementation violates this document in order to make a feature easier, the implementation is wrong until the constitution is deliberately amended.
+
+## 2. The runtime does not think for the model
+
+Meaning, relevance, workflow, tool choice, adaptation, sufficiency, clarification, and semantic completion belong to inference.
+
+Runtime may make deterministic decisions from explicit state: whether a trigger is due, a capability is enabled, a credential is valid, a path is contained, a query is read-only, an action already succeeded, or a timeout elapsed.
+
+Runtime must not infer the owner's intent, reinterpret tool results into workflow steps, or introduce a hidden planner around the model.
+
+**Runtime governs execution and reality, not thought.**
+## 3. Capability state and hard boundaries
+
+Atlas distinguishes four facts: a capability may be **provisioned**, **enabled**, **available**, and **usable at this exact effect boundary**.
+
+The owner-facing discretionary control is ON/OFF enablement. Disabled capabilities are absent from the agent-visible environment and must not be callable through another Atlas-controlled path.
+
+Enablement never overrides hard runtime boundaries. Secrets, runtime authority/configuration, protected internal state, sensitive paths, privileged control sockets, and similar security-critical resources remain inaccessible to ordinary model-facing tools.
+
+Alternative execution paths must preserve the same boundary. Enabling shell, filesystem, code execution, or another broad tool must not expose credentials or privileged internal interfaces that allow a disabled capability to be reconstructed indirectly.
+
+## 4. Secrets remain runtime property
+
+Credentials and secret material must not be placed in model context, transcripts, ordinary artifacts, general tool output, shell environments, or model-readable database views.
+
+Where a tool needs a credential, runtime should broker only the scoped authority needed for that operation and retain custody of the underlying secret.
+
+Credential isolation is a hard execution property, not an owner-tunable capability switch.
+## 5. Consequential effects have durable execution truth
+
+Before dispatching a consequential effect, runtime creates a durable action identity sufficient to distinguish that effect from a retry or duplicate.
+
+The action record must preserve its exact execution state and evidence. At minimum the runtime must be able to distinguish not-started/prepared, executing, succeeded, failed, cancelled, and **uncertain** outcomes.
+
+Where supported, runtime should use idempotency keys or equivalent effect identities. After a crash or lost response, an uncertain effect is reconciled before replay; it is never blindly repeated merely because the transcript lacks a success line.
+
+The model decides whether the owner's objective is semantically satisfied. Runtime establishes whether a consequential effect actually happened.
+
+Durable effect evidence must outlive temporary transcript retention.
+
+## 6. The transcript is a faithful scribe
+
+The transcript records owner/model messages, artifact references, tool requests, and tool observations in order. Runtime does not decide which observations are semantically relevant while recording them.
+
+Large or binary observations may be stored as artifacts with stable references in the transcript.
+
+The model-visible context is a bounded projection of the transcript; the canonical transcript and the context selected for an inference are different things.
+## 7. External content is data, not authority
+
+Mail, web pages, documents, repositories, retrieved memory, MCP results, and other external content carry provenance and are treated as untrusted data unless Atlas has an explicit reason to treat a particular source as workspace instruction.
+
+Content encountered through a tool cannot redefine Atlas identity, enable capabilities, change runtime authority, disclose secrets, alter protected configuration, or override higher-level owner/runtime instructions merely because it contains imperative language.
+
+Trust/provenance metadata should survive into tool results, artifacts, transcript references, and memory derived from them where practical.
+
+## 8. Runs have identity and concurrency is explicit
+
+Every autonomous or scheduled wake has its own durable run identity and conversational/execution context. A scheduled run does not silently enter whichever foreground chat happens to be active.
+
+Foreground and background runs may share durable resources, but runtime must make conflicting mutation explicit through serialization, leases, version checks, resource locks, or another deterministic coordination mechanism appropriate to the resource.
+
+Duplicate triggers, missed triggers, cancellation, restart catch-up, and overlap behavior must be explicit and observable rather than accidental consequences of process timing.
+
+A schedule never receives privileged authority. Current capability enablement, credentials, containment, and effect rules are evaluated when the scheduled work executes.
+## 9. Memory commands have precedence and completion state
+
+The transcript remains the normal write surface of the active model, and background memory processing remains separate from conversational inference. Where memory classification requires semantic judgment, the memory processor may use its own model inference; deterministic runtime owns queueing, persistence, precedence, and enforcement rather than performing that semantic judgment itself.
+
+Explicit owner instructions to remember, correct, or forget something are not merely hints. Runtime records them as durable memory commands with a visible lifecycle such as pending, applied, or failed.
+
+Owner corrections and forgetting outrank stale derived memory. Tombstones/supersession state must prevent an older transcript, queued processor job, capsule, embedding, or short-term index from recreating memory that has been explicitly corrected or forgotten.
+
+Derived memory may be created asynchronously, but provenance, supersession, deletion, and canonical owner instructions constrain what retrieval is allowed to return as current truth.
+
+Live external systems remain authoritative for facts whose meaning is inherently current, such as latest mail or present calendar state.
+
+## 10. Provider-native tools may not bypass Atlas guarantees
+
+Provider-native perception and computation may be used freely when useful: reasoning, vision, document understanding, image generation, research, sandboxed computation, and similar abilities.
+
+Any provider-native or external tool that performs a consequential effect must still satisfy Atlas's capability enablement, hard-boundary, action-identity, evidence, and recovery contracts.
+
+If Atlas cannot enforce or attest those guarantees for a provider-hosted effect, that effect must not be exposed as an Atlas-controlled capability.
+## 11. Persistence classes remain separated
+
+Canonical structured state, large artifacts, and secrets are different persistence classes and must not be collapsed merely for implementation convenience.
+
+The intended V5 topology is:
+
+- PostgreSQL for canonical structured runtime/memory metadata and searchable durable state;
+- artifact/file storage for large binary or rendered content;
+- protected encrypted secret storage outside model-readable/queryable data surfaces.
+
+Persistent runtime state must live outside the source checkout and have a defined backup/recovery strategy before it is treated as durable.
+
+Operations that require cross-record consistency, especially explicit forgetting/redaction and effect-state transitions, must define their transactional boundary rather than rely on eventual coincidence.
+
+## 12. Failure and owner attention are durable facts
+
+Blocked, failed, uncertain, waiting-for-owner, and authentication-required states must not disappear because a provider turn ended or a transcript rolled over.
+
+Runtime records these states and makes them observable through Control and, where owner action is useful, through a small owner-attention projection on the main Atlas surface.
+
+Runtime reports failures in the vocabulary of the boundary that produced them and does not hide precise technical truth behind generic semantic states.
+## 13. Capability families are descriptive, not a second tool protocol
+
+Capability families such as Mail Read, Mail Send, Drive Read, or Filesystem are useful for Control, enablement, discovery, and progressive disclosure.
+
+They do not replace the executable identity of the underlying provider/MCP/local operation. Runtime may improve human/model descriptions and grouping, but must preserve the real schema, transport, provenance, and effect identity beneath the group.
+
+The model may choose among the enabled underlying operations without the owner having to understand their plumbing.
+
+## 14. Provider state is never canonical runtime state
+
+Provider conversation state, background jobs, hosted tool sessions, caches, or model-specific continuation features may be used as accelerators.
+
+Atlas must retain enough of its own transcript, action, workspace, artifact, schedule, registry, and memory state to recover or reseat inference without treating provider state as canonical truth.
+
+Changing model/provider must not silently change runtime authority or erase in-flight execution truth.
+
+## 15. Minimum execution spine before consequential tools
+
+Heliocentric implementation begins with the model and direct multimodal interaction, but consequential external actions must not be enabled until the runtime has the minimum spine needed to govern them.
+
+That spine includes identity, transcript/artifact identity, Environment Registry and enablement state, hard secret/configuration isolation, durable run/action identity, exact effect evidence/recovery, and observable failure/owner-attention state.
+
+The spine grows in parallel with capabilities. It is not a workflow engine and does not decide what the model should do.
+## 16. What this constitution does not define
+
+This document deliberately does not freeze database table shapes, retention periods, chunk sizes, lock implementations, sandbox technology, queue technology, provider SDK details, or UI geometry.
+
+Those are implementation choices so long as they preserve these invariants.
+
+It also does not restore V4's obligation planner, mandatory Work objects, confirmation state, or runtime-authored semantic workflows.
+
+## 17. Review rule
+
+Before implementation begins, the owner should review this constitution together with `15-pre-implementation-baseline.md`.
+
+During implementation, any proposed shortcut that weakens one of these guarantees must be surfaced as an explicit design change rather than introduced silently in code.
