@@ -311,6 +311,50 @@ a { color: inherit; }
   backdrop-filter: blur(14px);
 }
 
+.composer-file-input { display: none; }
+
+.composer-entry {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 1px 6px 3px;
+}
+
+.attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 260px;
+  padding: 3px 6px 3px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: 999px;
+  background: var(--bg-muted);
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.attachment-chip > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
 .composer textarea {
   min-height: 38px;
   max-height: 120px;

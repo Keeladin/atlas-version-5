@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import './App.css'
-import { decideAction, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getPendingActions, getRecentActions, streamMessage, uploadLocalFile, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageListing, type PendingAction, type RecentAction, type Turn } from './api'
+import { decideAction, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getPendingActions, getRecentActions, streamMessage, uploadLocalFile, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type PendingAction, type RecentAction, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -35,6 +35,7 @@ function turnText(turn: Turn): string {
     .filter((block): block is { type: 'text'; text: string } => block.type === 'text' && typeof (block as { text?: unknown }).text === 'string')
     .map((block) => block.text)
     .join('\n')
+    .replace(/\n\n\[Attached local workspace files?: .*?\]$/s, '')
 }
 
 function formatBytes(value: number | null): string {
@@ -73,6 +74,9 @@ function AtlasPage({ health }: { health: Health | null }) {
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const composerFileInputRef = useRef<HTMLInputElement | null>(null)
+  const [composerAttachments, setComposerAttachments] = useState<LocalStorageEntry[]>([])
+  const [composerUploading, setComposerUploading] = useState(false)
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -142,10 +146,32 @@ function AtlasPage({ health }: { health: Health | null }) {
     }
   }
 
+  async function addComposerFiles(files: FileList | File[]) {
+    const items = Array.from(files)
+    if (!items.length || composerUploading || sending) return
+    setComposerUploading(true)
+    setError(null)
+    try {
+      const uploaded: LocalStorageEntry[] = []
+      for (const file of items) uploaded.push(await uploadLocalFile('Imports', file))
+      setComposerAttachments((current) => [...current, ...uploaded])
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setComposerUploading(false)
+    }
+  }
+
   async function sendMessage() {
     const text = draft.trim()
-    if (!text || sending) return
+    if ((!text && composerAttachments.length === 0) || sending || composerUploading) return
+    const attachments = [...composerAttachments]
+    const attachmentContext = attachments.length
+      ? `\n\n[Attached local workspace file${attachments.length === 1 ? '' : 's'}: ${attachments.map((file) => file.path).join(', ')}. Acquire and inspect ${attachments.length === 1 ? 'this resource' : 'these resources'} when relevant to my request.]`
+      : ''
+    const requestText = `${text || 'Please inspect the attached file.'}${attachmentContext}`
     setDraft('')
+    setComposerAttachments([])
     setError(null)
     setSending(true)
     setStreamingText('')
@@ -153,12 +179,12 @@ function AtlasPage({ health }: { health: Health | null }) {
       id: `local-${Date.now()}`,
       transcript_id: 'local',
       actor: 'owner',
-      blocks: [{ type: 'text', text }],
+      blocks: [{ type: 'text', text: requestText }],
       created_at: new Date().toISOString(),
     }
     setTurns((current) => [...current, optimistic])
     try {
-      await streamMessage(text, (delta) => setStreamingText((current) => current + delta))
+      await streamMessage(requestText, (delta) => setStreamingText((current) => current + delta))
       const conversation = await getConversation()
       setTurns(conversation.turns)
       setConversationContext(await getConversationContext().catch(() => null))
@@ -290,10 +316,14 @@ function AtlasPage({ health }: { health: Health | null }) {
                     </div>
                   )}
                 </div>
-                <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage() }}>
-                  <button className="attach-button" type="button" aria-label="Attach artifact" disabled>+</button>
-                  <textarea placeholder={providerOk ? 'Talk to Atlas…' : 'Model is not configured…'} rows={1} value={draft} disabled={!providerOk || sending} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} />
-                  <button className="send-button" type="submit" disabled={!providerOk || sending || !draft.trim()}>{sending ? 'Thinking…' : 'Send'}</button>
+                <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage() }} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); void addComposerFiles(event.dataTransfer.files) } }}>
+                  <input ref={composerFileInputRef} className="composer-file-input" type="file" multiple onChange={(event) => { if (event.target.files) void addComposerFiles(event.target.files); event.currentTarget.value = '' }} />
+                  <button className="attach-button" type="button" aria-label="Add files" title="Add files" disabled={!providerOk || sending || composerUploading} onClick={() => composerFileInputRef.current?.click()}>+</button>
+                  <div className="composer-entry">
+                    {composerAttachments.length ? <div className="composer-attachments">{composerAttachments.map((file) => <span className="attachment-chip" key={file.path}><span>{file.name}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => setComposerAttachments((current) => current.filter((item) => item.path !== file.path))}>×</button></span>)}</div> : null}
+                    <textarea placeholder={composerUploading ? 'Adding file…' : providerOk ? 'Talk to Atlas…' : 'Model is not configured…'} rows={1} value={draft} disabled={!providerOk || sending} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void addComposerFiles(event.clipboardData.files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} />
+                  </div>
+                  <button className="send-button" type="submit" disabled={!providerOk || sending || composerUploading || (!draft.trim() && composerAttachments.length === 0)}>{sending ? 'Thinking…' : composerUploading ? 'Adding…' : 'Send'}</button>
                 </form>
               </>
             )}
