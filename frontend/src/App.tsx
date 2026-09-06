@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { startAuthentication, startRegistration, type PublicKeyCredentialCreationOptionsJSON, type PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
-import { decideAction, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getPendingActions, getRecentActions, streamMessage, uploadLocalFile, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type PendingAction, type RecentAction, type Turn } from './api'
+import { decideAction, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -67,18 +68,26 @@ function AtlasPage({ health }: { health: Health | null }) {
   const [streamingText, setStreamingText] = useState('')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<'home' | 'local' | 'drive'>('home')
+  const [view, setView] = useState<'home' | 'local' | 'drive' | 'projects' | 'repositories'>('home')
   const [storage, setStorage] = useState<LocalStorageListing | null>(null)
   const [drive, setDrive] = useState<DriveStorageListing | null>(null)
+  const [projectStorage, setProjectStorage] = useState<LocalStorageListing | null>(null)
+  const [repositories, setRepositories] = useState<RepositoryListing | null>(null)
   const [driveStack, setDriveStack] = useState<Array<{ id: string; name: string }>>([{ id: 'root', name: 'My Drive' }])
   const [storageLoading, setStorageLoading] = useState(false)
   const [storageError, setStorageError] = useState<string | null>(null)
   const [driveLoading, setDriveLoading] = useState(false)
   const [driveError, setDriveError] = useState<string | null>(null)
+  const [projectLoading, setProjectLoading] = useState(false)
+  const [projectError, setProjectError] = useState<string | null>(null)
+  const [repositoryLoading, setRepositoryLoading] = useState(false)
+  const [repositoryError, setRepositoryError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([])
+  const [mobileActivity, setMobileActivity] = useState<'needs' | 'latest' | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const composerFileInputRef = useRef<HTMLInputElement | null>(null)
   const [composerAttachments, setComposerAttachments] = useState<LocalStorageEntry[]>([])
@@ -89,7 +98,8 @@ function AtlasPage({ health }: { health: Health | null }) {
     getConversation().then((conversation) => setTurns(conversation.turns)).catch((cause) => setError(String(cause)))
     getConversationContext().then(setConversationContext).catch(() => setConversationContext(null))
     getPendingActions().then(setPendingActions).catch(() => setPendingActions([]))
-    getRecentActions().then(setRecentActions).catch(() => setRecentActions([]))
+    getRecentActions(4).then(setRecentActions).catch(() => setRecentActions([]))
+    getScheduledTasks(true).then(setScheduledTasks).catch(() => setScheduledTasks([]))
   }, [])
 
   useEffect(() => {
@@ -125,6 +135,32 @@ function AtlasPage({ health }: { health: Health | null }) {
     }
   }
 
+  async function openProjectFolders(path = '') {
+    setView('projects')
+    setProjectLoading(true)
+    setProjectError(null)
+    try {
+      setProjectStorage(await getProjectFolders(path))
+    } catch (cause) {
+      setProjectError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setProjectLoading(false)
+    }
+  }
+
+  async function openRepositories() {
+    setView('repositories')
+    setRepositoryLoading(true)
+    setRepositoryError(null)
+    try {
+      setRepositories(await getRepositories())
+    } catch (cause) {
+      setRepositoryError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setRepositoryLoading(false)
+    }
+  }
+
   async function addFiles(files: FileList | File[]) {
     const items = Array.from(files)
     if (!items.length || uploading) return
@@ -146,7 +182,8 @@ function AtlasPage({ health }: { health: Health | null }) {
     try {
       await decideAction(action.action_id, approve)
       setPendingActions(await getPendingActions())
-      setRecentActions(await getRecentActions())
+      setRecentActions(await getRecentActions(4))
+      setScheduledTasks(await getScheduledTasks(true))
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -193,7 +230,8 @@ function AtlasPage({ health }: { health: Health | null }) {
       setTurns(conversation.turns)
       setConversationContext(await getConversationContext().catch(() => null))
       setPendingActions(await getPendingActions())
-      setRecentActions(await getRecentActions())
+      setRecentActions(await getRecentActions(4))
+      setScheduledTasks(await getScheduledTasks(true))
       setStreamingText('')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -216,7 +254,28 @@ function AtlasPage({ health }: { health: Health | null }) {
           <span className="status-label"><StatusDot ok={providerOk} />Model</span>
           <span className="status-label transcript-status" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of provider context window` : 'Provider token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />Transcript {conversationContext ? `${formatTokens(conversationContext.input_tokens)} / ${formatTokens(conversationContext.limit_tokens)}` : '— / 1M'}</span>
         </div>
+        <div className="mobile-activity-controls" aria-label="Activity shortcuts">
+          <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'needs' ? null : 'needs')}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
+          <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'latest' ? null : 'latest')}>Latest</button>
+          <span className="mobile-token-count" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of provider context window` : 'Provider token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />{conversationContext ? `${formatTokens(conversationContext.input_tokens)}/${formatTokens(conversationContext.limit_tokens)}` : '—/1M'}</span>
+        </div>
       </header>
+
+      {mobileActivity ? <>
+        <button className="mobile-activity-backdrop" type="button" aria-label="Close activity" onClick={() => setMobileActivity(null)} />
+        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'needs' ? 'Needs You' : 'Latest activity'}>
+          {mobileActivity === 'needs' ? <section className="activity-section attention-section">
+            <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
+            {error ? <p className="activity-empty">{error}</p> : null}
+            {pendingActions.map((action) => { const args = action.detail.arguments ?? {}; const isMail = action.detail.operation === 'gmail.message.send'; const uncertain = action.state === 'uncertain'; return <div className={`approval-widget${uncertain ? ' uncertain' : ''}`} key={action.id}><strong>{action.title}</strong><span>{action.detail.operation ?? 'Proposed action'}</span>{uncertain ? <div className="approval-mail"><p>{action.detail.message ?? 'Atlas started this action but cannot confirm whether it completed.'}</p>{action.detail.external_id ? <span><b>External ID:</b> {action.detail.external_id}</span> : null}</div> : null}{!uncertain && isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}{!uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div> : null}</div> })}
+            {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
+          </section> : <section className="activity-section">
+            <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
+            {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} persisted turns in the current transcript.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
+          </section>}
+        </aside>
+      </> : null}
+
 
       <div className="atlas-body">
         <aside className="left-rail">
@@ -225,7 +284,7 @@ function AtlasPage({ health }: { health: Health | null }) {
               <RailItem label="Projects" active={view === 'home'} onClick={() => setView('home')} />
               <RailItem label="Local storage" active={view === 'local'} onClick={() => { void openLocalStorage(storage?.path ?? '') }} />
               <RailItem label="Drive storage" active={view === 'drive'} onClick={() => { void openDriveStorage(driveStack.at(-1)?.id ?? 'root') }} />
-              <RailItem label="Project folders" /><RailItem label="Repositories" /><RailItem label="Artifacts" />
+              <RailItem label="Project folders" active={view === 'projects'} onClick={() => { void openProjectFolders(projectStorage?.path ?? '') }} /><RailItem label="Repositories" active={view === 'repositories'} onClick={() => { void openRepositories() }} /><RailItem label="Artifacts" />
             </RailSection>
             <RailSection title="Utilities">
               <RailItem label="Normalization" /><RailItem label="Input folder" detail="not set" nested /><RailItem label="Output folder" detail="not set" nested />
@@ -235,10 +294,10 @@ function AtlasPage({ health }: { health: Health | null }) {
         </aside>
 
         <main className="main-stage">
-          <section className="chat-canvas" aria-label={view === 'home' ? 'Atlas chat canvas' : view === 'local' ? 'Local storage' : 'Drive storage'}>
+          <section className="chat-canvas" aria-label={view === 'home' ? 'Atlas chat canvas' : view === 'local' ? 'Local storage' : view === 'drive' ? 'Drive storage' : view === 'projects' ? 'Project folders' : 'Repositories'}>
             <div className="canvas-head">
-              <div><div className="canvas-kicker">{view === 'home' ? 'Home' : view === 'local' ? 'Find / Local storage' : 'Find / Drive storage'}</div><h1>{view === 'home' ? 'Atlas' : view === 'local' ? storageTitle(storage?.path ?? '') : (driveStack.at(-1)?.name ?? 'My Drive')}</h1></div>
-              <span className="canvas-state">{view === 'home' ? (health ? `v${health.version}` : 'checking') : view === 'local' ? (storage?.display_root ?? '~/Workspace') : 'Google Drive'}</span>
+              <div><div className="canvas-kicker">{view === 'home' ? 'Home' : view === 'local' ? 'Find / Local storage' : view === 'drive' ? 'Find / Drive storage' : view === 'projects' ? 'Find / Project folders' : 'Find / Repositories'}</div><h1>{view === 'home' ? 'Atlas' : view === 'local' ? storageTitle(storage?.path ?? '') : view === 'drive' ? (driveStack.at(-1)?.name ?? 'My Drive') : view === 'projects' ? storageTitle(projectStorage?.path ?? '') : 'GitHub repositories'}</h1></div>
+              <span className="canvas-state">{view === 'home' ? (health ? `v${health.version}` : 'checking') : view === 'local' ? (storage?.display_root ?? '~/Workspace') : view === 'drive' ? 'Google Drive' : view === 'projects' ? (projectStorage?.display_root ?? '/home/jaco/Projects') : (repositories ? `github.com/${repositories.owner}` : 'GitHub')}</span>
             </div>
 
             {view === 'local' ? (
@@ -281,6 +340,41 @@ function AtlasPage({ health }: { health: Health | null }) {
                   </div>
                 ) : null}
               </div>
+            ) : view === 'projects' ? (
+              <div className="storage-space">
+                <div className="storage-toolbar">
+                  <div className="storage-location"><strong>Project folders</strong><span>{projectStorage?.path ? `${projectStorage.display_root}/${projectStorage.path}` : (projectStorage?.display_root ?? '/home/jaco/Projects')}</span></div>
+                  <div className="storage-actions">{projectStorage?.path ? <button type="button" className="storage-up" onClick={() => { const parts = projectStorage.path.split('/'); parts.pop(); void openProjectFolders(parts.join('/')) }}>Up one level</button> : null}</div>
+                </div>
+                {projectLoading ? <div className="storage-empty">Reading project folders…</div> : null}
+                {projectError ? <div className="chat-error storage-error">{projectError}</div> : null}
+                {!projectLoading && !projectError && projectStorage ? (
+                  <div className="storage-browser">
+                    <div className="storage-summary"><span>{projectStorage.entries.length} item{projectStorage.entries.length === 1 ? '' : 's'}</span><span>Real local development directories · read only</span></div>
+                    <div className="storage-table" role="table" aria-label="Project folder contents">
+                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Type</span><span>Size</span><span>Modified</span></div>
+                      {projectStorage.entries.map((entry) => <button className="storage-row" type="button" role="row" key={entry.path} disabled={entry.kind !== 'directory'} onClick={() => { if (entry.kind === 'directory') void openProjectFolders(entry.path) }}><span className="storage-name"><span className="storage-icon">{entry.kind === 'directory' ? '▸' : '·'}</span>{entry.name}</span><span>{entry.kind}</span><span>{formatBytes(entry.size_bytes)}</span><span>{new Date(entry.modified_at).toLocaleString()}</span></button>)}
+                    </div>
+                    {projectStorage.entries.length === 0 ? <div className="storage-empty">No project entries here.</div> : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : view === 'repositories' ? (
+              <div className="storage-space">
+                <div className="storage-toolbar"><div className="storage-location"><strong>Repositories</strong><span>{repositories ? `github.com/${repositories.owner}` : 'GitHub'}</span></div><div className="storage-actions"><button type="button" className="storage-up" onClick={() => { void openRepositories() }} disabled={repositoryLoading}>Refresh</button></div></div>
+                {repositoryLoading ? <div className="storage-empty">Reading GitHub repositories…</div> : null}
+                {repositoryError ? <div className="chat-error storage-error">{repositoryError}</div> : null}
+                {!repositoryLoading && !repositoryError && repositories ? (
+                  <div className="storage-browser">
+                    <div className="storage-summary"><span>{repositories.repositories.length} repositor{repositories.repositories.length === 1 ? 'y' : 'ies'}</span><span>Owner-authorized GitHub · remote state</span></div>
+                    <div className="storage-table repository-table" role="table" aria-label="GitHub repositories">
+                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Visibility</span><span>State</span><span>Branch</span></div>
+                      {repositories.repositories.map((repo) => <button className="storage-row" type="button" role="row" key={repo.full_name} onClick={() => { if (repo.url) window.open(repo.url, '_blank', 'noopener,noreferrer') }}><span className="storage-name"><span className="storage-icon">⌘</span>{repo.name}</span><span>{repo.private ? 'private' : 'public'}</span><span>{repo.archived ? 'archived' : 'active'}</span><span>{repo.default_branch ?? '—'}</span></button>)}
+                    </div>
+                    {repositories.repositories.length === 0 ? <div className="storage-empty">No repositories returned by GitHub.</div> : null}
+                  </div>
+                ) : null}
+              </div>
             ) : view === 'drive' ? (
               <div className="storage-space">
                 <div className="storage-toolbar">
@@ -314,7 +408,7 @@ function AtlasPage({ health }: { health: Health | null }) {
                     <div className="phase-message"><span className="phase-label">PHASE 1</span><h2>The model is in the seat.</h2><p>Conversation is Atlas-owned and durable. Start anywhere.</p></div>
                   ) : (
                     <div className="conversation-thread">
-                      {visibleTurns.map((turn) => <article className={`chat-turn ${turn.actor}`} key={turn.id}><div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div><div className="turn-body">{turn.actor === 'atlas' ? <MarkdownBody text={turnText(turn)} /> : turnText(turn)}</div></article>)}
+                      {visibleTurns.map((turn) => <article className={`chat-turn ${turn.actor}`} key={turn.id}><div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div><div className="turn-body"><MarkdownBody text={turnText(turn)} /></div></article>)}
                       {streamingText ? <article className="chat-turn atlas streaming"><div className="turn-actor">Atlas</div><div className="turn-body"><MarkdownBody text={streamingText} /><span className="stream-caret" /></div></article> : null}
                       {error ? <div className="chat-error">{error}</div> : null}<div ref={bottomRef} />
                     </div>
@@ -337,16 +431,79 @@ function AtlasPage({ health }: { health: Health | null }) {
             <section className="activity-section attention-section">
               <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
               {error ? <p className="activity-empty">{error}</p> : null}
-              {pendingActions.map((action) => { const args = action.detail.arguments ?? {}; const isMail = action.detail.operation === 'gmail.message.send'; return <div className="approval-widget" key={action.id}><strong>{action.title}</strong><span>{action.detail.operation ?? 'Proposed action'}</span>{isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}<div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div></div> })}
+              {pendingActions.map((action) => { const args = action.detail.arguments ?? {}; const isMail = action.detail.operation === 'gmail.message.send'; const uncertain = action.state === 'uncertain'; return <div className={`approval-widget${uncertain ? ' uncertain' : ''}`} key={action.id}><strong>{action.title}</strong><span>{action.detail.operation ?? 'Proposed action'}</span>{uncertain ? <div className="approval-mail"><p>{action.detail.message ?? 'Atlas started this action but cannot confirm whether it completed.'}</p>{action.detail.external_id ? <span><b>External ID:</b> {action.detail.external_id}</span> : null}</div> : null}{!uncertain && isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}{!uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div> : null}</div> })}
               {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
             </section>
             <div className="activity-divider" />
-            <section className="activity-section">
+            <section className="activity-section latest-section">
               <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
               {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} persisted turns in the current transcript.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
             </section>
+            <div className="activity-divider" />
+            <section className="activity-section scheduled-section">
+              <div className="activity-heading-row"><span className="activity-heading">Scheduled tasks</span><span className="activity-count">{scheduledTasks.filter((task) => task.enabled).length}</span></div>
+              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{task.enabled ? `Next ${new Date(task.next_run_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Paused'} · {task.schedule_kind}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
+            </section>
           </aside>
         </main>
+      </div>
+    </div>
+  )
+}
+
+
+function OwnerLogin({ status, onAuthenticated }: { status: AuthStatus; onAuthenticated: () => void }) {
+  const [enrollmentCode, setEnrollmentCode] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function enroll() {
+    if (!enrollmentCode.trim() || busy) return
+    setBusy(true); setError(null)
+    try {
+      const ceremony = await getRegistrationOptions(enrollmentCode.trim())
+      const credential = await startRegistration({
+        optionsJSON: ceremony.options as unknown as PublicKeyCredentialCreationOptionsJSON,
+      })
+      await verifyRegistration(ceremony.challenge_id, enrollmentCode.trim(), credential)
+      onAuthenticated()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally { setBusy(false) }
+  }
+
+  async function signIn() {
+    if (busy) return
+    setBusy(true); setError(null)
+    try {
+      const ceremony = await getLoginOptions()
+      const credential = await startAuthentication({
+        optionsJSON: ceremony.options as unknown as PublicKeyCredentialRequestOptionsJSON,
+      })
+      await verifyLogin(ceremony.challenge_id, credential)
+      onAuthenticated()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <img className="auth-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
+        <div className="eyebrow">ATLAS V5 · OWNER ACCESS</div>
+        <h1>{status.enrolled ? 'Unlock Atlas' : 'Enroll owner passkey'}</h1>
+        <p>{status.enrolled ? 'Use your device fingerprint, face, or secure screen lock.' : 'Enter the one-time enrollment code, then register this device with your fingerprint or face.'}</p>
+        {status.enrolled ? (
+          <button className="auth-primary" type="button" onClick={signIn} disabled={busy}>{busy ? 'Waiting for device…' : 'Unlock with passkey'}</button>
+        ) : (
+          <>
+            <input className="auth-input" type="password" value={enrollmentCode} onChange={(event) => setEnrollmentCode(event.target.value)} placeholder="One-time enrollment code" autoComplete="one-time-code" />
+            <button className="auth-primary" type="button" onClick={enroll} disabled={busy || !enrollmentCode.trim()}>{busy ? 'Waiting for device…' : 'Create owner passkey'}</button>
+          </>
+        )}
+        {error ? <div className="auth-error">{error}</div> : null}
+        <span className="auth-note">Biometric data never leaves your device.</span>
       </div>
     </div>
   )
@@ -375,9 +532,27 @@ function ControlPage({ health }: { health: Health | null }) {
   )
 }
 
-export default function App() {
+function AuthenticatedApp() {
   const [health, setHealth] = useState<Health | null>(null)
   useEffect(() => { getHealth().then(setHealth).catch(() => setHealth(null)) }, [])
   if (window.location.pathname.startsWith('/control')) return <ControlPage health={health} />
   return <AtlasPage health={health} />
+}
+
+export default function App() {
+  const [auth, setAuth] = useState<AuthStatus | null>(null)
+  const [authError, setAuthError] = useState<string | null>(null)
+
+  async function refreshAuth() {
+    try { setAuth(await getAuthStatus()); setAuthError(null) }
+    catch (cause) { setAuthError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  useEffect(() => {
+    getAuthStatus().then((status) => { setAuth(status); setAuthError(null) }).catch((cause) => setAuthError(cause instanceof Error ? cause.message : String(cause)))
+  }, [])
+  if (authError) return <div className="auth-shell"><div className="auth-card"><h1>Atlas unavailable</h1><p>{authError}</p></div></div>
+  if (!auth) return <div className="auth-shell"><div className="auth-card"><div className="eyebrow">ATLAS V5</div><h1>Checking owner access…</h1></div></div>
+  if (!auth.authenticated) return <OwnerLogin status={auth} onAuthenticated={() => void refreshAuth()} />
+  return <AuthenticatedApp />
 }

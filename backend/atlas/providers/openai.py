@@ -1,10 +1,48 @@
+import base64
 import json
 from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from openai import AsyncOpenAI
 
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+
+
+@dataclass
+class _CapabilityBudget:
+    limit: int = 16
+    reserve: int = 2
+    dispatched: int = 0
+    operation_effects: dict[str, str] = field(default_factory=dict)
+
+    def remember_search(self, result: dict[str, Any]) -> None:
+        operations = result.get("operations")
+        if not isinstance(operations, list):
+            return
+        for item in operations:
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                self.operation_effects[item["id"]] = str(item.get("effect") or "")
+
+    def can_dispatch(self, operation_id: str) -> tuple[bool, str | None]:
+        if self.dispatched >= self.limit:
+            return False, "Atlas reached the dispatched capability-call limit for this turn."
+        reserve_start = max(0, self.limit - self.reserve)
+        effect = self.operation_effects.get(operation_id)
+        completion_step = effect not in {None, "", "read"} or operation_id.endswith(".preview")
+        if self.dispatched >= reserve_start and not completion_step:
+            return False, (
+                f"Atlas is reserving the final {self.reserve} capability calls for completion steps. "
+                "Stop exploratory reads and finish the task with preview/apply or another effecting operation."
+            )
+        return True, None
+
+    def record_dispatch(self) -> None:
+        self.dispatched += 1
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.limit - self.dispatched)
 
 
 
@@ -20,11 +58,41 @@ def _resource_input(resource: dict[str, Any]) -> dict[str, Any] | None:
             {"type": "input_text", "text": f"Atlas runtime acquired {name} from {source}. Inspect the image itself when answering the owner's request."},
             {"type": "input_image", "detail": "auto", "image_url": f"data:{media_type};base64,{data}"},
         ]
-    else:
-        content = [
-            {"type": "input_text", "text": f"Atlas runtime acquired {name} from {source}. Use the file contents when answering the owner's request."},
-            {"type": "input_file", "filename": name, "file_data": f"data:{media_type};base64,{data}"},
-        ]
+        return {"role": "user", "content": content}
+
+    # Code, config, logs, extensionless text and other UTF-8 resources should be
+    # supplied as text rather than an input_file with a MIME type the provider
+    # may reject (notably application/octet-stream and many text/* subtypes).
+    try:
+        raw = base64.b64decode(data, validate=True)
+        decoded = raw.decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        decoded = None
+    if decoded is not None:
+        return {
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": f"Atlas runtime acquired {name} from {source}. File contents follow:\n\n{decoded}",
+            }],
+        }
+
+    if media_type == "application/octet-stream":
+        return {
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": (
+                    f"Atlas runtime acquired binary resource {name} from {source}, but its format "
+                    "could not be identified safely for native provider file input."
+                ),
+            }],
+        }
+
+    content = [
+        {"type": "input_text", "text": f"Atlas runtime acquired {name} from {source}. Use the file contents when answering the owner's request."},
+        {"type": "input_file", "filename": name, "file_data": f"data:{media_type};base64,{data}"},
+    ]
     return {"role": "user", "content": content}
 
 
@@ -76,8 +144,12 @@ _MODEL_TOOLS = [
 
 
 class OpenAIProvider:
-    def __init__(self, *, api_key: str, model: str) -> None:
+    def __init__(
+        self, *, api_key: str, model: str, capability_call_limit: int = 16, capability_completion_reserve: int = 2
+    ) -> None:
         self.model = model
+        self.capability_call_limit = max(1, capability_call_limit)
+        self.capability_completion_reserve = max(0, min(capability_completion_reserve, self.capability_call_limit))
         self.client = AsyncOpenAI(api_key=api_key)
 
     async def count_input_tokens(
@@ -93,6 +165,15 @@ class OpenAIProvider:
             tools=_MODEL_TOOLS,
         )
         return result.input_tokens
+
+    async def complete_text(self, *, instructions: str, messages: list[dict[str, str]]) -> str:
+        response = await self.client.responses.create(
+            model=self.model,
+            instructions=instructions,
+            input=messages,
+            store=False,
+        )
+        return response.output_text or ""
 
     async def stream_text(
         self,
@@ -117,7 +198,10 @@ class OpenAIProvider:
             return
 
         input_items: list[Any] = list(messages)
-        for _ in range(8):
+        budget = _CapabilityBudget(limit=self.capability_call_limit, reserve=self.capability_completion_reserve)
+        # Discovery is intentionally outside the dispatched-operation budget. The separate
+        # reasoning-round ceiling still prevents a model from searching forever.
+        for _ in range(max(24, self.capability_call_limit + 8)):
             response = await self.client.responses.create(
                 model=self.model,
                 instructions=instructions,
@@ -137,7 +221,18 @@ class OpenAIProvider:
                     arguments = json.loads(call.arguments or "{}")
                 except json.JSONDecodeError:
                     arguments = {}
-                result = await tool_handler(call.name, arguments)
+                if call.name == "atlas_capability_call":
+                    operation_id = str(arguments.get("operation_id") or "")
+                    allowed, reason = budget.can_dispatch(operation_id)
+                    if not allowed:
+                        result = {"status": "budget_reserved", "message": reason, "remaining_calls": budget.remaining}
+                    else:
+                        result = await tool_handler(call.name, arguments)
+                        budget.record_dispatch()
+                else:
+                    result = await tool_handler(call.name, arguments)
+                    if call.name == "atlas_capability_search":
+                        budget.remember_search(result)
                 public_result, resource = _public_tool_result(result)
                 input_items.append({
                     "type": "function_call_output",
@@ -148,4 +243,4 @@ class OpenAIProvider:
                     resource_item = _resource_input(resource)
                     if resource_item is not None:
                         input_items.append(resource_item)
-        yield "I reached the capability-call limit for this turn before finishing the task."
+        yield "I reached the bounded tool-reasoning limit for this turn before finishing the task."

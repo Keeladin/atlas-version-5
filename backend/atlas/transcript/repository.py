@@ -12,24 +12,33 @@ class TranscriptRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self) -> Transcript:
-        row = TranscriptRow()
+    async def create(self, *, kind: str = "owner") -> Transcript:
+        row = TranscriptRow(kind=kind)
         self.session.add(row)
         await self.session.flush()
-        return Transcript(id=row.id, created_at=row.created_at)
+        return Transcript(id=row.id, kind=row.kind, created_at=row.created_at, context_summary=row.context_summary, summarized_through_turn_id=row.summarized_through_turn_id)
 
 
     async def get_or_create_active(self) -> Transcript:
         result = await self.session.execute(
             select(TranscriptRow)
-            .where(TranscriptRow.closed_at.is_(None))
+            .where(TranscriptRow.closed_at.is_(None), TranscriptRow.kind == "owner")
             .order_by(TranscriptRow.created_at.desc(), TranscriptRow.id.desc())
             .limit(1)
         )
         row = result.scalar_one_or_none()
         if row is None:
             return await self.create()
-        return Transcript(id=row.id, created_at=row.created_at, closed_at=row.closed_at)
+        return Transcript(id=row.id, kind=row.kind, created_at=row.created_at, closed_at=row.closed_at, context_summary=row.context_summary, summarized_through_turn_id=row.summarized_through_turn_id)
+
+
+    async def update_context_summary(self, transcript_id: UUID, *, summary: str, summarized_through_turn_id: UUID) -> None:
+        row = await self.session.get(TranscriptRow, transcript_id)
+        if row is None:
+            raise LookupError("Transcript not found")
+        row.context_summary = summary
+        row.summarized_through_turn_id = summarized_through_turn_id
+        await self.session.flush()
 
     async def append_turn(
         self,

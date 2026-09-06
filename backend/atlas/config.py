@@ -21,9 +21,26 @@ class Settings(BaseSettings):
     frontend_dist: Path = Path("frontend/dist")
     workspace_root: Path = Path.home() / "Workspace"
     workspace_display_root: str = "~/Workspace"
+    projects_root: Path = Path.home() / "Projects"
+    projects_display_root: str = "~/Projects"
+    project_checkpoint_root: Path = _DEV_STATE / "project-checkpoints"
+    auth_required: bool = False
+    auth_rp_id: str = "localhost"
+    auth_rp_name: str = "Atlas V5"
+    auth_origin: str = "http://localhost:5173"
+    auth_session_hours: int = 24
+    auth_enrollment_code_file: Path = _DEV_STATE / "auth" / "enrollment-code"
+    auth_enrolled_marker_file: Path = _DEV_STATE / "auth" / "enrolled"
+    owner_timezone: str = "Africa/Johannesburg"
+    scheduler_enabled: bool = False
+    scheduler_poll_seconds: int = 30
+    action_reconcile_seconds: int = 60
+    action_stale_after_seconds: int = 300
     openai_api_key_file: Path | None = None
     openai_model: str = "gpt-5.6-sol"
     openai_context_window: int = 1_000_000
+    capability_call_limit: int = 16
+    capability_completion_reserve: int = 2
     gws_command: Path = Path("/opt/atlas-v5/bin/gws")
     gws_credentials_file: Path | None = None
     gws_config_dir: Path = _DEV_STATE / "google-workspace" / "config"
@@ -31,6 +48,7 @@ class Settings(BaseSettings):
     github_mcp_command: Path = Path("/opt/atlas-v5/bin/github-mcp-server")
     github_token_file: Path | None = None
     github_mcp_toolsets: str = "repos,git,pull_requests,issues"
+    github_owner: str = "Keeladin"
 
     @property
     def database_dsn(self) -> str:

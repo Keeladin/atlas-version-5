@@ -17,6 +17,7 @@ class RunStatus(StrEnum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     WAITING_FOR_OWNER = "waiting_for_owner"
+    UNCERTAIN = "uncertain"
 
 
 class ActionStatus(StrEnum):

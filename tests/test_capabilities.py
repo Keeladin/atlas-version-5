@@ -48,3 +48,18 @@ async def test_approval_capability_prepares_instead_of_denies() -> None:
     result = await runtime.call("test.read", {"target": "x"}, proposal_sink=sink)
     assert result.status == "approval_required"
     assert result.proposal_id == "proposal-1"
+
+
+def test_argument_validation_rejects_missing_or_extra_fields() -> None:
+    runtime = CapabilityRuntime()
+    item = descriptor()
+    item.input_schema = {
+        "type": "object",
+        "properties": {"target": {"type": "string"}},
+        "required": ["target"],
+        "additionalProperties": False,
+    }
+    runtime.register(item, lambda arguments: arguments)
+    assert runtime.validate_arguments("test.read", {}) == "Missing required argument(s): target"
+    assert runtime.validate_arguments("test.read", {"target": "x", "other": 1}) == "Unexpected argument(s): other"
+    assert runtime.validate_arguments("test.read", {"target": "x"}) is None

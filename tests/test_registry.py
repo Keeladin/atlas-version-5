@@ -33,3 +33,14 @@ def test_enabled_capability_is_visible() -> None:
         availability=CapabilityAvailability.AVAILABLE,
     )
     assert EnvironmentRegistry([entry]).enabled_projection() == [entry]
+
+
+def test_project_write_authority_keeps_targeted_edits_auto_and_delete_gated() -> None:
+    from atlas.capabilities import AuthorityMode
+    from atlas.registry.service import build_phase0_registry
+
+    operations = {item.id: item for item in build_phase0_registry().operations()}
+    assert operations["storage.projects.preview"].authority == AuthorityMode.AUTO
+    assert operations["storage.projects.apply"].authority == AuthorityMode.AUTO
+    assert operations["storage.projects.move"].authority == AuthorityMode.AUTO
+    assert operations["storage.projects.delete"].authority == AuthorityMode.APPROVAL_REQUIRED

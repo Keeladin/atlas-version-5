@@ -59,3 +59,35 @@ The main shell now includes the owner-approved shared `/home/jaco/Workspace` sur
 The active design rule for continuity is: **transcript rollover is context-pressure driven, with semantic handoff, not date driven**. Capability availability is also explicitly dynamic: before declaring an environment capability unavailable, Atlas must consult the live capability registry rather than relying on prior turns or repository state.
 
 At this checkpoint Ruff passes, the frontend production build passes, and the backend suite contains 23 passing tests.
+
+## 2026-09-06 — Durable execution and transcript truth pass
+
+The first post-review hardening pass implements the five owner-approved runtime fixes without adding a new integration.
+
+Consequential approval proposals now bind the exact operation, canonical arguments, owner principal, capability identity, creation time and expiry into the stored target hash. Approval revalidates that payload and fails closed on mismatch or expiry. Approved actions transition atomically from `prepared` to durable `executing` and commit before external dispatch. Completed effects land as `succeeded`, known pre-dispatch failures as `failed`, and ambiguous dispatch failures as `uncertain`; action idempotency keys are now populated and externally returned identifiers are retained when available.
+
+Tool activity is now durable structured transcript evidence. Capability searches, prepared calls, automatic calls, results and approved consequential outcomes are stored as `tool_observation` blocks and projected back into later model context as runtime evidence rather than owner-authored chat.
+
+Scheduled executions now create `scheduled` transcripts rather than borrowing the active owner transcript. Owner-chat selection filters to `owner` transcripts, so background runs cannot become or contaminate the foreground conversation. Scheduled results remain available through task state and activity surfaces.
+
+Context rollover is now pressure-driven rather than merely measured. At 70% of the configured provider context window, Atlas summarizes the older active prefix into a durable context capsule, records the exact summarized-through turn, retains the most recent 40 turns verbatim, and uses the capsule plus unsummarized tail for subsequent provider requests. The canonical transcript itself remains intact.
+
+Validation after this pass: Ruff clean, 40 backend tests passing, frontend production build passing, frontend lint 0 warnings / 0 errors. A new Alembic head adds transcript kind and rollover state.
+
+## 2026-09-06 — Project folders gained bounded write access
+
+The owner-approved `/home/jaco/Projects` surface is no longer conceptually read-only. Atlas can now preview and apply targeted single-file creates/updates, rename or move a file within one project, inspect Git status/diff, and request deletion. Shell execution remains a separate capability and is not implied by project write access.
+
+Project writes enforce canonical root confinement and symlink validation, block normal writes to `.git`, environment files, credentials/tokens, secret/key directories and private-key formats, and limit one text edit to 4 MB. Every update is previewed as an exact unified diff and returns a change token; applying it requires the same proposed content plus the expected pre-edit SHA-256. If VS Code or another process changes the file after Atlas inspected/previewed it, the write fails closed instead of overwriting the newer file.
+
+Writes use same-directory temporary files, fsync and atomic replacement while preserving the existing file mode. Before mutation, a clean Git tree records the current HEAD as the baseline. A dirty tree creates a private checkpoint under `/var/lib/atlas-v5/project-checkpoints` containing the tracked binary diff plus copies of non-ignored untracked files, bounded by file-count and size limits. Non-Git projects receive a direct filesystem checkpoint of the affected file.
+
+Targeted preview/apply/move operations remain automatic within those safeguards. Deletes remain owner-approval-required. Automatic project mutations now enter the durable action spine as `executing` before filesystem dispatch and land in the normal action/tool evidence trail afterward, so safe write access does not reintroduce the post-facto execution-recording gap fixed earlier in the day.
+
+Production systemd changes the Projects bind from read-only to read/write. Deployment grants `atlas-v5` explicit ACL write access to project source while retaining Jaco's access on newly created files. Protected/generated trees such as `.git`, `node_modules`, `.venv` and `__pycache__` are excluded from the ACL grant.
+
+## 2026-09-06 — Uncertain execution made durable and visible
+
+`UNCERTAIN` is now a first-class run outcome rather than being collapsed back into `FAILED`. An uncertain action retains or creates unresolved owner attention, marks its run `uncertain`, and remains visible in Needs You with an explicit message that Atlas cannot confirm whether the external effect completed. The UI does not present approval/cancel controls for this state.
+
+Consequential execution now records `execution_started_at` when entering `EXECUTING`. A reconciler runs once at startup and then periodically. With the default five-minute stale threshold it compare-and-set transitions abandoned `EXECUTING` actions to `UNCERTAIN`, raises durable owner attention, and prevents the runtime from silently treating the action as failed or replayable. The poll interval and stale threshold are runtime-configurable.

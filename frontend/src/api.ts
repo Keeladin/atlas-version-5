@@ -1,3 +1,56 @@
+
+export type AuthStatus = {
+  required: boolean
+  enrolled: boolean
+  authenticated: boolean
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  const response = await fetch('/api/auth/status', { credentials: 'same-origin' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Auth status failed (${response.status})`)
+  return body as AuthStatus
+}
+
+export async function getRegistrationOptions(enrollmentCode: string): Promise<{ challenge_id: string; options: Record<string, unknown> }> {
+  const response = await fetch('/api/auth/register/options', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enrollment_code: enrollmentCode }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Passkey enrollment failed (${response.status})`)
+  return body
+}
+
+export async function verifyRegistration(challengeId: string, enrollmentCode: string, credential: unknown): Promise<void> {
+  const response = await fetch('/api/auth/register/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, enrollment_code: enrollmentCode, credential }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Passkey verification failed (${response.status})`)
+}
+
+export async function getLoginOptions(): Promise<{ challenge_id: string; options: Record<string, unknown> }> {
+  const response = await fetch('/api/auth/login/options', { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Passkey login failed (${response.status})`)
+  return body
+}
+
+export async function verifyLogin(challengeId: string, credential: unknown): Promise<void> {
+  const response = await fetch('/api/auth/login/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challenge_id: challengeId, credential }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Passkey verification failed (${response.status})`)
+}
+
+export async function logout(): Promise<void> {
+  await fetch('/api/auth/logout', { method: 'POST' })
+}
+
 export type Health = {
   status: 'ok' | 'degraded'
   version: string
@@ -115,6 +168,34 @@ export async function uploadLocalFile(path: string, file: File): Promise<LocalSt
   return body as LocalStorageEntry
 }
 
+
+export async function getProjectFolders(path = ''): Promise<LocalStorageListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  const response = await fetch(`/api/storage/projects${query}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Project folders load failed (${response.status})`)
+  return body as LocalStorageListing
+}
+
+export type RepositoryEntry = {
+  name: string
+  full_name: string
+  url: string | null
+  private: boolean
+  archived: boolean
+  default_branch: string | null
+  description: string | null
+}
+
+export type RepositoryListing = { owner: string; repositories: RepositoryEntry[] }
+
+export async function getRepositories(): Promise<RepositoryListing> {
+  const response = await fetch('/api/repositories')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Repository load failed (${response.status})`)
+  return body as RepositoryListing
+}
+
 export type DriveStorageEntry = {
   id: string
   name: string
@@ -174,7 +255,7 @@ export type PendingAction = {
   action_id: string | null
   state: string
   title: string
-  detail: { operation?: string; arguments?: Record<string, unknown> }
+  detail: { operation?: string; arguments?: Record<string, unknown>; message?: string; external_id?: string; execution_started_at?: string }
   created_at: string
 }
 
@@ -193,6 +274,27 @@ export async function decideAction(actionId: string, approve: boolean): Promise<
   })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Action decision failed (${response.status})`)
+}
+
+export type ScheduledTask = {
+  id: string
+  title: string
+  prompt: string
+  schedule_kind: 'once' | 'interval' | 'cron'
+  schedule_value: string
+  timezone: string
+  enabled: boolean
+  next_run_at: string
+  last_run_at: string | null
+  last_status: string | null
+  last_result: string | null
+}
+
+export async function getScheduledTasks(includeDisabled = true): Promise<ScheduledTask[]> {
+  const response = await fetch(`/api/schedules?include_disabled=${includeDisabled ? 'true' : 'false'}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Scheduled tasks load failed (${response.status})`)
+  return (body?.items ?? []) as ScheduledTask[]
 }
 
 export type RecentAction = {

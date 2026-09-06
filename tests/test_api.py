@@ -16,7 +16,7 @@ def test_registry_endpoint_exposes_enabled_projection_only() -> None:
     response = client.get("/api/registry")
     assert response.status_code == 200
     capabilities = response.json()["capabilities"]
-    assert [item["id"] for item in capabilities] == ["atlas.artifacts", "atlas.local_storage"]
+    assert [item["id"] for item in capabilities] == ["atlas.artifacts", "atlas.local_storage", "atlas.project_folders", "atlas.schedules"]
 
 
 def test_control_route_serves_spa_entrypoint() -> None:

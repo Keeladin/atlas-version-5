@@ -27,7 +27,10 @@ class ToolObservationBlock(BaseModel):
     type: Literal["tool_observation"] = "tool_observation"
     action_id: UUID | None = None
     artifact_id: UUID | None = None
+    operation: str | None = None
+    phase: str | None = None
     summary: str | None = None
+    detail: dict[str, object] = Field(default_factory=dict)
 
 ContentBlock = Annotated[
     TextBlock | ArtifactRefBlock | ToolObservationBlock,
@@ -37,8 +40,11 @@ ContentBlock = Annotated[
 
 class Transcript(BaseModel):
     id: UUID = Field(default_factory=uuid4)
+    kind: str = "owner"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     closed_at: datetime | None = None
+    context_summary: str | None = None
+    summarized_through_turn_id: UUID | None = None
 
 
 class Turn(BaseModel):

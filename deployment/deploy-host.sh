@@ -51,12 +51,79 @@ install -d -o jaco -g atlas-v5 -m 2770 \
   /home/jaco/Workspace/Exports \
   /home/jaco/Workspace/Scratch
 install -d -o atlas-v5 -g atlas-v5 -m 0770 /var/lib/atlas-v5/workspace
+install -d -o atlas-v5 -g atlas-v5 -m 0750 /var/lib/atlas-v5/projects
+install -d -o atlas-v5 -g atlas-v5 -m 0700 /var/lib/atlas-v5/auth /var/lib/atlas-v5/project-checkpoints
+
+# Atlas may edit owner project source through its bounded project capability.
+# ACLs grant only filesystem access; application-level path, hash, checkpoint and authority rules still apply.
+if ! command -v setfacl >/dev/null 2>&1; then
+  echo "setfacl is required for safe Atlas project write access." >&2
+  exit 1
+fi
+find /home/jaco/Projects \
+  \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o \
+  -type d -exec setfacl -m u:atlas-v5:rwx,u:jaco:rwx,d:u:atlas-v5:rwx,d:u:jaco:rwx {} +
+find /home/jaco/Projects \
+  \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o \
+  -type f -exec setfacl -m u:atlas-v5:rw-,u:jaco:rw- {} +
 
 if ! grep -q '^ATLAS_WORKSPACE_ROOT=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_WORKSPACE_ROOT=/var/lib/atlas-v5/workspace' >> /etc/atlas-v5/config/runtime.env
 fi
 if ! grep -q '^ATLAS_WORKSPACE_DISPLAY_ROOT=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_WORKSPACE_DISPLAY_ROOT=/home/jaco/Workspace' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_PROJECTS_ROOT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_PROJECTS_ROOT=/var/lib/atlas-v5/projects' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_PROJECTS_DISPLAY_ROOT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_PROJECTS_DISPLAY_ROOT=/home/jaco/Projects' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_PROJECT_CHECKPOINT_ROOT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_PROJECT_CHECKPOINT_ROOT=/var/lib/atlas-v5/project-checkpoints' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_OWNER_TIMEZONE=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_OWNER_TIMEZONE=Africa/Johannesburg' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_SCHEDULER_ENABLED=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_SCHEDULER_ENABLED=true' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_SCHEDULER_POLL_SECONDS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_SCHEDULER_POLL_SECONDS=30' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_ACTION_RECONCILE_SECONDS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_ACTION_RECONCILE_SECONDS=60' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_ACTION_STALE_AFTER_SECONDS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_ACTION_STALE_AFTER_SECONDS=300' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_REQUIRED=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_REQUIRED=true' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_RP_ID=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_RP_ID=atlas-agentic.co.za' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_RP_NAME=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_RP_NAME=Atlas V5' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_ORIGIN=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_ORIGIN=https://atlas-agentic.co.za' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_SESSION_HOURS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_SESSION_HOURS=24' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_ENROLLMENT_CODE_FILE=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_ENROLLMENT_CODE_FILE=/var/lib/atlas-v5/auth/enrollment-code' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_AUTH_ENROLLED_MARKER_FILE=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_AUTH_ENROLLED_MARKER_FILE=/var/lib/atlas-v5/auth/enrolled' >> /etc/atlas-v5/config/runtime.env
+fi
+
+if [[ ! -f /var/lib/atlas-v5/auth/enrolled && ! -f /var/lib/atlas-v5/auth/enrollment-code ]]; then
+  enrollment_code="$(openssl rand -hex 16)"
+  printf '%s\n' "${enrollment_code}" > /var/lib/atlas-v5/auth/enrollment-code
+  chown atlas-v5:atlas-v5 /var/lib/atlas-v5/auth/enrollment-code
+  chmod 0600 /var/lib/atlas-v5/auth/enrollment-code
 fi
 
 rsync -a --delete \
@@ -101,7 +168,7 @@ systemctl daemon-reload
 systemctl enable atlas-v5.service
 systemctl restart atlas-v5.service
 
-health_url="http://127.0.0.1:8086/api/health"
+health_url="http://127.0.0.1:8086/api/auth/status"
 for attempt in {1..30}; do
   if curl --fail --silent --show-error --max-time 2 "${health_url}" >/dev/null; then
     break
@@ -120,4 +187,8 @@ systemctl --no-pager --full status atlas-v5.service || true
 echo
 echo "Atlas V5 deployment completed and health check passed."
 echo "Runtime: http://127.0.0.1:8086"
+if [[ ! -f /var/lib/atlas-v5/auth/enrolled && -f /var/lib/atlas-v5/auth/enrollment-code ]]; then
+  echo "Owner passkey enrollment code: $(cat /var/lib/atlas-v5/auth/enrollment-code)"
+  echo "Open https://atlas-agentic.co.za and use this code once to register your passkey."
+fi
 echo "Caddy/V4 were not changed."

@@ -9,6 +9,7 @@ description = "Atlas V5 model-led local agent environment"
 requires-python = ">=3.14"
 dependencies = [
   "alembic>=1.16",
+  "croniter>=6.0",
   "fastapi>=0.116",
   "openai>=1.100",
   "psycopg[binary]>=3.2",
@@ -16,6 +17,7 @@ dependencies = [
   "python-multipart>=0.0.20",
   "sqlalchemy>=2.0.43",
   "uvicorn[standard]>=0.35",
+  "webauthn>=3.0.0",
 ]
 
 [project.optional-dependencies]

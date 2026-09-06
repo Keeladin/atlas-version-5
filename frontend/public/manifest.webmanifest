@@ -1,0 +1,14 @@
+{
+  "name": "Atlas V5",
+  "short_name": "Atlas",
+  "description": "Atlas V5 model-led personal agent environment",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#010409",
+  "theme_color": "#0d1117",
+  "orientation": "any",
+  "icons": [
+    { "src": "/atlas-icon.webp", "sizes": "512x512", "type": "image/webp", "purpose": "any maskable" }
+  ]
+}

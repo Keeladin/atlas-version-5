@@ -26,6 +26,7 @@ LockPersonality=yes
 RestrictSUIDSGID=yes
 ReadWritePaths=/var/lib/atlas-v5
 BindPaths=/home/jaco/Workspace:/var/lib/atlas-v5/workspace
+BindPaths=/home/jaco/Projects:/var/lib/atlas-v5/projects
 ReadOnlyPaths=/etc/atlas-v5
 
 [Install]

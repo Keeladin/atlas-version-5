@@ -30,6 +30,36 @@ class CapabilityRuntime:
             seen.setdefault(item.family, item.capability_id)
         return [{"family": family, "capability_id": capability_id} for family, capability_id in seen.items()]
 
+    def descriptor(self, operation_id: str) -> OperationDescriptor | None:
+        return self._operations.get(operation_id)
+
+    def validate_arguments(self, operation_id: str, arguments: dict[str, Any]) -> str | None:
+        descriptor = self._operations.get(operation_id)
+        if descriptor is None:
+            return "Operation is not registered or enabled."
+        schema = descriptor.input_schema or {}
+        required = schema.get("required")
+        if isinstance(required, list):
+            missing = [str(key) for key in required if key not in arguments]
+            if missing:
+                return f"Missing required argument(s): {', '.join(missing)}"
+            properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            empty_strings = [
+                str(key) for key in required
+                if isinstance(properties.get(key), dict)
+                and properties[key].get("type") == "string"
+                and isinstance(arguments.get(key), str)
+                and not arguments[key].strip()
+            ]
+            if empty_strings:
+                return f"Required argument(s) cannot be empty: {', '.join(empty_strings)}"
+        if schema.get("additionalProperties") is False:
+            properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            extras = sorted(set(arguments) - set(properties))
+            if extras:
+                return f"Unexpected argument(s): {', '.join(extras)}"
+        return None
+
     def search(self, query: str, limit: int = 8) -> list[OperationDescriptor]:
         terms = {term for term in query.casefold().replace("/", " ").replace(".", " ").split() if term}
         scored: list[tuple[int, OperationDescriptor]] = []
@@ -64,6 +94,14 @@ class CapabilityRuntime:
             output = executor(arguments)
             if hasattr(output, "__await__"):
                 output = await output
+        except ValueError as exc:
+            return CapabilityCallResult(
+                status="failed", operation_id=operation_id,
+                output={"failure_phase": "before_dispatch"}, message=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001 - capability boundary must return tool failures
-            return CapabilityCallResult(status="failed", operation_id=operation_id, message=str(exc))
+            return CapabilityCallResult(
+                status="failed", operation_id=operation_id,
+                output={"failure_phase": "ambiguous_dispatch"}, message=str(exc),
+            )
         return CapabilityCallResult(status="succeeded", operation_id=operation_id, output=output)

@@ -70,6 +70,28 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             executable_operations=["storage.local.list", "storage.local.acquire"],
         ),
         CapabilityEntry(
+            id="atlas.project_folders",
+            family="Project folders",
+            description="Browse and safely edit files in the owner's real local development project directories.",
+            source=CapabilitySource.ATLAS,
+            enabled=True,
+            availability=CapabilityAvailability.AVAILABLE,
+            executable_operations=[
+                "storage.projects.list", "storage.projects.acquire", "storage.projects.status",
+                "storage.projects.diff", "storage.projects.preview", "storage.projects.apply",
+                "storage.projects.move", "storage.projects.delete",
+            ],
+        ),
+        CapabilityEntry(
+            id="atlas.schedules",
+            family="Scheduled tasks",
+            description="Persist and run owner-approved scheduled Atlas tasks.",
+            source=CapabilitySource.ATLAS,
+            enabled=True,
+            availability=CapabilityAvailability.AVAILABLE,
+            executable_operations=["schedules.list", "schedules.create", "schedules.update", "schedules.delete"],
+        ),
+        CapabilityEntry(
             id="github.mcp",
             family="GitHub",
             description="Access owner-authorized GitHub repositories through GitHub's official MCP server.",
@@ -113,6 +135,15 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         authority=AuthorityMode.AUTO,
     ))
     registry.register_operation(OperationDescriptor(
+        id="storage.projects.list",
+        capability_id="atlas.project_folders",
+        family="Project folders",
+        description="List files and folders inside the owner's approved local development project root.",
+        input_schema={"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":False},
+        effect=EffectKind.READ,
+        authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
         id="storage.local.acquire",
         capability_id="atlas.local_storage",
         family="Local storage",
@@ -141,4 +172,75 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             authority=AuthorityMode.AUTO,
             trust="external",
         ))
+
+    registry.register_operation(OperationDescriptor(
+        id="schedules.list", capability_id="atlas.schedules", family="Scheduled tasks",
+        description="List the owner's scheduled Atlas tasks and their next-run state.",
+        input_schema={"type":"object","properties":{"include_disabled":{"type":"boolean"}},"additionalProperties":False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="schedules.create", capability_id="atlas.schedules", family="Scheduled tasks",
+        description="Create a future Atlas task. Use once with an ISO timestamp, interval with minutes, or cron with a five-field cron expression.",
+        input_schema={"type":"object","properties":{"title":{"type":"string"},"prompt":{"type":"string"},"schedule_kind":{"type":"string","enum":["once","interval","cron"]},"schedule_value":{"type":"string"},"timezone":{"type":"string"}},"required":["title","prompt","schedule_kind","schedule_value"],"additionalProperties":False},
+        effect=EffectKind.CREATE, authority=AuthorityMode.APPROVAL_REQUIRED,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="schedules.update", capability_id="atlas.schedules", family="Scheduled tasks",
+        description="Change, pause, or resume an existing scheduled Atlas task.",
+        input_schema={"type":"object","properties":{"task_id":{"type":"string"},"title":{"type":"string"},"prompt":{"type":"string"},"schedule_kind":{"type":"string","enum":["once","interval","cron"]},"schedule_value":{"type":"string"},"timezone":{"type":"string"},"enabled":{"type":"boolean"}},"required":["task_id"],"additionalProperties":False},
+        effect=EffectKind.UPDATE, authority=AuthorityMode.APPROVAL_REQUIRED,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="schedules.delete", capability_id="atlas.schedules", family="Scheduled tasks",
+        description="Permanently delete a scheduled Atlas task.",
+        input_schema={"type":"object","properties":{"task_id":{"type":"string"}},"required":["task_id"],"additionalProperties":False},
+        effect=EffectKind.DELETE, authority=AuthorityMode.APPROVAL_REQUIRED,
+    ))
+
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.acquire",
+        capability_id="atlas.project_folders",
+        family="Project folders",
+        description="Acquire one file from the owner's local development projects as a model-readable resource.",
+        input_schema={"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False},
+        effect=EffectKind.READ,
+        authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.status", capability_id="atlas.project_folders", family="Project folders",
+        description="Inspect Git baseline and working-tree status for one local project before making changes.",
+        input_schema={"type":"object","properties":{"project":{"type":"string"}},"required":["project"],"additionalProperties":False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.diff", capability_id="atlas.project_folders", family="Project folders",
+        description="Inspect the current Git diff for one local project.",
+        input_schema={"type":"object","properties":{"project":{"type":"string"}},"required":["project"],"additionalProperties":False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.preview", capability_id="atlas.project_folders", family="Project folders",
+        description="Preview an exact single-file create or update as a unified diff. Returns the file hash and change token required to apply it.",
+        input_schema={"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.apply", capability_id="atlas.project_folders", family="Project folders",
+        description="Atomically apply one previously previewed UTF-8 project-file create or update. Refuses stale files and checkpoints dirty Git state first.",
+        input_schema={"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_sha256":{"type":"string"},"change_token":{"type":"string"}},"required":["path","content","expected_sha256","change_token"],"additionalProperties":False},
+        effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.move", capability_id="atlas.project_folders", family="Project folders",
+        description="Atomically rename or move one file within the same project after verifying the file hash and checkpointing dirty Git state.",
+        input_schema={"type":"object","properties":{"source_path":{"type":"string"},"target_path":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["source_path","target_path","expected_sha256"],"additionalProperties":False},
+        effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="storage.projects.delete", capability_id="atlas.project_folders", family="Project folders",
+        description="Delete one project file only after owner approval, hash verification, and an automatic checkpoint.",
+        input_schema={"type":"object","properties":{"path":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","expected_sha256"],"additionalProperties":False},
+        effect=EffectKind.DELETE, authority=AuthorityMode.APPROVAL_REQUIRED,
+    ))
     return registry
