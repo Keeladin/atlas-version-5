@@ -37,7 +37,7 @@ function AtlasPage({ health }: { health: Health | null }) {
     <div className="atlas-shell">
       <header className="persistent-bar">
         <div className="brand-cluster">
-          <span className="brand-mark">A</span>
+          <img className="brand-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
           <strong>Atlas</strong>
           <span className="version-tag">V5</span>
         </div>
@@ -134,9 +134,12 @@ function ControlPage({ health }: { health: Health | null }) {
   return (
     <div className="control-shell">
       <header className="control-topbar">
-        <div>
-          <div className="eyebrow">ATLAS V5</div>
-          <h1>Control</h1>
+        <div className="control-title-cluster">
+          <img className="control-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
+          <div>
+            <div className="eyebrow">ATLAS V5</div>
+            <h1>Control</h1>
+          </div>
         </div>
         <a className="control-link" href="/">Back to Atlas</a>
       </header>

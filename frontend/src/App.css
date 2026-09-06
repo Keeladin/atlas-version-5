@@ -72,16 +72,14 @@ a { color: inherit; }
   border-right: 1px solid var(--border-default);
 }
 
-.brand-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 22px;
-  height: 22px;
+.brand-avatar {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
   border: 1px solid var(--border-default);
-  border-radius: 6px;
-  background: var(--bg-inset);
-  font-size: 12px;
-  font-weight: 600;
+  border-radius: 7px;
+  object-fit: cover;
+  box-shadow: 0 1px 6px #01040999;
 }
 
 .version-tag { color: var(--fg-muted); font-size: 11px; }
@@ -440,6 +438,21 @@ textarea:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+.control-title-cluster {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.control-avatar {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border-default);
+  border-radius: 9px;
+  object-fit: cover;
+  box-shadow: 0 2px 10px #01040999;
 }
 
 .control-link {
