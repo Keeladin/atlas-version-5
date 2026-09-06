@@ -49,12 +49,13 @@ export async function getConversationContext(): Promise<ConversationContext> {
 
 export async function streamMessage(
   text: string,
+  attachments: string[],
   onDelta: (delta: string) => void,
 ): Promise<void> {
   const response = await fetch('/api/conversation/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, attachments }),
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)

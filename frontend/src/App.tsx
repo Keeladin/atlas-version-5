@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './App.css'
 import { decideAction, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getPendingActions, getRecentActions, streamMessage, uploadLocalFile, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type PendingAction, type RecentAction, type Turn } from './api'
 
@@ -28,6 +30,10 @@ function RailItem({ label, detail, active = false, nested = false, onClick }: { 
       {detail ? <span className="rail-detail">{detail}</span> : null}
     </button>
   )
+}
+
+function MarkdownBody({ text }: { text: string }) {
+  return <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
 }
 
 function turnText(turn: Turn): string {
@@ -166,10 +172,8 @@ function AtlasPage({ health }: { health: Health | null }) {
     const text = draft.trim()
     if ((!text && composerAttachments.length === 0) || sending || composerUploading) return
     const attachments = [...composerAttachments]
-    const attachmentContext = attachments.length
-      ? `\n\n[Attached local workspace file${attachments.length === 1 ? '' : 's'}: ${attachments.map((file) => file.path).join(', ')}. Acquire and inspect ${attachments.length === 1 ? 'this resource' : 'these resources'} when relevant to my request.]`
-      : ''
-    const requestText = `${text || 'Please inspect the attached file.'}${attachmentContext}`
+    const attachmentPaths = attachments.map((file) => file.path)
+    const requestText = text
     setDraft('')
     setComposerAttachments([])
     setError(null)
@@ -184,7 +188,7 @@ function AtlasPage({ health }: { health: Health | null }) {
     }
     setTurns((current) => [...current, optimistic])
     try {
-      await streamMessage(requestText, (delta) => setStreamingText((current) => current + delta))
+      await streamMessage(requestText, attachmentPaths, (delta) => setStreamingText((current) => current + delta))
       const conversation = await getConversation()
       setTurns(conversation.turns)
       setConversationContext(await getConversationContext().catch(() => null))
@@ -310,8 +314,8 @@ function AtlasPage({ health }: { health: Health | null }) {
                     <div className="phase-message"><span className="phase-label">PHASE 1</span><h2>The model is in the seat.</h2><p>Conversation is Atlas-owned and durable. Start anywhere.</p></div>
                   ) : (
                     <div className="conversation-thread">
-                      {visibleTurns.map((turn) => <article className={`chat-turn ${turn.actor}`} key={turn.id}><div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div><div className="turn-body">{turnText(turn)}</div></article>)}
-                      {streamingText ? <article className="chat-turn atlas streaming"><div className="turn-actor">Atlas</div><div className="turn-body">{streamingText}<span className="stream-caret" /></div></article> : null}
+                      {visibleTurns.map((turn) => <article className={`chat-turn ${turn.actor}`} key={turn.id}><div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div><div className="turn-body">{turn.actor === 'atlas' ? <MarkdownBody text={turnText(turn)} /> : turnText(turn)}</div></article>)}
+                      {streamingText ? <article className="chat-turn atlas streaming"><div className="turn-actor">Atlas</div><div className="turn-body"><MarkdownBody text={streamingText} /><span className="stream-caret" /></div></article> : null}
                       {error ? <div className="chat-error">{error}</div> : null}<div ref={bottomRef} />
                     </div>
                   )}

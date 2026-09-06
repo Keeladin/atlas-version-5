@@ -41,7 +41,8 @@ capability_runtime = build_capability_runtime(settings, registry)
 
 
 class ChatRequest(BaseModel):
-    text: str
+    text: str = ""
+    attachments: list[str] = []
 
 
 class ActionDecision(BaseModel):
@@ -265,8 +266,9 @@ async def conversation(session: Annotated[AsyncSession, Depends(get_session)]):
 @app.post("/api/conversation/stream")
 async def stream_conversation(request: ChatRequest):
     text = request.text.strip()
-    if not text:
-        raise HTTPException(status_code=422, detail="Message text is required")
+    attachment_paths = [path.strip() for path in request.attachments if path.strip()]
+    if not text and not attachment_paths:
+        raise HTTPException(status_code=422, detail="Message text or an attachment is required")
 
     api_key = settings.openai_api_key
     if api_key is None:
@@ -277,12 +279,21 @@ async def stream_conversation(request: ChatRequest):
         repository = TranscriptRepository(session)
         transcript = await repository.get_or_create_active()
         await repository.append_turn(transcript.id, Actor.OWNER, [TextBlock(text=text)])
-        run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=text)
+        run_intent = text or f"Attached {len(attachment_paths)} local workspace file(s)"
+        run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=run_intent)
         await session.commit()
         turns = await repository.list_turns(transcript.id)
 
     provider = OpenAIProvider(api_key=api_key, model=settings.openai_model)
     messages = turns_to_provider_messages(turns)
+    if attachment_paths:
+        attachment_note = (
+            "Atlas runtime attached local workspace resource path(s) to the owner's current turn: "
+            + ", ".join(attachment_paths)
+            + ". Use storage.local.acquire to inspect them when relevant. "
+            "This is runtime metadata, not owner-authored text."
+        )
+        messages.append({"role": "user", "content": attachment_note})
 
     async def tool_handler(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name == "atlas_capability_search":
