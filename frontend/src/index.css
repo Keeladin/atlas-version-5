@@ -1,6 +1,6 @@
 html {
   min-width: 320px;
-  background: #0d1117;
+  background: #010409;
 }
 
 body {
@@ -23,10 +23,8 @@ a {
 button:focus-visible,
 a:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid #91a6bd;
+  outline: 2px solid #4493f8;
   outline-offset: 2px;
 }
 
-#root {
-  min-height: 100vh;
-}
+#root { min-height: 100vh; }

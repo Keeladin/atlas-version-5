@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import './App.css'
 import { getHealth, type Health } from './api'
 
@@ -6,60 +6,126 @@ function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
 }
 
-function AtlasPage({ health }: { health: Health | null }) {
+function RailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">ATLAS V5</div>
-          <h1>Atlas</h1>
+    <section className="rail-section">
+      <div className="rail-heading">{title}</div>
+      <div className="rail-items">{children}</div>
+    </section>
+  )
+}
+
+function RailItem({ label, detail, active = false, nested = false }: {
+  label: string
+  detail?: string
+  active?: boolean
+  nested?: boolean
+}) {
+  return (
+    <div className={`rail-item${active ? ' active' : ''}${nested ? ' nested' : ''}`}>
+      <span className="rail-glyph" aria-hidden="true">{nested ? '↳' : '›'}</span>
+      <span className="rail-label">{label}</span>
+      {detail ? <span className="rail-detail">{detail}</span> : null}
+    </div>
+  )
+}
+function AtlasPage({ health }: { health: Health | null }) {
+  const runtimeOk = Boolean(health)
+  const databaseOk = Boolean(health?.database.ok)
+
+  return (
+    <div className="atlas-shell">
+      <header className="persistent-bar">
+        <div className="brand-cluster">
+          <span className="brand-mark">A</span>
+          <strong>Atlas</strong>
+          <span className="version-tag">V5</span>
         </div>
-        <div className="topbar-actions">
-          <span className="runtime-pill">
-            <StatusDot ok={Boolean(health?.database.ok)} />
-            {health ? `runtime ${health.status}` : 'runtime checking'}
-          </span>
-          <a className="control-link" href="/control">Control</a>
+        <div className="persistent-context">
+          <span className="context-item active">Home</span>
+          <span className="context-item">Phase 0</span>
+        </div>
+        <div className="persistent-status">
+          <span className="status-label"><StatusDot ok={runtimeOk} />Runtime</span>
+          <span className="status-label"><StatusDot ok={databaseOk} />PostgreSQL</span>
+          <a className="topbar-link" href="/control">Control</a>
         </div>
       </header>
 
-      <main className="atlas-grid">
-        <aside className="workspace-panel panel">
-          <div className="panel-title">Workspace</div>
-          <p className="muted">No active workspace yet.</p>
-          <div className="empty-card">Files, mail, research and artifacts will surface here when relevant.</div>
+      <div className="atlas-body">
+        <aside className="left-rail">
+          <div className="rail-scroll">
+            <RailSection title="Find">
+              <RailItem label="Projects" active />
+              <RailItem label="Local storage" />
+              <RailItem label="Drive storage" />
+              <RailItem label="Project folders" />
+              <RailItem label="Repositories" />
+              <RailItem label="Artifacts" />
+            </RailSection>
+            <RailSection title="Utilities">
+              <RailItem label="Normalization" />
+              <RailItem label="Input folder" detail="not set" nested />
+              <RailItem label="Output folder" detail="not set" nested />
+            </RailSection>
+          </div>
+          <div className="rail-footer">
+            <span className="rail-footer-label">Environment</span>
+            <span><StatusDot ok={runtimeOk} />{health ? health.environment : 'checking'}</span>
+          </div>
         </aside>
 
-        <section className="chat-panel panel">
-          <div className="chat-scroll">
-            <div className="system-card">
-              <span className="phase-label">PHASE 0</span>
-              <h2>The seat is being built.</h2>
-              <p>
-                Transcript, artifacts, registry and runtime truth are present. The OpenAI inference adapter arrives in Phase 1.
-              </p>
+        <main className="main-stage">
+          <section className="chat-canvas" aria-label="Atlas chat canvas">
+            <div className="canvas-head">
+              <div>
+                <div className="canvas-kicker">Home</div>
+                <h1>Atlas</h1>
+              </div>
+              <span className="canvas-state">{health ? `v${health.version}` : 'checking'}</span>
             </div>
-          </div>
-          <form className="composer" onSubmit={(event) => event.preventDefault()}>
-            <button className="attach-button" type="button" aria-label="Attach artifact">+</button>
-            <textarea placeholder="Talk to Atlas…" rows={2} disabled />
-            <button className="send-button" type="submit" disabled>Send</button>
-          </form>
-        </section>
 
-        <aside className="attention-panel panel">
-          <div className="panel-title">Needs You</div>
-          <p className="muted">Nothing needs your attention.</p>
-          <div className="runtime-card">
-            <span><StatusDot ok={Boolean(health)} /> API</span>
-            <strong>{health ? health.version : 'checking'}</strong>
-          </div>
-          <div className="runtime-card">
-            <span><StatusDot ok={Boolean(health?.database.ok)} /> PostgreSQL</span>
-            <strong>{health?.database.ok ? 'healthy' : 'not ready'}</strong>
-          </div>
-        </aside>
-      </main>
+            <div className="chat-space">
+              <div className="phase-message">
+                <span className="phase-label">PHASE 0</span>
+                <h2>The seat is ready for the agent.</h2>
+                <p>Runtime, transcript, artifacts and registry foundations are live. Conversation arrives with Phase 1.</p>
+              </div>
+            </div>
+
+            <form className="composer" onSubmit={(event) => event.preventDefault()}>
+              <button className="attach-button" type="button" aria-label="Attach artifact" disabled>+</button>
+              <textarea placeholder="Talk to Atlas…" rows={1} disabled />
+              <button className="send-button" type="submit" disabled>Send</button>
+            </form>
+          </section>
+          <aside className="activity-rail" aria-label="Atlas activity">
+            <section className="activity-section attention-section">
+              <div className="activity-heading-row">
+                <span className="activity-heading">Needs You</span>
+                <span className="activity-count">0</span>
+              </div>
+              <p className="activity-empty">Nothing needs your attention.</p>
+            </section>
+
+            <div className="activity-divider" />
+
+            <section className="activity-section">
+              <div className="activity-heading-row">
+                <span className="activity-heading">Latest</span>
+                <span className="activity-caption">recent activity</span>
+              </div>
+              <div className="latest-empty">
+                <span className="latest-time">—</span>
+                <div>
+                  <strong>No recent activity yet</strong>
+                  <p>Mail, calendar, repository events and completed work can surface here when connected.</p>
+                </div>
+              </div>
+            </section>
+          </aside>
+        </main>
+      </div>
     </div>
   )
 }
@@ -67,7 +133,7 @@ function AtlasPage({ health }: { health: Health | null }) {
 function ControlPage({ health }: { health: Health | null }) {
   return (
     <div className="control-shell">
-      <header className="topbar">
+      <header className="control-topbar">
         <div>
           <div className="eyebrow">ATLAS V5</div>
           <h1>Control</h1>
@@ -75,7 +141,7 @@ function ControlPage({ health }: { health: Health | null }) {
         <a className="control-link" href="/">Back to Atlas</a>
       </header>
       <main className="control-grid">
-        <section className="panel control-card">
+        <section className="control-card">
           <div className="panel-title">Runtime</div>
           <dl>
             <div><dt>Version</dt><dd>{health?.version ?? 'checking'}</dd></div>
@@ -83,13 +149,13 @@ function ControlPage({ health }: { health: Health | null }) {
             <div><dt>Status</dt><dd>{health?.status ?? 'checking'}</dd></div>
           </dl>
         </section>
-        <section className="panel control-card">
+        <section className="control-card">
           <div className="panel-title">PostgreSQL</div>
           <p className={health?.database.ok ? 'healthy-text' : 'warning-text'}>
             {health?.database.ok ? 'Connected and healthy.' : 'Not connected yet.'}
           </p>
         </section>
-        <section className="panel control-card">
+        <section className="control-card">
           <div className="panel-title">Environment Registry</div>
           <p>{health ? `${health.registry_entries} Phase 0 entry` : 'Checking…'}</p>
         </section>
