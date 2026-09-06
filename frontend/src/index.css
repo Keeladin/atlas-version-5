@@ -1,0 +1,32 @@
+html {
+  min-width: 320px;
+  background: #0d1117;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+textarea,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a {
+  transition: border-color 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+
+button:focus-visible,
+a:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #91a6bd;
+  outline-offset: 2px;
+}
+
+#root {
+  min-height: 100vh;
+}

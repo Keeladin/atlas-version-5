@@ -1,0 +1,8 @@
+# Production Atlas V5 route. V4 remains available on 127.0.0.1:8080 as the rollback target.
+atlas-agentic.co.za {
+    reverse_proxy 127.0.0.1:8086
+}
+
+www.atlas-agentic.co.za {
+    redir https://atlas-agentic.co.za{uri}
+}

@@ -79,7 +79,7 @@ The existing V4 package broker remains untouched. If V5 later needs privileged h
 
 During development V4 keeps `127.0.0.1:8080` and the live DNS/Caddy route.
 
-V5 should use a separate localhost port, proposed as `127.0.0.1:8085`.
+V5 should use a separate localhost port, proposed as `127.0.0.1:8086`.
 
 Developer access can use SSH/VS Code port forwarding while V5 is not yet public. A temporary staging hostname is optional, not required by the architecture.
 
@@ -87,7 +87,7 @@ At cutover, Caddy changes only this upstream:
 
 ```text
 atlas-agentic.co.za
-127.0.0.1:8080  ->  127.0.0.1:8085
+127.0.0.1:8080  ->  127.0.0.1:8086
 ```
 
 V5 does not need to reclaim port 8080. Keeping separate ports makes rollback and historical inspection simpler.
@@ -217,7 +217,7 @@ Proposed units:
 - `atlas-v5.service` — core FastAPI/runtime/static frontend service running as `atlas-v5`;
 - optional later workers/brokers only when an actual boundary or workload justifies a separate process.
 
-`atlas-v5.service` should start after the network and PostgreSQL are available, bind `127.0.0.1:8085`, restart on recoverable failure, use a restrictive umask and apply appropriate systemd hardening without blocking required artifact/state access.
+`atlas-v5.service` should start after the network and PostgreSQL are available, bind `127.0.0.1:8086`, restart on recoverable failure, use a restrictive umask and apply appropriate systemd hardening without blocking required artifact/state access.
 
 Do not split the runtime into many daemons merely because the architecture has many conceptual faculties.
 ## 17. Caddy and DNS cutover
@@ -226,10 +226,10 @@ Development leaves the existing `atlas-agentic.co.za -> 127.0.0.1:8080` route un
 
 When the V5 centre has passed its deployment checks:
 
-1. confirm V5 is healthy on `127.0.0.1:8085`;
+1. confirm V5 is healthy on `127.0.0.1:8086`;
 2. stop the V4 Atlas API service but preserve its files/state/unit;
 3. back up the active Caddyfile;
-4. change only the Atlas reverse-proxy upstream from `127.0.0.1:8080` to `127.0.0.1:8085`;
+4. change only the Atlas reverse-proxy upstream from `127.0.0.1:8080` to `127.0.0.1:8086`;
 5. validate the Caddy configuration and reload Caddy;
 6. verify HTTPS, streaming, attachments, refresh/reconnect and mobile access through the existing hostname.
 

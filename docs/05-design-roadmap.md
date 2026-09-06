@@ -2,9 +2,9 @@
 
 ## Status
 
-The architecture discovery, review, and implementation-planning phases are complete. The project has passed both the **architecture gate** and the **implementation-plan gate**.
+The architecture discovery, review, and implementation-planning phases are complete. The project has passed both the **architecture gate** and the **implementation-plan gate**. Phase 0 has also been implemented, deployed, restart-verified, and cut over behind the production Caddy route.
 
-The accepted design authorities are `15-pre-implementation-baseline.md`, `17-runtime-constitution.md`, and `18-implementation-plan.md`. Implementation may now begin from those documents.
+The accepted design authorities remain `15-pre-implementation-baseline.md`, `17-runtime-constitution.md`, and `18-implementation-plan.md`. Phase 1 now builds the working Atlas model centre from that foundation.
 
 ## Completed design areas
 
@@ -28,7 +28,7 @@ Operational values such as TTLs, chunk sizes, embedding choice, ranking weights,
 
 ## Implementation next
 
-Implementation now follows the accepted heliocentric sequence in `18-implementation-plan.md` rather than a use-case vertical slice.
+Phase 1 now follows the accepted heliocentric sequence in `18-implementation-plan.md` rather than a use-case vertical slice.
 
 The centre is a working model and direct multimodal interface, with the minimum runtime execution spine required to preserve identity, transcript/artifact continuity, secrets, capability enablement, effect truth/recovery, and owner-visible failure state. The first orbit is the primary provider's native capabilities. The next orbit is MCP, connected services, and useful local software. Runtime evolves in parallel as each capability needs execution, persistence, authority, or observability support.
 

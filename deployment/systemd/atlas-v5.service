@@ -1,0 +1,31 @@
+[Unit]
+Description=Atlas V5 model-led runtime
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=atlas-v5
+Group=atlas-v5
+WorkingDirectory=/opt/atlas-v5/app
+EnvironmentFile=/etc/atlas-v5/config/runtime.env
+ExecStart=/opt/atlas-v5/venv/bin/uvicorn atlas.api.app:app --host 127.0.0.1 --port 8086
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/atlas-v5
+ReadOnlyPaths=/etc/atlas-v5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,227 @@
+:root {
+  --bg: #0d1117;
+  --surface: #131922;
+  --surface-2: #19212c;
+  --line: #293342;
+  --text: #e8edf3;
+  --muted: #8d9aaa;
+  --accent: #c7d2df;
+  --ok: #56b685;
+  --bad: #d98b62;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+a { color: inherit; }
+
+.app-shell,
+.control-shell {
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.topbar {
+  max-width: 1600px;
+  margin: 0 auto 16px;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.topbar h1 {
+  margin: 2px 0 0;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+}
+
+.eyebrow,
+.panel-title,
+.phase-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.runtime-pill,
+.control-link {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 9px 12px;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+}
+.status-dot.ok { background: var(--ok); }
+.status-dot.bad { background: var(--bad); }
+
+.atlas-grid {
+  max-width: 1600px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(210px, 0.8fr) minmax(520px, 2.4fr) minmax(220px, 0.9fr);
+  gap: 14px;
+  min-height: calc(100vh - 128px);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.workspace-panel,
+.attention-panel {
+  padding: 18px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.empty-card,
+.runtime-card {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.runtime-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 620px;
+}
+
+.chat-scroll {
+  flex: 1;
+  padding: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.system-card {
+  max-width: 560px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  border-radius: 14px;
+  padding: 24px;
+}
+
+.system-card h2 {
+  margin: 8px 0 10px;
+  font-size: 24px;
+  letter-spacing: -0.025em;
+}
+
+.system-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.composer {
+  border-top: 1px solid var(--line);
+  padding: 14px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.composer textarea {
+  resize: none;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 12px;
+  font: inherit;
+}
+
+.attach-button,
+.send-button {
+  height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 650;
+}
+
+.attach-button { width: 42px; font-size: 20px; }
+.send-button { padding: 0 16px; }
+
+button:disabled,
+textarea:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.control-grid {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.control-card { padding: 20px; }
+
+.control-card dl { margin: 16px 0 0; }
+.control-card dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.control-card dt { color: var(--muted); }
+.control-card dd { margin: 0; }
+
+.healthy-text { color: var(--ok); }
+.warning-text { color: var(--bad); }
+
+@media (max-width: 980px) {
+  .app-shell, .control-shell { padding: 12px; }
+  .atlas-grid { grid-template-columns: 1fr; min-height: auto; }
+  .workspace-panel, .attention-panel { min-height: 140px; }
+  .chat-panel { min-height: 58vh; order: -1; }
+  .control-grid { grid-template-columns: 1fr; }
+}
