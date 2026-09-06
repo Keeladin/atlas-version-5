@@ -21,6 +21,10 @@ if [[ ! -r /etc/atlas-v5/secrets/database-url ]]; then
   echo "Atlas V5 database secret is missing." >&2
   exit 1
 fi
+if [[ ! -r /etc/atlas-v5/secrets/openai-api-key ]]; then
+  echo "Atlas V5 OpenAI API secret is missing." >&2
+  exit 1
+fi
 
 if [[ ! -x ${UV_BIN} ]]; then
   echo "uv was not found at ${UV_BIN}." >&2
@@ -37,6 +41,23 @@ install -d -o root -g atlas-v5 -m 0750 \
   "${APP_DIR}/migrations" \
   "${APP_DIR}/frontend" \
   "${APP_DIR}/frontend/dist"
+
+# Owner workspace stays outside Atlas runtime state. Atlas sees only this approved root.
+install -d -o jaco -g atlas-v5 -m 2770 \
+  /home/jaco/Workspace \
+  /home/jaco/Workspace/Projects \
+  /home/jaco/Workspace/Documents \
+  /home/jaco/Workspace/Imports \
+  /home/jaco/Workspace/Exports \
+  /home/jaco/Workspace/Scratch
+install -d -o atlas-v5 -g atlas-v5 -m 0770 /var/lib/atlas-v5/workspace
+
+if ! grep -q '^ATLAS_WORKSPACE_ROOT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_WORKSPACE_ROOT=/var/lib/atlas-v5/workspace' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_WORKSPACE_DISPLAY_ROOT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_WORKSPACE_DISPLAY_ROOT=/home/jaco/Workspace' >> /etc/atlas-v5/config/runtime.env
+fi
 
 rsync -a --delete \
   --exclude '__pycache__/' \

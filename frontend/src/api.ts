@@ -3,11 +3,208 @@ export type Health = {
   version: string
   environment: string
   database: { ok: boolean; error: string | null }
+  provider: { provider: string; model: string; configured: boolean }
   registry_entries: number
+}
+
+export type TextBlock = { type: 'text'; text: string }
+export type Turn = {
+  id: string
+  transcript_id: string
+  actor: 'owner' | 'atlas' | 'tool' | 'system'
+  blocks: Array<TextBlock | Record<string, unknown>>
+  created_at: string
+}
+
+export type Conversation = {
+  transcript: { id: string; created_at: string; closed_at: string | null }
+  turns: Turn[]
 }
 
 export async function getHealth(): Promise<Health> {
   const response = await fetch('/api/health')
   const payload = (await response.json()) as Health
   return payload
+}
+
+export async function getConversation(): Promise<Conversation> {
+  const response = await fetch('/api/conversation')
+  if (!response.ok) throw new Error(`Conversation load failed (${response.status})`)
+  return (await response.json()) as Conversation
+}
+
+export type ConversationContext = {
+  input_tokens: number
+  limit_tokens: number
+  pressure: number
+  state: 'green' | 'amber' | 'red'
+}
+
+export async function getConversationContext(): Promise<ConversationContext> {
+  const response = await fetch('/api/conversation/context')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Context load failed (${response.status})`)
+  return body as ConversationContext
+}
+
+export async function streamMessage(
+  text: string,
+  onDelta: (delta: string) => void,
+): Promise<void> {
+  const response = await fetch('/api/conversation/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new Error(body?.detail ?? `Atlas request failed (${response.status})`)
+  }
+  if (!response.body) throw new Error('Atlas returned no response stream')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.trim()) continue
+      const event = JSON.parse(line) as { type: string; text?: string; message?: string }
+      if (event.type === 'delta' && event.text) onDelta(event.text)
+      if (event.type === 'error') throw new Error(event.message ?? 'Provider error')
+    }
+    if (done) break
+  }
+}
+
+export type LocalStorageEntry = {
+  name: string
+  path: string
+  kind: 'directory' | 'file'
+  size_bytes: number | null
+  modified_at: string
+}
+
+export type LocalStorageListing = {
+  name: string
+  display_root: string
+  path: string
+  entries: LocalStorageEntry[]
+}
+
+export async function getLocalStorage(path = ''): Promise<LocalStorageListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  const response = await fetch(`/api/storage/local${query}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Local storage load failed (${response.status})`)
+  return body as LocalStorageListing
+}
+
+export async function uploadLocalFile(path: string, file: File): Promise<LocalStorageEntry> {
+  const form = new FormData()
+  form.append('file', file)
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  const response = await fetch(`/api/storage/local/upload${query}`, { method: 'POST', body: form })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Workspace upload failed (${response.status})`)
+  return body as LocalStorageEntry
+}
+
+export type DriveStorageEntry = {
+  id: string
+  name: string
+  kind: 'directory' | 'file'
+  mime_type: string
+  size_bytes: number | null
+  modified_at: string | null
+  web_view_link: string | null
+}
+
+export type DriveStorageListing = {
+  folder_id: string
+  entries: DriveStorageEntry[]
+}
+
+export async function getDriveStorage(folderId = 'root'): Promise<DriveStorageListing> {
+  const response = await fetch(`/api/storage/drive?folder_id=${encodeURIComponent(folderId)}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Drive storage load failed (${response.status})`)
+  return body as DriveStorageListing
+}
+
+export type ControlCredential = {
+  label: string
+  configured: boolean
+  storage: string
+  path: string | null
+  protected: boolean
+  authenticated: boolean | null
+  scope: string | null
+}
+
+export type ControlMcp = {
+  id: string
+  label: string
+  configured: boolean
+  enabled: boolean
+  availability: string
+  operations: string[]
+  transport: string
+}
+
+export type ControlConfiguration = {
+  credentials: ControlCredential[]
+  mcps: ControlMcp[]
+}
+
+export async function getControlConfiguration(): Promise<ControlConfiguration> {
+  const response = await fetch('/api/control/configuration')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Control configuration load failed (${response.status})`)
+  return body as ControlConfiguration
+}
+
+export type PendingAction = {
+  id: string
+  action_id: string | null
+  state: string
+  title: string
+  detail: { operation?: string; arguments?: Record<string, unknown> }
+  created_at: string
+}
+
+export async function getPendingActions(): Promise<PendingAction[]> {
+  const response = await fetch('/api/actions/pending')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Pending actions load failed (${response.status})`)
+  return (body?.items ?? []) as PendingAction[]
+}
+
+export async function decideAction(actionId: string, approve: boolean): Promise<void> {
+  const response = await fetch(`/api/actions/${encodeURIComponent(actionId)}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approve }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Action decision failed (${response.status})`)
+}
+
+export type RecentAction = {
+  id: string
+  operation: string
+  status: string
+  summary: string
+  created_at: string
+}
+
+export async function getRecentActions(limit = 8): Promise<RecentAction[]> {
+  const response = await fetch(`/api/actions/recent?limit=${limit}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Recent actions load failed (${response.status})`)
+  return (body?.items ?? []) as RecentAction[]
 }

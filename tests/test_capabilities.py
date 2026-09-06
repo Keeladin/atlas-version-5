@@ -1,0 +1,50 @@
+import pytest
+from atlas.capabilities import (
+    AuthorityMode,
+    CapabilityRuntime,
+    EffectKind,
+    OperationDescriptor,
+)
+
+
+def descriptor(authority: AuthorityMode = AuthorityMode.AUTO) -> OperationDescriptor:
+    return OperationDescriptor(
+        id="test.read",
+        capability_id="test.capability",
+        family="Test",
+        description="Read test data.",
+        input_schema={"type": "object"},
+        effect=EffectKind.READ,
+        authority=authority,
+    )
+
+
+def test_capability_search_is_progressive_and_compact() -> None:
+    runtime = CapabilityRuntime()
+    runtime.register(descriptor(), lambda arguments: {"ok": True})
+    assert runtime.compact_index() == [{"family": "Test", "capability_id": "test.capability"}]
+    assert [item.id for item in runtime.search("read data")] == ["test.read"]
+
+
+@pytest.mark.asyncio
+async def test_auto_capability_executes() -> None:
+    runtime = CapabilityRuntime()
+    runtime.register(descriptor(), lambda arguments: {"path": arguments.get("path", "")})
+    result = await runtime.call("test.read", {"path": "Docs"})
+    assert result.status == "succeeded"
+    assert result.output == {"path": "Docs"}
+
+
+@pytest.mark.asyncio
+async def test_approval_capability_prepares_instead_of_denies() -> None:
+    runtime = CapabilityRuntime()
+    runtime.register(descriptor(AuthorityMode.APPROVAL_REQUIRED), lambda arguments: {"changed": True})
+
+    async def sink(operation, arguments):
+        assert operation.id == "test.read"
+        assert arguments == {"target": "x"}
+        return "proposal-1"
+
+    result = await runtime.call("test.read", {"target": "x"}, proposal_sink=sink)
+    assert result.status == "approval_required"
+    assert result.proposal_id == "proposal-1"

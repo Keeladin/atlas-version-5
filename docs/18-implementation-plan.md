@@ -1,7 +1,9 @@
 # Atlas V5 Implementation Plan
 
-Status: **Accepted implementation plan — implementation may begin**
+Status: **Accepted implementation plan — Phase 0 complete; Phase 1 centre operational**
 Date: 2026-09-05
+
+Implementation checkpoint (2026-09-06): the model-led conversation path, progressive capability runtime, generic resource acquisition, local workspace, Google Drive/Gmail, read-only GitHub MCP, provider-native web search, approval widgets, and provider-token context-pressure telemetry are implemented. Later workspace, memory/rollover, schedules, and broader consequential execution remain staged work.
 
 ## 1. Purpose
 
@@ -162,6 +164,12 @@ Start with a small integration that exercises discovery, enablement, progressive
 
 Capability families remain descriptive Control/registry groupings. The executable identity remains the real MCP/provider/local operation.
 
+Dynamic capability exposure is a runtime invariant: the full Environment Registry is not dumped into model context. The model receives a compact family index plus a stable capability-search/call control surface. Relevant operation descriptors and schemas are disclosed on demand, so adding integrations does not require editing the conversation loop or flooding the provider request with hundreds of tools. Provider-native filtering such as OpenAI `allowed_tools` may further narrow exposure, but Atlas remains the canonical registry and authority owner.
+
+Execution authority is separate from availability and exposure. Read-only operations may execute automatically; consequential operations remain visible and callable but become durable prepared actions when owner approval is required. The right-rail widget surface presents these prepared actions as observable operational intent with approve/cancel controls. Approval resumes the exact prepared operation rather than asking the model to re-plan it. Hard denial is reserved for unavailable or forbidden authority, not ordinary owner-gated writes.
+
+Resource acquisition is also generic. Storage, Drive, repositories, mail attachments and future sources should acquire a typed resource with provenance rather than each inventing semantic readers. The provider adapter routes that resource into the model's native perception surface (for example image input or file input) while keeping raw bytes out of ordinary tool-result context. Source-specific tools fetch resources; the model performs the semantic understanding.
+
 Before a mutating tool is enabled, prove:
 
 - ON/OFF actually removes/restores callable exposure;
@@ -172,6 +180,8 @@ Before a mutating tool is enabled, prove:
 - tool results carry provenance/trust information.
 
 After that boundary is proven, add useful integrations such as Google Workspace, GitHub, local office software and independent utilities like the normalizer without changing the agent cycle.
+
+GitHub is the first true generic MCP exercise: Atlas launches GitHub's official MCP server over stdio, discovers its enabled tools dynamically, namespaces them into the Environment Registry, and exposes them only through capability search. The initial server is pinned and read-only, with repository/code/commit/issue/pull-request reads enabled. Adding or removing GitHub MCP tools therefore changes the discovered catalog rather than the conversation runtime.
 
 ## 12. Phase 4 — workspace maturity
 

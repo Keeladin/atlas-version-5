@@ -18,6 +18,19 @@ class TranscriptRepository:
         await self.session.flush()
         return Transcript(id=row.id, created_at=row.created_at)
 
+
+    async def get_or_create_active(self) -> Transcript:
+        result = await self.session.execute(
+            select(TranscriptRow)
+            .where(TranscriptRow.closed_at.is_(None))
+            .order_by(TranscriptRow.created_at.desc(), TranscriptRow.id.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return await self.create()
+        return Transcript(id=row.id, created_at=row.created_at, closed_at=row.closed_at)
+
     async def append_turn(
         self,
         transcript_id: UUID,
