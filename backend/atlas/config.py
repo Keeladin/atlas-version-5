@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5.6-sol"
     openai_context_window: int = 1_000_000
     working_context_exchanges: int = 10
-    working_context_tokens: int = 32_000
+    working_context_tokens: int = 64_000
     working_context_raw_tool_exchanges: int = 2
     capability_call_limit: int = 16
     capability_completion_reserve: int = 2
