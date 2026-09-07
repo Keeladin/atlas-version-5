@@ -148,6 +148,7 @@ export type HeavyToolObservation = {
 
 export type ConversationContextStats = {
   transcript_id: string
+  measurement_scope?: string
   static_tokens: number
   current_context_tokens: number
   canonical_transcript_tokens: number
@@ -317,7 +318,20 @@ export type ControlMcp = {
   transport: string
 }
 
+export type ControlConnection = {
+  id: 'model' | 'google' | 'github'
+  label: string
+  configured: boolean
+  authenticated: boolean | null
+  detail: string
+  restart_required: boolean
+  operations?: number
+  model?: string
+  owner?: string
+}
+
 export type ControlConfiguration = {
+  connections: ControlConnection[]
   credentials: ControlCredential[]
   mcps: ControlMcp[]
 }
@@ -327,6 +341,32 @@ export async function getControlConfiguration(): Promise<ControlConfiguration> {
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Control configuration load failed (${response.status})`)
   return body as ControlConfiguration
+}
+
+
+export type ConnectionResult = { ok: boolean; detail: string; configured?: boolean; restart_required?: boolean; model?: string; owner?: string }
+
+async function connectionRequest(path: string, init: RequestInit): Promise<ConnectionResult> {
+  const response = await fetch(path, init)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Connection request failed (${response.status})`)
+  return body as ConnectionResult
+}
+
+export async function testControlConnection(id: 'model' | 'google' | 'github'): Promise<ConnectionResult> {
+  return connectionRequest(`/api/control/connections/${id}/test`, { method: 'POST' })
+}
+
+export async function configureModelConnection(apiKey: string, model: string): Promise<ConnectionResult> {
+  return connectionRequest('/api/control/connections/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: apiKey, model }) })
+}
+
+export async function configureGitHubConnection(token: string, owner: string): Promise<ConnectionResult> {
+  return connectionRequest('/api/control/connections/github', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, owner }) })
+}
+
+export async function configureGoogleConnection(credentials: Record<string, unknown>): Promise<ConnectionResult> {
+  return connectionRequest('/api/control/connections/google', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credentials }) })
 }
 
 export async function restartApi(): Promise<void> {

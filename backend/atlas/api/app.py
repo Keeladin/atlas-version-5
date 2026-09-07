@@ -5,6 +5,8 @@ import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -19,7 +21,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,8 +41,14 @@ from atlas.auth.api import router as auth_router
 from atlas.capabilities.factory import build_capability_runtime
 from atlas.capabilities.models import CapabilityCallResult
 from atlas.config import get_settings
+from atlas.control import (
+    connection_paths,
+    save_github_connection,
+    save_google_connection,
+    save_model_connection,
+)
 from atlas.db import database_health, get_session_factory
-from atlas.integrations import GoogleWorkspaceService
+from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
 from atlas.registry.repository import RegistryRepository
@@ -203,6 +211,20 @@ class CapabilitySetting(BaseModel):
     enabled: bool
 
 
+class ModelConnectionRequest(BaseModel):
+    api_key: SecretStr
+    model: str
+
+
+class GitHubConnectionRequest(BaseModel):
+    token: SecretStr
+    owner: str
+
+
+class GoogleConnectionRequest(BaseModel):
+    credentials: dict[str, Any]
+
+
 @app.get("/api/control/capabilities")
 async def owner_capabilities(session: Annotated[AsyncSession, Depends(get_session)]):
     return {"items": await RegistryRepository(session).owner_settings()}
@@ -217,6 +239,123 @@ async def set_owner_capability(capability_id: str, setting: CapabilitySetting,
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await session.commit()
     return {"id": capability_id, "enabled": setting.enabled}
+
+
+async def _verify_model_connection(api_key: str, model: str) -> dict[str, object]:
+    provider = OpenAIProvider(api_key=api_key, model=model)
+    tokens = await provider.count_input_tokens(
+        instructions="Atlas Control connection test.",
+        messages=[{"role": "user", "content": "ping"}],
+        tools=[],
+    )
+    return {"ok": True, "detail": f"Authenticated; tokenizer returned {tokens} input tokens."}
+
+
+def _temporary_secret(name: str, value: str) -> Path:
+    root = connection_paths(settings)["root"] / "tmp"
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    with NamedTemporaryFile(dir=root, prefix=f"{name}-", delete=False) as handle:
+        handle.write(value.encode())
+        handle.flush()
+        os.fsync(handle.fileno())
+        temporary_name = handle.name
+    path = Path(temporary_name)
+    path.chmod(0o600)
+    return path
+
+
+def _verify_github_connection(token: str) -> dict[str, object]:
+    path = _temporary_secret("github", token.strip() + "\n")
+    try:
+        service = GitHubMCPService(settings.github_mcp_command, path, settings.github_mcp_toolsets)
+        operations = service.discover_operations()
+        return {"ok": True, "detail": f"Authenticated; {len(operations)} read-only operations discovered."}
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _verify_google_connection(credentials: dict[str, Any]) -> dict[str, object]:
+    path = _temporary_secret("google", json.dumps(credentials, separators=(",", ":")) + "\n")
+    temp_root = connection_paths(settings)["root"] / "tmp"
+    try:
+        with TemporaryDirectory(dir=temp_root, prefix="google-config-") as config_dir:
+            service = GoogleWorkspaceService(
+                settings.gws_command, path, Path(config_dir), settings.gws_workspace_dir
+            )
+            status = service.auth_status()
+        if status.get("token_valid") is not True:
+            raise RuntimeError("Google Workspace credential was not accepted")
+        scopes = status.get("scopes") if isinstance(status.get("scopes"), list) else []
+        return {"ok": True, "detail": f"Authenticated; {len(scopes)} OAuth scopes active."}
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@app.put("/api/control/connections/model")
+async def configure_model_connection(request: ModelConnectionRequest):
+    api_key = request.api_key.get_secret_value().strip()
+    model = request.model.strip()
+    try:
+        verification = await _verify_model_connection(api_key, model)
+        await asyncio.to_thread(save_model_connection, settings, api_key, model)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Model API verification failed: {exc}") from exc
+    return {**verification, "configured": True, "restart_required": False, "model": model}
+
+
+@app.post("/api/control/connections/model/test")
+async def test_model_connection():
+    api_key = settings.openai_api_key
+    if api_key is None:
+        raise HTTPException(status_code=409, detail="Model API is not configured")
+    try:
+        return await _verify_model_connection(api_key, settings.openai_model)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Model API test failed: {exc}") from exc
+
+
+@app.put("/api/control/connections/github")
+async def configure_github_connection(request: GitHubConnectionRequest):
+    token = request.token.get_secret_value().strip()
+    owner = request.owner.strip()
+    try:
+        verification = await asyncio.to_thread(_verify_github_connection, token)
+        await asyncio.to_thread(save_github_connection, settings, token, owner)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"GitHub verification failed: {exc}") from exc
+    return {**verification, "configured": True, "restart_required": True, "owner": owner}
+
+
+@app.post("/api/control/connections/github/test")
+async def test_github_connection():
+    path = settings.github_token_file
+    if path is None or not path.is_file():
+        raise HTTPException(status_code=409, detail="GitHub is not configured")
+    try:
+        return await asyncio.to_thread(_verify_github_connection, path.read_text().strip())
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub test failed: {exc}") from exc
+
+
+@app.put("/api/control/connections/google")
+async def configure_google_connection(request: GoogleConnectionRequest):
+    try:
+        verification = await asyncio.to_thread(_verify_google_connection, request.credentials)
+        await asyncio.to_thread(save_google_connection, settings, request.credentials)
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Google Workspace verification failed: {exc}") from exc
+    return {**verification, "configured": True, "restart_required": True}
+
+
+@app.post("/api/control/connections/google/test")
+async def test_google_connection():
+    projection = await asyncio.to_thread(_google_oauth_projection)
+    if not projection["configured"]:
+        raise HTTPException(status_code=409, detail="Google Workspace is not configured")
+    if projection["authenticated"] is not True:
+        raise HTTPException(status_code=502, detail="Google Workspace authentication is not valid")
+    return {"ok": True, "detail": f"Authenticated; {projection.get('scope') or 'OAuth scopes active'}."}
 
 
 def _credential_projection(label: str, path) -> dict[str, object]:
@@ -239,9 +378,12 @@ def _google_oauth_projection() -> dict[str, object]:
     encrypted = settings.gws_config_dir / "credentials.enc"
     key = settings.gws_config_dir / ".encryption_key"
     configured = settings.gws_configured
-    protected = configured and encrypted.is_file() and key.is_file()
+    protected_paths = [encrypted, key] if encrypted.is_file() and key.is_file() else []
+    if not protected_paths and settings.gws_credentials_file is not None and settings.gws_credentials_file.is_file():
+        protected_paths = [settings.gws_credentials_file]
+    protected = configured and bool(protected_paths)
     if protected:
-        protected = all((path.stat().st_mode & 0o007) == 0 for path in (encrypted, key))
+        protected = all((path.stat().st_mode & 0o007) == 0 for path in protected_paths)
     authenticated = False
     scope = None
     if configured:
@@ -294,10 +436,21 @@ async def control_configuration():
     enabled = await capability_runtime.enabled_capabilities()
     google = next((entry for entry in registry.all_entries() if entry.id == "google.workspace"), None)
     github = next((entry for entry in registry.all_entries() if entry.id == "github.mcp"), None)
+    google_oauth = await asyncio.to_thread(_google_oauth_projection)
     return {
+        "connections": [
+            {"id": "model", "label": "Model API", "configured": settings.openai_api_key is not None,
+                "authenticated": None, "detail": f"OpenAI · {settings.openai_model}", "restart_required": False, "model": settings.openai_model},
+            {"id": "google", "label": "Google Workspace", "configured": settings.gws_configured,
+                "authenticated": google_oauth["authenticated"], "detail": google_oauth.get("scope") or "Drive · Gmail · Calendar",
+                "restart_required": False, "operations": len(google.executable_operations) if google else 0},
+            {"id": "github", "label": "GitHub", "configured": settings.github_configured,
+                "authenticated": None, "detail": f"{settings.github_owner} · official GitHub MCP · read only",
+                "restart_required": False, "operations": len(github.executable_operations) if github else 0, "owner": settings.github_owner},
+        ],
         "credentials": [
             _credential_projection("OpenAI API key", settings.openai_api_key_file),
-            await asyncio.to_thread(_google_oauth_projection),
+            google_oauth,
             _credential_projection("GitHub MCP token", settings.github_token_file),
         ],
         "mcps": [

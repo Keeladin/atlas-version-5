@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
 import { approvalFields } from './approval'
-import { getOwnerCapabilities, setOwnerCapability, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { configureGitHubConnection, configureGoogleConnection, configureModelConnection, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -613,88 +613,141 @@ function ControlPage({ health }: { health: Health | null }) {
   const [capabilities, setCapabilities] = useState<OwnerCapability[]>([])
   const [capabilityBusy, setCapabilityBusy] = useState<string | null>(null)
   const [capabilityError, setCapabilityError] = useState<string | null>(null)
-  useEffect(() => { getOwnerCapabilities().then(setCapabilities).catch((cause) => setCapabilityError(String(cause))) }, [])
-  async function toggleCapability(item: OwnerCapability) {
-    setCapabilityBusy(item.id); setCapabilityError(null)
-    try {
-      await setOwnerCapability(item.id, !item.enabled)
-      setCapabilities(await getOwnerCapabilities())
-      setConfiguration(await getControlConfiguration())
-    } catch (cause) { setCapabilityError(String(cause)) }
-    finally { setCapabilityBusy(null) }
-  }
   const [configuration, setConfiguration] = useState<ControlConfiguration | null>(null)
   const [configurationError, setConfigurationError] = useState<string | null>(null)
   const [contextStats, setContextStats] = useState<ConversationContextStats | null>(null)
   const [contextStatsError, setContextStatsError] = useState<string | null>(null)
   const [restartState, setRestartState] = useState<'idle' | 'requesting' | 'waiting' | 'error'>('idle')
   const [restartMessage, setRestartMessage] = useState<string | null>(null)
+  const [setupOpen, setSetupOpen] = useState<ControlConnection['id'] | null>(null)
+  const [setupBusy, setSetupBusy] = useState(false)
+  const [connectionMessages, setConnectionMessages] = useState<Record<string, string>>({})
+  const [modelKey, setModelKey] = useState('')
+  const [modelName, setModelName] = useState(health?.provider.model ?? 'gpt-5.6-sol')
+  const [githubToken, setGithubToken] = useState('')
+  const [githubOwner, setGithubOwner] = useState('')
+  const [googleCredential, setGoogleCredential] = useState('')
+
+  async function refreshControl() {
+    const [nextCapabilities, nextConfiguration] = await Promise.all([getOwnerCapabilities(), getControlConfiguration()])
+    setCapabilities(nextCapabilities)
+    setConfiguration(nextConfiguration)
+    const model = nextConfiguration.connections.find((item) => item.id === 'model')
+    const github = nextConfiguration.connections.find((item) => item.id === 'github')
+    if (model?.model) setModelName(model.model)
+    if (github?.owner) setGithubOwner(github.owner)
+  }
 
   useEffect(() => {
-    getControlConfiguration().then(setConfiguration).catch((cause) => setConfigurationError(String(cause)))
+    Promise.all([getOwnerCapabilities(), getControlConfiguration()]).then(([nextCapabilities, nextConfiguration]) => {
+      setCapabilities(nextCapabilities)
+      setConfiguration(nextConfiguration)
+      const model = nextConfiguration.connections.find((item) => item.id === 'model')
+      const github = nextConfiguration.connections.find((item) => item.id === 'github')
+      if (model?.model) setModelName(model.model)
+      if (github?.owner) setGithubOwner(github.owner)
+    }).catch((cause) => setConfigurationError(String(cause)))
     getConversationContextStats().then(setContextStats).catch((cause) => setContextStatsError(String(cause)))
   }, [])
+
+  async function toggleCapability(item: OwnerCapability) {
+    setCapabilityBusy(item.id); setCapabilityError(null)
+    try { await setOwnerCapability(item.id, !item.enabled); await refreshControl() }
+    catch (cause) { setCapabilityError(String(cause)) }
+    finally { setCapabilityBusy(null) }
+  }
 
   async function handleRestart() {
     if (restartState === 'requesting' || restartState === 'waiting') return
     if (!window.confirm('Restart the Atlas API now? Active requests will be interrupted.')) return
-    setRestartState('requesting')
-    setRestartMessage('Requesting restart…')
+    setRestartState('requesting'); setRestartMessage('Requesting restart…')
     try {
-      await restartApi()
-      setRestartState('waiting')
-      setRestartMessage('Restart requested. Waiting for the API to come back…')
+      await restartApi(); setRestartState('waiting'); setRestartMessage('Waiting for Atlas to return…')
       let sawOffline = false
       for (let attempt = 0; attempt < 40; attempt += 1) {
         await new Promise((resolve) => window.setTimeout(resolve, 500))
-        try {
-          await getHealth()
-          if (sawOffline || attempt >= 6) { window.location.reload(); return }
-        } catch {
-          sawOffline = true
-        }
+        try { await getHealth(); if (sawOffline || attempt >= 6) { window.location.reload(); return } }
+        catch { sawOffline = true }
       }
-      setRestartState('error')
-      setRestartMessage('Restart was requested, but Atlas did not come back in time. Refresh this page to check it.')
-    } catch (cause) {
-      setRestartState('error')
-      setRestartMessage(cause instanceof Error ? cause.message : String(cause))
-    }
+      setRestartState('error'); setRestartMessage('Atlas did not return in time. Refresh to check it.')
+    } catch (cause) { setRestartState('error'); setRestartMessage(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  function showConnectionMessage(id: string, message: string) {
+    setConnectionMessages((current) => ({ ...current, [id]: message }))
+  }
+
+  async function handleConnectionTest(connection: ControlConnection) {
+    setSetupBusy(true); showConnectionMessage(connection.id, 'Testing connection…')
+    try { const result = await testControlConnection(connection.id); showConnectionMessage(connection.id, result.detail) }
+    catch (cause) { showConnectionMessage(connection.id, cause instanceof Error ? cause.message : String(cause)) }
+    finally { setSetupBusy(false) }
+  }
+
+  async function handleSetupSave(id: ControlConnection['id']) {
+    setSetupBusy(true); showConnectionMessage(id, 'Verifying before saving…')
+    try {
+      let result
+      if (id === 'model') result = await configureModelConnection(modelKey, modelName)
+      else if (id === 'github') result = await configureGitHubConnection(githubToken, githubOwner)
+      else {
+        let parsed: Record<string, unknown>
+        try { parsed = JSON.parse(googleCredential) as Record<string, unknown> }
+        catch { throw new Error('Paste a valid Google authorized_user JSON credential.') }
+        result = await configureGoogleConnection(parsed)
+      }
+      await refreshControl()
+      if (id === 'model') setModelKey('')
+      if (id === 'github') setGithubToken('')
+      if (id === 'google') setGoogleCredential('')
+      showConnectionMessage(id, result.restart_required ? `${result.detail} Restart Atlas to activate this connection.` : result.detail)
+      if (!result.restart_required) setSetupOpen(null)
+    } catch (cause) { showConnectionMessage(id, cause instanceof Error ? cause.message : String(cause)) }
+    finally { setSetupBusy(false) }
+  }
+
+  function connectionCard(connection: ControlConnection) {
+    const active = setupOpen === connection.id
+    const statusOk = connection.configured && connection.authenticated !== false
+    return <section className={`control-card connection-card${active ? ' expanded' : ''}`} key={connection.id}>
+      <div className="connection-head"><div><div className="panel-title">{connection.label}</div><strong className={statusOk ? 'healthy-text' : 'warning-text'}>{connection.configured ? (connection.authenticated === false ? 'Needs attention' : 'Connected') : 'Not configured'}</strong></div><StatusDot ok={statusOk} /></div>
+      <p>{connection.detail}</p>
+      {connection.operations ? <span className="connection-meta">{connection.operations} operations discovered</span> : null}
+      <div className="connection-actions"><button type="button" disabled={setupBusy || !connection.configured} onClick={() => { void handleConnectionTest(connection) }}>Test</button><button type="button" onClick={() => setSetupOpen(active ? null : connection.id)}>{active ? 'Close' : connection.configured ? 'Configure' : 'Set up'}</button></div>
+      {connectionMessages[connection.id] ? <p className="connection-message">{connectionMessages[connection.id]}</p> : null}
+      {active ? <div className="connection-form">
+        {connection.id === 'model' ? <><label>Model<input value={modelName} onChange={(event) => setModelName(event.target.value)} /></label><label>API key<input type="password" autoComplete="off" value={modelKey} placeholder="Enter a new API key" onChange={(event) => setModelKey(event.target.value)} /></label></> : null}
+        {connection.id === 'github' ? <><label>GitHub owner<input value={githubOwner} onChange={(event) => setGithubOwner(event.target.value)} /></label><label>Personal access token<input type="password" autoComplete="off" value={githubToken} placeholder="Enter a new token" onChange={(event) => setGithubToken(event.target.value)} /></label><span>Atlas verifies the token against the official read-only GitHub MCP before saving it.</span></> : null}
+        {connection.id === 'google' ? <><label>Authorized-user credential<textarea rows={6} value={googleCredential} placeholder='Paste Google OAuth authorized_user JSON' onChange={(event) => setGoogleCredential(event.target.value)} /></label><span>Authorize on a browser-capable machine with gws auth login --services drive,gmail,calendar, then export with gws auth export --unmasked and paste that authorized_user JSON here. Atlas verifies it before saving.</span></> : null}
+        <button className="control-primary-button" type="button" disabled={setupBusy || (connection.id === 'model' && (!modelKey || !modelName)) || (connection.id === 'github' && (!githubToken || !githubOwner)) || (connection.id === 'google' && !googleCredential)} onClick={() => { void handleSetupSave(connection.id) }}>{setupBusy ? 'Verifying…' : 'Verify & save'}</button>
+      </div> : null}
+    </section>
   }
 
   return (
     <div className="control-shell">
       <header className="control-topbar"><div className="control-title-cluster"><img className="control-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" /><div><div className="eyebrow">ATLAS V5</div><h1>Control</h1></div></div><a className="control-link" href="/">Back to Atlas</a></header>
-      <main className="control-grid">
-        <section className="control-card"><div className="panel-title">Runtime</div><dl><div><dt>Version</dt><dd>{health?.version ?? 'checking'}</dd></div><div><dt>Environment</dt><dd>{health?.environment ?? 'checking'}</dd></div><div><dt>Status</dt><dd>{health?.status ?? 'checking'}</dd></div></dl><div className="control-runtime-actions"><button className="control-restart-button" type="button" onClick={() => { void handleRestart() }} disabled={restartState === 'requesting' || restartState === 'waiting'}>{restartState === 'requesting' || restartState === 'waiting' ? 'Restarting…' : 'Restart API'}</button>{restartMessage ? <span className={restartState === 'error' ? 'warning-text' : ''}>{restartMessage}</span> : <span>Gracefully restarts the supervised API service.</span>}</div></section>
-        <section className="control-card"><div className="panel-title">PostgreSQL</div><p className={health?.database.ok ? 'healthy-text' : 'warning-text'}>{health?.database.ok ? 'Connected and healthy.' : 'Not connected yet.'}</p></section>
-        <section className="control-card"><div className="panel-title">Model</div><dl><div><dt>Provider</dt><dd>{health?.provider.provider ?? 'checking'}</dd></div><div><dt>Model</dt><dd>{health?.provider.model ?? 'checking'}</dd></div><div><dt>Credential</dt><dd className={health?.provider.configured ? 'healthy-text' : 'warning-text'}>{health?.provider.configured ? 'Configured' : 'Missing'}</dd></div></dl></section>
-        <section className="control-card control-wide">
-          <div className="panel-title">Context</div>
-          {contextStatsError ? <p className="warning-text">{contextStatsError}</p> : contextStats ? <>
-            <div className="context-summary-grid"><div><span>Current model input</span><strong>{formatTokens(contextStats.current_context_tokens)}</strong></div><div><span>Recent evidence input</span><strong>{formatTokens(contextStats.canonical_transcript_tokens)}</strong></div><div><span>Static seat overhead</span><strong>{formatTokens(contextStats.static_tokens)}</strong></div><div><span>Messages in measured window</span><strong>{contextStats.transcript.owner_messages + contextStats.transcript.atlas_messages}</strong></div></div>
-            <p className="control-note context-policy-note">Working policy: {contextStats.policy.exchange_limit} exchange maximum · {formatTokens(contextStats.policy.token_budget)} budget · currently {contextStats.policy.selected_exchanges} exchanges · {contextStats.policy.compacted_tool_turns} compacted tool turns · {contextStats.policy.stage.replaceAll('_', ' ')}{contextStats.policy.budget_exceeded ? ' · exceeds initial context reserve' : ''}.</p>
-            <div className="context-window-table"><div className="context-window-row context-window-head"><span>Window</span><span>Model input</span><span>Conversation</span><span>Messages</span><span>Tools</span></div>{contextStats.windows.map((window) => <div className="context-window-row" key={window.exchanges}><strong>{window.exchanges} exchanges</strong><span>{formatTokens(window.input_tokens)}</span><span>{formatTokens(window.dynamic_tokens)}</span><span>{window.owner_messages} + {window.atlas_messages}</span><span>{window.tool_observations}</span></div>)}</div>
-            <p className="control-note">{contextStats.transcript.owner_messages} owner messages · {contextStats.transcript.atlas_messages} Atlas messages · {contextStats.transcript.tool_observations} tool observations · largest message {contextStats.transcript.largest_message_characters.toLocaleString()} characters.</p>
-            <div className="context-tool-heading"><div><span>Tool footprint · last {contextStats.tool_analysis.scope_exchanges} exchanges</span><strong>{formatTokens(contextStats.tool_analysis.projected_tokens)} projected tokens</strong></div><span>{contextStats.tool_analysis.observations} observations</span></div>
-            <div className="context-tool-table"><div className="context-tool-row context-window-head"><span>Operation</span><span>Tokens</span><span>Obs</span><span>1–10</span><span>11–15</span><span>16–20</span></div>{contextStats.tool_analysis.operations.slice(0, 12).map((operation) => <div className="context-tool-row" key={operation.operation}><strong>{operation.operation}</strong><span>{formatTokens(operation.projected_tokens)}</span><span>{operation.observations}</span><span>{operation.bands.last_10}</span><span>{operation.bands.exchanges_11_15}</span><span>{operation.bands.exchanges_16_20}</span></div>)}</div>
-            <div className="context-tool-heading compact"><div><span>Heaviest individual observations</span><strong>Isolated provider token count</strong></div></div>
-            <div className="context-heavy-list">{contextStats.tool_analysis.largest_observations.map((observation, index) => <div className="context-heavy-row" key={`${observation.operation}-${observation.exchange_age}-${index}`}><div><strong>{observation.operation}</strong><span>{observation.phase} · {observation.exchange_age === 1 ? 'latest exchange' : `${observation.exchange_age} exchanges back`}</span></div><strong>{formatTokens(observation.projected_tokens)}</strong></div>)}</div>
-            <p className="control-note">Tool token figures are measured against the live provider tokenizer with Atlas's fixed seat removed. Raw tool evidence remains unchanged in PostgreSQL; this analysis only measures its model-visible projection.</p>
-            <p className="control-note">Model input includes Atlas instructions and tool definitions. Conversation is the additional recent-window load above that static seat. The canonical transcript remains untouched.</p>
-          </> : <p>Calculating context statistics…</p>}
-        </section>
-        <section className="control-card control-wide"><div className="panel-title">Atlas capabilities</div>
-          <p className="control-note">Choose which capabilities Atlas may use. Changes apply to new dispatches, including scheduled work and pending approvals. Work already dispatched may finish.</p>
+      <main className="control-grid control-dashboard">
+        <section className="control-card"><div className="panel-title">Runtime</div><div className="control-hero-state"><StatusDot ok={health?.status === 'ok'} /><strong>{health?.status === 'ok' ? 'Online' : 'Checking'}</strong></div><p>v{health?.version ?? '—'} · {health?.environment ?? '—'}</p><div className="control-runtime-actions"><button className="control-restart-button" type="button" onClick={() => { void handleRestart() }} disabled={restartState === 'requesting' || restartState === 'waiting'}>{restartState === 'requesting' || restartState === 'waiting' ? 'Restarting…' : 'Restart Atlas'}</button>{restartMessage ? <span className={restartState === 'error' ? 'warning-text' : ''}>{restartMessage}</span> : null}</div></section>
+        <section className="control-card"><div className="panel-title">System</div><div className="control-hero-state"><StatusDot ok={Boolean(health?.database.ok)} /><strong>{health?.database.ok ? 'Healthy' : 'Degraded'}</strong></div><p>PostgreSQL {health?.database.ok ? 'connected' : 'unavailable'} · {health?.registry_entries ?? '—'} registry entries</p></section>
+        <section className="control-card"><div className="panel-title">Working context</div><div className="control-hero-state"><ContextDot state={contextStats?.state ?? null} /><strong>{contextStats ? `${formatTokens(contextStats.current_context_tokens)} / ${formatTokens(contextStats.limit_tokens)}` : 'Measuring…'}</strong></div><p>{contextStats ? `${contextStats.policy.selected_exchanges} exchanges · ${contextStats.policy.compacted_tool_turns} compacted tool turns` : 'Bounded foreground context'}</p></section>
+
+        <div className="control-section-heading"><div><span className="eyebrow">CONNECTIONS</span><h2>Setup & integrations</h2></div><span>Configure, verify and reconnect the services Atlas depends on.</span></div>
+        {configurationError ? <section className="control-card control-full"><p className="warning-text">{configurationError}</p></section> : configuration ? configuration.connections.map(connectionCard) : <section className="control-card control-full"><p>Checking connections…</p></section>}
+
+        <section className="control-card control-full capabilities-card"><div className="control-section-inline"><div><div className="panel-title">Capabilities</div><p>Connection is not authority. Choose what Atlas may use right now.</p></div><span>{capabilities.filter((item) => item.enabled).length} enabled</span></div>
           {capabilityError ? <p className="warning-text">{capabilityError}</p> : null}
-          <div className="control-list">{capabilities.map((item) => <div className="control-config-row" key={item.id}>
-            <div><strong>{item.family}</strong><span>{item.description}</span><span>{item.availability}</span></div>
-            <button type="button" role="switch" aria-checked={item.enabled} disabled={capabilityBusy !== null} onClick={() => { void toggleCapability(item) }}>{item.enabled ? 'Enabled' : 'Disabled'}</button>
-          </div>)}</div>
+          <div className="capability-grid">{capabilities.map((item) => <button type="button" role="switch" aria-checked={item.enabled} className={`capability-switch${item.enabled ? ' enabled' : ''}`} key={item.id} disabled={capabilityBusy !== null} onClick={() => { void toggleCapability(item) }}><span className="capability-switch-copy"><strong>{item.family}</strong><small>{item.availability}</small></span><span className="capability-toggle"><i /></span></button>)}</div>
         </section>
-        <section className="control-card control-wide"><div className="panel-title">MCP Configuration</div>{configurationError ? <p className="warning-text">{configurationError}</p> : configuration ? <div className="control-list">{configuration.mcps.map((mcp) => <div className="control-config-row" key={mcp.id}><div><strong>{mcp.label}</strong><span>{mcp.id} · {mcp.transport}</span></div><div className="control-config-meta"><span className={mcp.configured && mcp.enabled ? 'healthy-text' : 'warning-text'}>{mcp.configured && mcp.enabled ? 'Enabled' : 'Unavailable'}</span><span>{mcp.operations.length > 8 ? `${mcp.operations.length} operations discovered on demand` : (mcp.operations.length ? mcp.operations.join(', ') : 'No operations exposed')}</span></div></div>)}</div> : <p>Checking MCP configuration…</p>}</section>
-        <section className="control-card control-wide"><div className="panel-title">Credentials</div><p className="control-note">Credential values are never displayed. Control only shows configuration, authentication and protection state.</p>{configuration ? <div className="control-list">{configuration.credentials.map((credential) => <div className="control-config-row" key={credential.label}><div><strong>{credential.label}</strong><span className="control-path">{credential.path ?? 'No credential storage configured'}</span></div><div className="control-config-meta"><span className={credential.configured ? 'healthy-text' : 'warning-text'}>{credential.configured ? 'Provisioned' : 'Missing'}</span>{credential.authenticated !== null ? <span className={credential.authenticated ? 'healthy-text' : 'warning-text'}>{credential.authenticated ? 'Authenticated' : 'Authentication failed'}</span> : null}{credential.scope ? <span>Scope: {credential.scope}</span> : null}<span className={credential.protected ? 'healthy-text' : 'warning-text'}>{credential.protected ? 'Protected' : 'Check permissions'}</span></div></div>)}</div> : <p>Checking credential configuration…</p>}</section>
-        <section className="control-card"><div className="panel-title">Environment Registry</div><p>{health ? `${health.registry_entries} registered entries` : 'Checking…'}</p></section>
+
+        <details className="control-card control-full control-advanced">
+          <summary><span><span className="panel-title">Advanced & diagnostics</span><small>Context analysis, credential protection and registry details</small></span><span>Expand</span></summary>
+          <div className="advanced-content">
+            <section><h3>Context diagnostics</h3>{contextStatsError ? <p className="warning-text">{contextStatsError}</p> : contextStats ? <><div className="context-summary-grid"><div><span>Current model input</span><strong>{formatTokens(contextStats.current_context_tokens)}</strong></div><div><span>Recent evidence</span><strong>{formatTokens(contextStats.canonical_transcript_tokens)}</strong></div><div><span>Static seat</span><strong>{formatTokens(contextStats.static_tokens)}</strong></div><div><span>Measured messages</span><strong>{contextStats.transcript.owner_messages + contextStats.transcript.atlas_messages}</strong></div></div><p className="control-note">{contextStats.measurement_scope ?? 'Bounded recent transcript window'} · {contextStats.tool_analysis.observations} tool observations · {formatTokens(contextStats.tool_analysis.projected_tokens)} projected tool tokens.</p></> : <p>Calculating…</p>}</section>
+            <section><h3>Credential protection</h3><p>Secrets are never returned to Control after submission.</p>{configuration ? <div className="advanced-list">{configuration.credentials.map((credential) => <div key={credential.label}><strong>{credential.label}</strong><span className={credential.configured && credential.protected ? 'healthy-text' : 'warning-text'}>{credential.configured ? (credential.protected ? 'Protected' : 'Check permissions') : 'Not configured'}</span>{credential.scope ? <small>{credential.scope}</small> : null}</div>)}</div> : null}</section>
+            <section><h3>Environment registry</h3><p>{health ? `${health.registry_entries} registered entries. Capability enablement is persisted and rechecked at dispatch.` : 'Checking…'}</p></section>
+          </div>
+        </details>
       </main>
     </div>
   )

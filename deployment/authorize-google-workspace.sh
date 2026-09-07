@@ -10,4 +10,4 @@ CONFIG_DIR=${GWS_CONFIG_DIR:-/home/jaco/Projects/atlas-agent-state/production/go
 export GOOGLE_WORKSPACE_CLI_CONFIG_DIR="${CONFIG_DIR}"
 export GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file
 
-exec "${GWS}" auth login --services drive,gmail
+exec "${GWS}" auth login --services drive,gmail,calendar

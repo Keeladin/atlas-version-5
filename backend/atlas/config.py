@@ -91,4 +91,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    settings = Settings()
+    from atlas.control.connections import apply_managed_overrides
+
+    return apply_managed_overrides(settings)

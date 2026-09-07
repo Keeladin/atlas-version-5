@@ -51,6 +51,8 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Queued occurrences pause while scheduling capability is disabled | `test_evidence_recovery.py` | PostgreSQL + provider double |
 | Offline state restores exactly into empty targets and rejects corrupt/populated targets | `test_backup_restore.py` | Two disposable PostgreSQL databases + artifact directories |
 | Deployment stops runtime before installed code/dependency replacement | `test_deployment_permissions.py` | Script ordering |
+| Control-managed connection overrides persist privately across restart and never return submitted credentials | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Filesystem modes + backend/frontend transport |
+| Model setup verifies before save; GitHub/Google setup verify before restart-required activation | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Provider/MCP boundaries with test doubles |
 
 ## Still intentionally thin
 
