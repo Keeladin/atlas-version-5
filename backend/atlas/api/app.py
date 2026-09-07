@@ -18,7 +18,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import APIError, OpenAIError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas import __version__
@@ -51,6 +51,13 @@ from atlas.runtime.conversation import (
     recent_exchange_turns as _recent_exchange_turns,
 )
 from atlas.runtime.startup import initialize_phase0
+from atlas.runtime.task_state import (
+    TaskStateDelta,
+    active_task_provider_message,
+    begin_owner_turn,
+    merge_semantic_delta,
+    record_runtime_event,
+)
 from atlas.schedules import ScheduleService
 from atlas.schedules.runner import scheduler_loop
 from atlas.storage import LocalStorageService, ProjectFolderService
@@ -314,8 +321,14 @@ async def decide_action(
     if action.status != ActionStatus.PREPARED.value:
         raise HTTPException(status_code=409, detail="Action proposal is no longer pending")
     if not decision.approve:
+        run = await session.get(RunRow, action.run_id)
+        transcript_id = run.transcript_id if run is not None else None
         await store.cancel(action)
         await session.commit()
+        if transcript_id is not None:
+            await _persist_tool_observation(
+                transcript_id, action.operation, "cancelled", {"status": "cancelled"}, action.id
+            )
         return {"status": "cancelled", "action_id": str(action.id)}
 
     try:
@@ -347,7 +360,9 @@ async def decide_action(
             await AuthorityStore(finish_session).complete(action_id, status=ActionStatus.UNCERTAIN, result=result_payload)
             await finish_session.commit()
         if transcript_id is not None:
-            await _persist_tool_observation(transcript_id, action.operation, "uncertain", result_payload, action_id)
+            await _persist_tool_observation(
+                transcript_id, action.operation, "uncertain", result_payload, action_id, arguments=arguments
+            )
         return {"status": "uncertain", "action_id": str(action_id), "result": result_payload}
 
     result_payload = result.model_dump(mode="json")
@@ -357,7 +372,9 @@ async def decide_action(
         await AuthorityStore(finish_session).complete(action_id, status=final_status, result=result_payload, external_id=external_id)
         await finish_session.commit()
     if transcript_id is not None:
-        await _persist_tool_observation(transcript_id, action.operation, final_status.value, result_payload, action_id)
+        await _persist_tool_observation(
+            transcript_id, action.operation, final_status.value, result_payload, action_id, arguments=arguments
+        )
     return {"status": final_status.value, "action_id": str(action_id), "result": result}
 
 
@@ -388,16 +405,38 @@ def _external_effect_id(output: Any) -> str | None:
     return None
 
 
-async def _persist_tool_observation(transcript_id: UUID, operation: str, phase: str, detail: dict[str, Any], action_id: UUID | None = None) -> None:
+async def _persist_tool_observation(
+    transcript_id: UUID,
+    operation: str,
+    phase: str,
+    detail: dict[str, Any],
+    action_id: UUID | None = None,
+    *,
+    arguments: dict[str, Any] | None = None,
+    checkpoint_runtime: bool = True,
+) -> UUID:
     factory = get_session_factory()
     async with factory() as observation_session:
         repository = TranscriptRepository(observation_session)
-        await repository.append_turn(
+        turn = await repository.append_turn(
             transcript_id,
             Actor.TOOL,
             [ToolObservationBlock(action_id=action_id, operation=operation, phase=phase, summary=f"{operation} · {phase}", detail=detail)],
         )
+        if checkpoint_runtime:
+            state = await repository.get_active_task_state(transcript_id)
+            state = record_runtime_event(
+                state,
+                operation=operation,
+                phase=phase,
+                evidence_id=str(turn.id),
+                arguments=arguments,
+                detail=detail,
+                action_id=str(action_id) if action_id is not None else None,
+            )
+            await repository.update_active_task_state(transcript_id, state)
         await observation_session.commit()
+        return turn.id
 
 
 async def _assemble_working_context(provider: OpenAIProvider, transcript, turns):
@@ -415,6 +454,9 @@ async def _assemble_working_context(provider: OpenAIProvider, transcript, turns)
             context_summary=summary if include_summary else None,
             compact_tool_turn_ids=compact_ids,
         )
+        task_message = active_task_provider_message(transcript.active_task_state)
+        if task_message is not None:
+            messages.insert(0, task_message)
         input_tokens = await provider.count_input_tokens(instructions=instructions, messages=messages)
         return messages, input_tokens
 
@@ -730,6 +772,9 @@ async def stream_conversation(request: ChatRequest):
         transcript = await repository.get_or_create_active()
         await repository.append_turn(transcript.id, Actor.OWNER, [TextBlock(text=text)])
         run_intent = text or f"Attached {len(attachment_paths)} local workspace file(s)"
+        task_state = begin_owner_turn(transcript.active_task_state, run_intent)
+        await repository.update_active_task_state(transcript.id, task_state)
+        transcript.active_task_state = task_state
         run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=run_intent)
         await session.commit()
         turns = await repository.list_turns(transcript.id)
@@ -749,8 +794,14 @@ async def stream_conversation(request: ChatRequest):
         if name == "atlas_capability_search":
             query = str(arguments.get("query") or "")
             limit = int(arguments.get("limit") or 8)
-            search_result = {"operations": [item.model_dump(mode="json") for item in capability_runtime.search(query, limit)]}
-            await _persist_tool_observation(transcript.id, "atlas_capability_search", "searched", {"query": query, "result": search_result})
+            search_result = {"operations": capability_runtime.search_cards(query, limit)}
+            await _persist_tool_observation(
+                transcript.id,
+                "atlas_capability_search",
+                "searched",
+                {"query": query, "result": search_result},
+                checkpoint_runtime=False,
+            )
             return search_result
         if name == "atlas_capability_call":
             operation_id = str(arguments.get("operation_id") or "")
@@ -797,6 +848,7 @@ async def stream_conversation(request: ChatRequest):
                     transcript.id, operation_id, "prepared",
                     {"arguments": operation_arguments, "proposal_id": result.proposal_id, "status": result.status},
                     proposal_uuid,
+                    arguments=operation_arguments,
                 )
             elif automatic_effect and action_id is not None:
                 final_status = _action_status_for_result(result)
@@ -808,6 +860,7 @@ async def stream_conversation(request: ChatRequest):
                     await activity_session.commit()
                 await _persist_tool_observation(
                     transcript.id, operation_id, final_status.value, result.model_dump(mode="json"), action_id,
+                    arguments=operation_arguments,
                 )
             else:
                 async with factory() as activity_session:
@@ -820,9 +873,28 @@ async def stream_conversation(request: ChatRequest):
                         output=result.model_dump(mode="json"),
                     )
                     await activity_session.commit()
-                await _persist_tool_observation(transcript.id, operation_id, result.status, result.model_dump(mode="json"), action_id)
+                await _persist_tool_observation(
+                    transcript.id, operation_id, result.status, result.model_dump(mode="json"), action_id,
+                    arguments=operation_arguments,
+                )
             return result.model_dump(mode="json")
         return {"status": "unavailable", "message": "Unknown Atlas capability control tool."}
+
+    task_keep_active = False
+
+    async def task_state_handler(payload: dict[str, Any]) -> None:
+        nonlocal task_keep_active
+        try:
+            delta = TaskStateDelta.model_validate(payload)
+        except ValidationError:
+            return
+        async with factory() as task_session:
+            repository = TranscriptRepository(task_session)
+            current_state = await repository.get_active_task_state(transcript.id)
+            updated_state = merge_semantic_delta(current_state, delta)
+            await repository.update_active_task_state(transcript.id, updated_state)
+            await task_session.commit()
+        task_keep_active = delta.status == "active"
 
     async def generate() -> AsyncIterator[str]:
         chunks: list[str] = []
@@ -831,6 +903,7 @@ async def stream_conversation(request: ChatRequest):
                 instructions=build_model_instructions(capability_runtime.compact_index()),
                 messages=messages,
                 tool_handler=tool_handler,
+                task_state_handler=task_state_handler,
             ):
                 chunks.append(delta)
                 yield json.dumps({"type": "delta", "text": delta}) + "\n"
@@ -848,12 +921,16 @@ async def stream_conversation(request: ChatRequest):
             return
 
         answer = "".join(chunks).strip()
-        if answer:
-            async with factory() as session:
-                repository = TranscriptRepository(session)
+        async with factory() as session:
+            repository = TranscriptRepository(session)
+            if answer:
                 await repository.append_turn(transcript.id, Actor.ATLAS, [TextBlock(text=answer)])
-                await AuthorityStore(session).finish_run(run_id)
-                await session.commit()
+            if not task_keep_active:
+                current_state = await repository.get_active_task_state(transcript.id)
+                completed_state = merge_semantic_delta(current_state, TaskStateDelta(status="complete"))
+                await repository.update_active_task_state(transcript.id, completed_state)
+            await AuthorityStore(session).finish_run(run_id)
+            await session.commit()
         yield json.dumps({"type": "done", "transcript_id": str(transcript.id)}) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")

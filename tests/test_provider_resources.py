@@ -123,3 +123,72 @@ def test_count_input_tokens_uses_neutral_input_for_empty_messages() -> None:
     assert result == 123
     assert counter.kwargs is not None
     assert counter.kwargs["input"] == [{"role": "user", "content": ""}]
+
+
+def test_model_tool_projection_bounds_large_html_and_marks_compaction() -> None:
+    result = {
+        "status": "succeeded",
+        "operation_id": "gmail.message.read",
+        "output": {"body": "<html><body><p>hello</p>" + ("x" * 40000) + "</body></html>"},
+    }
+
+    public, resource = _public_tool_result(result)
+
+    assert resource is None
+    encoded = __import__("json").dumps(public)
+    assert len(encoded) < 14000
+    assert "<html>" not in encoded
+    assert public["model_projection"]["compacted"] is True
+    assert public["model_projection"]["canonical_evidence_retained"] is True
+
+
+def test_task_state_envelope_is_hidden_from_visible_answer() -> None:
+    from atlas.providers.openai import _extract_task_state_delta
+
+    visible, delta = _extract_task_state_delta(
+        'Done.\n<atlas_task_state_delta>{"next_step":"Run tests","status":"active"}</atlas_task_state_delta>'
+    )
+
+    assert visible == "Done."
+    assert delta == {"next_step": "Run tests", "status": "active"}
+
+
+def test_malformed_task_state_envelope_is_hidden_but_not_applied() -> None:
+    from atlas.providers.openai import _extract_task_state_delta
+
+    visible, delta = _extract_task_state_delta(
+        "Answer\n<atlas_task_state_delta>{bad json}</atlas_task_state_delta>"
+    )
+
+    assert visible == "Answer"
+    assert delta is None
+
+
+def test_capability_search_cache_is_scoped_to_exact_turn_arguments() -> None:
+    from atlas.providers.openai import _CapabilityBudget
+
+    budget = _CapabilityBudget()
+    arguments = {"query": "gmail latest email", "limit": 3}
+    result = {"operations": [{"id": "gmail.messages.search", "effect": "read"}]}
+
+    assert budget.cached_search(arguments) is None
+    budget.cache_search(arguments, result)
+    assert budget.cached_search(arguments) == result
+    assert budget.cached_search({"query": "gmail latest email", "limit": 2}) is None
+    assert budget.operation_effects["gmail.messages.search"] == "read"
+
+
+def test_large_utf8_resource_is_capped_and_points_to_line_range_reacquisition() -> None:
+    import base64
+
+    item = _resource_input({
+        "name": "large.txt",
+        "media_type": "text/plain",
+        "source": "project_folder",
+        "data_base64": base64.b64encode(("x" * 100000).encode()).decode(),
+    })
+
+    assert item is not None
+    text = item["content"][0]["text"]
+    assert len(text) < 50000
+    assert "start_line/max_lines" in text

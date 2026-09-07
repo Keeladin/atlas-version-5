@@ -18,6 +18,11 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Rollover removes only the summarized prefix from provider projection | `test_conversation_context.py`, `test_runtime_invariants.py` | Covered |
 | Missing rollover marker fails open to canonical history rather than dropping turns | `test_runtime_invariants.py` | Covered |
 | Tool evidence projects as bounded developer/runtime evidence | `test_conversation_context.py`, `test_runtime_invariants.py` | Covered |
+| Same-turn model-facing tool evidence is bounded while canonical evidence remains intact | `test_provider_resources.py`, `test_conversation_context.py` | Covered |
+| Active-task checkpoint survives ordinary history trimming | `test_task_state.py`, `test_api.py` | Covered |
+| Model task-state deltas cannot overwrite runtime-owned facts | `test_task_state.py` | Covered |
+| Large UTF-8 resources can be bounded and reacquired by line range | `test_local_storage.py`, `test_provider_resources.py` | Covered |
+| Capability discovery uses compact operation cards and reuses identical same-turn searches | `test_capabilities.py`, `test_provider_resources.py` | Covered |
 | Project edits are preview-bound and stale-owner changes refuse overwrite | `test_local_storage.py`, `test_runtime_invariants.py` | Covered |
 | Project writes checkpoint dirty state before mutation | `test_local_storage.py` | Covered |
 | Project writes cannot cross project/path/symlink/protected-material boundaries | `test_local_storage.py`, `test_runtime_invariants.py` | Covered |
@@ -30,6 +35,6 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 
 ## Still intentionally thin
 
-The suite does not yet simulate a real process kill between provider dispatch and database commit, exercise WebAuthn against a browser authenticator, or run migrations against a disposable PostgreSQL instance in CI. Those are integration/system-test layers, not missing unit invariants. They should be added when CI gains disposable PostgreSQL and browser-capable test infrastructure.
+The suite does not yet simulate a real process kill between provider dispatch and database commit or exercise WebAuthn against a browser authenticator. Hosted CI does run the complete Alembic chain against disposable PostgreSQL. The remaining gaps are integration/system-test layers rather than missing unit invariants.
 
 The acceptance rule for future runtime work is: any new hard invariant must arrive with a direct regression test, and consequential cross-layer behavior should also receive an integration test when the necessary harness exists.

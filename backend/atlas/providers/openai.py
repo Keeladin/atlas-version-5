@@ -6,7 +6,10 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from atlas.runtime.evidence import attach_projection_metadata, bound_model_evidence
+
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
+TaskStateHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 @dataclass
@@ -15,6 +18,18 @@ class _CapabilityBudget:
     reserve: int = 2
     dispatched: int = 0
     operation_effects: dict[str, str] = field(default_factory=dict)
+    search_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @staticmethod
+    def search_key(arguments: dict[str, Any]) -> str:
+        return json.dumps(arguments, sort_keys=True, ensure_ascii=False, default=str)
+
+    def cached_search(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        return self.search_results.get(self.search_key(arguments))
+
+    def cache_search(self, arguments: dict[str, Any], result: dict[str, Any]) -> None:
+        self.search_results[self.search_key(arguments)] = result
+        self.remember_search(result)
 
     def remember_search(self, result: dict[str, Any]) -> None:
         operations = result.get("operations")
@@ -46,6 +61,27 @@ class _CapabilityBudget:
 
 
 
+_TASK_STATE_OPEN = "<atlas_task_state_delta>"
+_TASK_STATE_CLOSE = "</atlas_task_state_delta>"
+_MODEL_TEXT_RESOURCE_CHAR_LIMIT = 48_000
+
+
+def _extract_task_state_delta(text: str) -> tuple[str, dict[str, Any] | None]:
+    stripped = text.rstrip()
+    if not stripped.endswith(_TASK_STATE_CLOSE):
+        return text, None
+    start = stripped.rfind(_TASK_STATE_OPEN)
+    if start < 0:
+        return text, None
+    payload = stripped[start + len(_TASK_STATE_OPEN) : -len(_TASK_STATE_CLOSE)].strip()
+    visible = stripped[:start].rstrip()
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return visible, None
+    return visible, parsed if isinstance(parsed, dict) else None
+
+
 def _resource_input(resource: dict[str, Any]) -> dict[str, Any] | None:
     data = resource.get("data_base64")
     media_type = str(resource.get("media_type") or "application/octet-stream")
@@ -69,6 +105,12 @@ def _resource_input(resource: dict[str, Any]) -> dict[str, Any] | None:
     except (ValueError, UnicodeDecodeError):
         decoded = None
     if decoded is not None:
+        if len(decoded) > _MODEL_TEXT_RESOURCE_CHAR_LIMIT:
+            omitted = len(decoded) - _MODEL_TEXT_RESOURCE_CHAR_LIMIT
+            decoded = (
+                decoded[:_MODEL_TEXT_RESOURCE_CHAR_LIMIT]
+                + f"\n\n[Automatic model projection omitted {omitted} characters. Reacquire the file with start_line/max_lines to inspect another range.]"
+            )
         return {
             "role": "user",
             "content": [{
@@ -106,7 +148,11 @@ def _public_tool_result(result: dict[str, Any]) -> tuple[dict[str, Any], dict[st
         public_resource = {key: value for key, value in resource.items() if key != "data_base64"}
         public_output["resource"] = public_resource
         public["output"] = public_output
-    return public, resource
+    projected, metadata = bound_model_evidence(public)
+    projected = attach_projection_metadata(projected, metadata)
+    if not isinstance(projected, dict):
+        projected = {"status": public.get("status"), "model_projection": projected}
+    return projected, resource
 
 _MODEL_TOOLS = [
     {"type": "web_search"},
@@ -185,6 +231,7 @@ class OpenAIProvider:
         instructions: str,
         messages: list[dict[str, str]],
         tool_handler: ToolHandler | None = None,
+        task_state_handler: TaskStateHandler | None = None,
     ) -> AsyncIterator[str]:
         if tool_handler is None:
             stream = await self.client.responses.create(
@@ -217,7 +264,11 @@ class OpenAIProvider:
             calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
             if not calls:
                 if response.output_text:
-                    yield response.output_text
+                    visible_text, task_delta = _extract_task_state_delta(response.output_text)
+                    if task_delta is not None and task_state_handler is not None:
+                        await task_state_handler(task_delta)
+                    if visible_text:
+                        yield visible_text
                 return
             input_items.extend(item.model_dump(exclude_none=True) for item in response.output)
             for call in calls:
@@ -234,9 +285,20 @@ class OpenAIProvider:
                         result = await tool_handler(call.name, arguments)
                         budget.record_dispatch()
                 else:
-                    result = await tool_handler(call.name, arguments)
                     if call.name == "atlas_capability_search":
-                        budget.remember_search(result)
+                        cached = budget.cached_search(arguments)
+                        if cached is not None:
+                            operations = cached.get("operations") if isinstance(cached.get("operations"), list) else []
+                            result = {
+                                "cached": True,
+                                "operation_ids": [item.get("id") for item in operations if isinstance(item, dict) and item.get("id")],
+                                "message": "Identical capability search already returned earlier in this turn; reuse the prior operation cards.",
+                            }
+                        else:
+                            result = await tool_handler(call.name, arguments)
+                            budget.cache_search(arguments, result)
+                    else:
+                        result = await tool_handler(call.name, arguments)
                 public_result, resource = _public_tool_result(result)
                 input_items.append({
                     "type": "function_call_output",

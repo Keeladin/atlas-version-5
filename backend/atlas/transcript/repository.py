@@ -16,7 +16,7 @@ class TranscriptRepository:
         row = TranscriptRow(kind=kind)
         self.session.add(row)
         await self.session.flush()
-        return Transcript(id=row.id, kind=row.kind, created_at=row.created_at, context_summary=row.context_summary, summarized_through_turn_id=row.summarized_through_turn_id)
+        return Transcript(id=row.id, kind=row.kind, created_at=row.created_at, context_summary=row.context_summary, summarized_through_turn_id=row.summarized_through_turn_id, active_task_state=row.active_task_state or {})
 
 
     async def get_or_create_active(self) -> Transcript:
@@ -29,8 +29,21 @@ class TranscriptRepository:
         row = result.scalar_one_or_none()
         if row is None:
             return await self.create()
-        return Transcript(id=row.id, kind=row.kind, created_at=row.created_at, closed_at=row.closed_at, context_summary=row.context_summary, summarized_through_turn_id=row.summarized_through_turn_id)
+        return Transcript(id=row.id, kind=row.kind, created_at=row.created_at, closed_at=row.closed_at, context_summary=row.context_summary, summarized_through_turn_id=row.summarized_through_turn_id, active_task_state=row.active_task_state or {})
 
+
+    async def get_active_task_state(self, transcript_id: UUID) -> dict:
+        row = await self.session.get(TranscriptRow, transcript_id)
+        if row is None:
+            raise LookupError("Transcript not found")
+        return dict(row.active_task_state or {})
+
+    async def update_active_task_state(self, transcript_id: UUID, state: dict) -> None:
+        row = await self.session.get(TranscriptRow, transcript_id)
+        if row is None:
+            raise LookupError("Transcript not found")
+        row.active_task_state = state
+        await self.session.flush()
 
     async def update_context_summary(self, transcript_id: UUID, *, summary: str, summarized_through_turn_id: UUID) -> None:
         row = await self.session.get(TranscriptRow, transcript_id)

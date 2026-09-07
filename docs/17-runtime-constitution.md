@@ -73,7 +73,18 @@ Foreground and background runs may share durable resources, but runtime must mak
 Duplicate triggers, missed triggers, cancellation, restart catch-up, and overlap behavior must be explicit and observable rather than accidental consequences of process timing.
 
 A schedule never receives privileged authority. Current capability enablement, credentials, containment, and effect rules are evaluated when the scheduled work executes.
-## 9. Memory commands have precedence and completion state
+
+## 9. Active-task continuity is protected but is not memory
+
+Foreground multi-step work may maintain a small durable active-task checkpoint separate from the canonical transcript and durable memory. The checkpoint is a materialized operational state, not a narrative transcript summary.
+
+Deterministic runtime facts such as tool operation/status, evidence references, bounded resource identifiers, action state and errors are written by runtime from structured events. The model may contribute only semantic task state such as objective, constraints, decisions, findings, open questions and next step. If runtime can derive a field deterministically, model-authored task state may not write it.
+
+Task-state semantic updates must be a by-product of the existing foreground inference response. Atlas may not add a checkpoint-only model call. The active checkpoint is bounded, survives restart through Atlas persistence, and is protected from ordinary working-context eviction while the task remains active.
+
+Completed tool/resource detail may be compacted or reacquired by reference without erasing the checkpoint needed to state the current objective, what changed, unresolved work and the next intended step.
+
+## 10. Memory commands have precedence and completion state
 
 The transcript remains the normal write surface of the active model, and background memory processing remains separate from conversational inference. Where memory classification requires semantic judgment, the memory processor may use its own model inference; deterministic runtime owns queueing, persistence, precedence, and enforcement rather than performing that semantic judgment itself.
 
@@ -85,14 +96,14 @@ Derived memory may be created asynchronously, but provenance, supersession, dele
 
 Live external systems remain authoritative for facts whose meaning is inherently current, such as latest mail or present calendar state.
 
-## 10. Provider-native tools may not bypass Atlas guarantees
+## 11. Provider-native tools may not bypass Atlas guarantees
 
 Provider-native perception and computation may be used freely when useful: reasoning, vision, document understanding, image generation, research, sandboxed computation, and similar abilities.
 
 Any provider-native or external tool that performs a consequential effect must still satisfy Atlas's capability enablement, hard-boundary, action-identity, evidence, and recovery contracts.
 
 If Atlas cannot enforce or attest those guarantees for a provider-hosted effect, that effect must not be exposed as an Atlas-controlled capability.
-## 11. Persistence classes remain separated
+## 12. Persistence classes remain separated
 
 Canonical structured state, large artifacts, and secrets are different persistence classes and must not be collapsed merely for implementation convenience.
 
@@ -106,14 +117,14 @@ Persistent runtime state must live outside the source checkout and have a define
 
 Operations that require cross-record consistency, especially explicit forgetting/redaction and effect-state transitions, must define their transactional boundary rather than rely on eventual coincidence.
 
-## 12. Failure and owner attention are durable facts
+## 13. Failure and owner attention are durable facts
 
 Blocked, failed, uncertain, waiting-for-owner, and authentication-required states must not disappear because a provider turn ended or a transcript rolled over.
 
 Runtime records these states and makes them observable through Control and, where owner action is useful, through a small owner-attention projection on the main Atlas surface.
 
 Runtime reports failures in the vocabulary of the boundary that produced them and does not hide precise technical truth behind generic semantic states.
-## 13. Capability families are descriptive, not a second tool protocol
+## 14. Capability families are descriptive, not a second tool protocol
 
 Capability families such as Mail Read, Mail Send, Drive Read, or Filesystem are useful for Control, enablement, discovery, and progressive disclosure.
 
@@ -121,7 +132,7 @@ They do not replace the executable identity of the underlying provider/MCP/local
 
 The model may choose among the enabled underlying operations without the owner having to understand their plumbing.
 
-## 14. Provider state is never canonical runtime state
+## 15. Provider state is never canonical runtime state
 
 Provider conversation state, background jobs, hosted tool sessions, caches, or model-specific continuation features may be used as accelerators.
 
@@ -129,14 +140,14 @@ Atlas must retain enough of its own transcript, action, workspace, artifact, sch
 
 Changing model/provider must not silently change runtime authority or erase in-flight execution truth.
 
-## 15. Minimum execution spine before consequential tools
+## 16. Minimum execution spine before consequential tools
 
 Heliocentric implementation begins with the model and direct multimodal interaction, but consequential external actions must not be enabled until the runtime has the minimum spine needed to govern them.
 
 That spine includes identity, transcript/artifact identity, Environment Registry and enablement state, hard secret/configuration isolation, durable run/action identity, exact effect evidence/recovery, and observable failure/owner-attention state.
 
 The spine grows in parallel with capabilities. It is not a workflow engine and does not decide what the model should do.
-## 16. What this constitution does not define
+## 17. What this constitution does not define
 
 This document deliberately does not freeze database table shapes, retention periods, chunk sizes, lock implementations, sandbox technology, queue technology, provider SDK details, or UI geometry.
 
@@ -144,7 +155,7 @@ Those are implementation choices so long as they preserve these invariants.
 
 It also does not restore V4's obligation planner, mandatory Work objects, confirmation state, or runtime-authored semantic workflows.
 
-## 17. Review rule
+## 18. Review rule
 
 This constitution and `15-pre-implementation-baseline.md` were accepted by the owner on 2026-09-05.
 

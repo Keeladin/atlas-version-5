@@ -18,7 +18,11 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     )
     runtime.register_executor(
         "storage.local.acquire",
-        lambda arguments: local.acquire_file(str(arguments.get("path") or "")),
+        lambda arguments: local.acquire_file(
+            str(arguments.get("path") or ""),
+            start_line=int(arguments["start_line"]) if arguments.get("start_line") is not None else None,
+            max_lines=int(arguments["max_lines"]) if arguments.get("max_lines") is not None else None,
+        ),
     )
     factory = get_session_factory()
 
@@ -41,7 +45,11 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     )
     runtime.register_executor(
         "storage.projects.acquire",
-        lambda arguments: projects.acquire_file(str(arguments.get("path") or "")),
+        lambda arguments: projects.acquire_file(
+            str(arguments.get("path") or ""),
+            start_line=int(arguments["start_line"]) if arguments.get("start_line") is not None else None,
+            max_lines=int(arguments["max_lines"]) if arguments.get("max_lines") is not None else None,
+        ),
     )
     runtime.register_executor("storage.projects.status", lambda arguments: projects.git_status(str(arguments.get("project") or "")))
     runtime.register_executor("storage.projects.diff", lambda arguments: projects.git_diff(str(arguments.get("project") or "")))

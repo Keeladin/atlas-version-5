@@ -147,10 +147,14 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         id="storage.local.acquire",
         capability_id="atlas.local_storage",
         family="Local storage",
-        description="Acquire one local workspace file as a model-readable resource so Atlas can perceive images and understand supported documents natively.",
+        description="Acquire one local workspace file as a model-readable resource; use optional line ranges for large UTF-8 text files.",
         input_schema={
             "type": "object",
-            "properties": {"path": {"type": "string", "description": "File path relative to the approved workspace root."}},
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to the approved workspace root."},
+                "start_line": {"type": "integer", "minimum": 1, "description": "Optional first UTF-8 text line to acquire."},
+                "max_lines": {"type": "integer", "minimum": 1, "maximum": 2000, "description": "Optional bounded UTF-8 text line count."},
+            },
             "required": ["path"],
             "additionalProperties": False,
         },
@@ -202,8 +206,17 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         id="storage.projects.acquire",
         capability_id="atlas.project_folders",
         family="Project folders",
-        description="Acquire one file from the owner's local development projects as a model-readable resource.",
-        input_schema={"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":False},
+        description="Acquire one project file as a model-readable resource; use optional line ranges for large UTF-8 text files.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1},
+                "max_lines": {"type": "integer", "minimum": 1, "maximum": 2000},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
         effect=EffectKind.READ,
         authority=AuthorityMode.AUTO,
     ))

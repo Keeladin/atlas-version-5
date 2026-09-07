@@ -29,6 +29,7 @@ class TranscriptRow(Base):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     context_summary: Mapped[str | None] = mapped_column(Text)
     summarized_through_turn_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    active_task_state: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
 class TurnRow(Base):

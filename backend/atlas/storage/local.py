@@ -43,7 +43,14 @@ class LocalStorageService:
             "entries": entries,
         }
 
-    def acquire_file(self, relative_path: str, *, max_bytes: int = 25 * 1024 * 1024) -> dict:
+    def acquire_file(
+        self,
+        relative_path: str,
+        *,
+        max_bytes: int = 25 * 1024 * 1024,
+        start_line: int | None = None,
+        max_lines: int | None = None,
+    ) -> dict:
         root = self.root.resolve(strict=True)
         requested = (root / relative_path).resolve(strict=True)
         if not requested.is_relative_to(root):
@@ -54,16 +61,37 @@ class LocalStorageService:
         if stat.st_size > max_bytes:
             raise ValueError(f"File exceeds the {max_bytes // (1024 * 1024)} MB model-acquisition limit")
         media_type = mimetypes.guess_type(requested.name)[0] or "application/octet-stream"
-        return {
-            "resource": {
-                "name": requested.name,
-                "path": requested.relative_to(root).as_posix(),
-                "media_type": media_type,
-                "size_bytes": stat.st_size,
-                "source": "local_workspace",
-                "data_base64": base64.b64encode(requested.read_bytes()).decode("ascii"),
+        raw = requested.read_bytes()
+        range_meta = None
+        if start_line is not None or max_lines is not None:
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("Line-range acquisition is available only for UTF-8 text files") from exc
+            lines = text.splitlines(keepends=True)
+            first = max(1, int(start_line or 1))
+            count = max(1, min(int(max_lines or 400), 2000))
+            selected = lines[first - 1 : first - 1 + count]
+            raw = "".join(selected).encode("utf-8")
+            end_line = first + len(selected) - 1 if selected else first - 1
+            range_meta = {
+                "start_line": first,
+                "end_line": end_line,
+                "total_lines": len(lines),
+                "complete": end_line >= len(lines),
             }
+        resource = {
+            "name": requested.name,
+            "path": requested.relative_to(root).as_posix(),
+            "media_type": media_type,
+            "size_bytes": stat.st_size,
+            "projected_size_bytes": len(raw),
+            "source": "local_workspace",
+            "data_base64": base64.b64encode(raw).decode("ascii"),
         }
+        if range_meta is not None:
+            resource["range"] = range_meta
+        return {"resource": resource}
 
     def store_file(self, relative_directory: str, filename: str, data: bytes) -> dict:
         root = self.root.resolve(strict=True)

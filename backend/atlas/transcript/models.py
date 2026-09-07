@@ -45,6 +45,7 @@ class Transcript(BaseModel):
     closed_at: datetime | None = None
     context_summary: str | None = None
     summarized_through_turn_id: UUID | None = None
+    active_task_state: dict[str, object] = Field(default_factory=dict)
 
 
 class Turn(BaseModel):

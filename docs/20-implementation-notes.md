@@ -152,3 +152,13 @@ Atomic project replacement is intentionally unchanged in this trial. Because the
 ## 2026-09-07 — Working-context budget trial raised to 64k
 
 The bounded foreground history remains capped at the latest 10 owner exchanges, but the normal working-context token target is raised from 32,000 to 64,000. The change is deliberately limited to the operating budget: canonical transcript retention, exchange selection, evidence-compaction ordering, protected unresolved evidence, and owner-turn fail-open behaviour are unchanged. The higher target is a trial intended to preserve continuity during real multi-step work while tool-evidence normalization is improved, rather than forcing premature compaction during ordinary workflows.
+
+## 2026-09-07 — Active-task continuity and same-turn evidence bounds
+
+Foreground Atlas now maintains a small durable active-task checkpoint on the owner transcript. Runtime-owned operational facts are derived directly from structured tool/action events and reference canonical evidence rather than copying bodies, diffs or provider payloads. The model may optionally emit a hidden `task_state_delta` at the end of its normal response for semantic state only: objective, constraints, decisions, findings, open questions and next step. Runtime-owned fields are rejected from that envelope. This is a by-product of the existing inference cycle; no checkpoint-only model call was added.
+
+The working-context assembler always projects an active checkpoint ahead of ordinary transcript history, so normal successful-tool compaction and exchange trimming cannot evict the task's objective/current state. The checkpoint itself is tightly bounded and closes after a response unless Atlas explicitly marks multi-step work active. It is operational continuity, not durable memory; background memory processing remains a later, separate orbit.
+
+Tool-result hygiene now applies before same-turn reinference as well as to later transcript projection. Canonical tool evidence remains complete in PostgreSQL, while the provider-facing copy strips binary payloads, cleans HTML, bounds large strings/lists and marks compaction with omission metadata. UTF-8 file acquisition supports bounded line ranges, and automatic text-resource injection is capped with an explicit instruction to reacquire another range when needed.
+
+Capability discovery now returns compact operation cards containing executable identity, effect/authority and a minimal argument contract instead of full registry descriptors. Identical discovery requests within one model turn reuse the first search rather than dispatching another registry lookup. Scheduled runs use the same compact discovery cards but do not emit foreground active-task semantics.

@@ -56,12 +56,21 @@ class ProjectFolderService(LocalStorageService):
         listing["name"] = "Project folders"
         return listing
 
-    def acquire_file(self, relative_path: str, *, max_bytes: int = 25 * 1024 * 1024) -> dict:
+    def acquire_file(
+        self,
+        relative_path: str,
+        *,
+        max_bytes: int = 25 * 1024 * 1024,
+        start_line: int | None = None,
+        max_lines: int | None = None,
+    ) -> dict:
         self._assert_readable(relative_path)
         path = self._existing_file(relative_path)
         root = self.root.resolve(strict=True)
         self._assert_readable(path.relative_to(root).as_posix())
-        result = super().acquire_file(relative_path, max_bytes=max_bytes)
+        result = super().acquire_file(
+            relative_path, max_bytes=max_bytes, start_line=start_line, max_lines=max_lines
+        )
         stat_result = path.stat()
         result["resource"]["sha256"] = self._sha256(path)
         result["resource"]["modified_at"] = datetime.fromtimestamp(stat_result.st_mtime, UTC).isoformat()

@@ -196,7 +196,8 @@ def test_tool_evidence_is_bounded_before_projection() -> None:
     turn = _turn(Actor.TOOL, ToolObservationBlock(operation="demo.read", phase="succeeded", detail={"data": huge}))
     message = turns_to_provider_messages([turn])[0]["content"]
     assert len(message) < 6100
-    assert message.endswith("…")
+    assert '"compacted":true' in message
+    assert '"canonical_evidence_retained":true' in message
 
 
 def _git_project(tmp_path: Path, name: str = "Demo") -> tuple[Path, ProjectFolderService]:

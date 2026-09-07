@@ -31,9 +31,14 @@ def test_alembic_history_is_one_connected_linear_chain() -> None:
     assert seen == set(metadata), "migration history contains a disconnected branch"
 
 
-def test_latest_migration_contains_execution_reconciliation_state() -> None:
+def test_migration_history_contains_execution_reconciliation_state() -> None:
+    texts = [path.read_text() for path in Path("migrations/versions").glob("*.py")]
+    assert any("execution_started_at" in text for text in texts)
+
+
+def test_latest_migration_contains_active_task_state() -> None:
     metadata = {revision: (parent, path) for path in Path("migrations/versions").glob("*.py") for revision, parent in [_metadata(path)]}
     parents = {parent for parent, _ in metadata.values() if parent is not None}
     head = next(revision for revision in metadata if revision not in parents)
     text = metadata[head][1].read_text()
-    assert "execution_started_at" in text
+    assert "active_task_state" in text

@@ -218,3 +218,29 @@ def test_project_read_cannot_bypass_protection_through_symlink(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="protected project material cannot be read"):
         service.acquire_file("Demo/notes.md")
+
+
+def test_local_storage_acquires_bounded_utf8_line_range(tmp_path: Path) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_text("one\ntwo\nthree\nfour\nfive\n")
+    service = LocalStorageService(tmp_path, "/home/jaco/Workspace")
+
+    acquired = service.acquire_file("notes.txt", start_line=2, max_lines=2)
+    resource = acquired["resource"]
+
+    import base64
+
+    assert base64.b64decode(resource["data_base64"]).decode() == "two\nthree\n"
+    assert resource["size_bytes"] == path.stat().st_size
+    assert resource["range"] == {"start_line": 2, "end_line": 3, "total_lines": 5, "complete": False}
+
+
+def test_project_acquire_line_range_preserves_full_file_hash(tmp_path: Path) -> None:
+    project, service = _git_project(tmp_path)
+    (project / "app.py").write_text("one\ntwo\nthree\n")
+
+    acquired = service.acquire_file("Demo/app.py", start_line=2, max_lines=1)
+
+    assert acquired["resource"]["range"]["start_line"] == 2
+    assert acquired["resource"]["range"]["end_line"] == 2
+    assert acquired["resource"]["sha256"] == service._sha256(project / "app.py")

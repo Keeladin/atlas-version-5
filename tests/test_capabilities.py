@@ -63,3 +63,23 @@ def test_argument_validation_rejects_missing_or_extra_fields() -> None:
     assert runtime.validate_arguments("test.read", {}) == "Missing required argument(s): target"
     assert runtime.validate_arguments("test.read", {"target": "x", "other": 1}) == "Unexpected argument(s): other"
     assert runtime.validate_arguments("test.read", {"target": "x"}) is None
+
+
+def test_capability_search_cards_omit_full_schema_but_keep_argument_contract() -> None:
+    runtime = CapabilityRuntime()
+    item = descriptor()
+    item.input_schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string", "description": "very long schema prose"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    runtime.register(item, lambda arguments: arguments)
+
+    card = runtime.search_cards("read data")[0]
+
+    assert card["id"] == "test.read"
+    assert card["arguments"] == {"path": "string"}
+    assert card["required"] == ["path"]
+    assert "input_schema" not in card
+    assert "very long schema prose" not in str(card)

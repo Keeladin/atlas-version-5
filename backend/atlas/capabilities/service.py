@@ -60,6 +60,26 @@ class CapabilityRuntime:
                 return f"Unexpected argument(s): {', '.join(extras)}"
         return None
 
+    def search_cards(self, query: str, limit: int = 8) -> list[dict[str, object]]:
+        cards: list[dict[str, object]] = []
+        for item in self.search(query, limit):
+            schema = item.input_schema or {}
+            properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+            required = schema.get("required") if isinstance(schema.get("required"), list) else []
+            cards.append({
+                "id": item.id,
+                "family": item.family,
+                "description": item.description,
+                "effect": item.effect.value,
+                "authority": item.authority.value,
+                "arguments": {
+                    key: str(value.get("type") or "any") if isinstance(value, dict) else "any"
+                    for key, value in properties.items()
+                },
+                "required": [str(key) for key in required],
+            })
+        return cards
+
     def search(self, query: str, limit: int = 8) -> list[OperationDescriptor]:
         terms = {term for term in query.casefold().replace("/", " ").replace(".", " ").split() if term}
         scored: list[tuple[int, OperationDescriptor]] = []

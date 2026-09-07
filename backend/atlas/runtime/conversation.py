@@ -2,14 +2,17 @@ import json
 from uuid import UUID
 
 from atlas.runtime.bootstrap import build_seat_bootstrap
+from atlas.runtime.evidence import attach_projection_metadata, bound_model_evidence
 from atlas.transcript.models import Actor, Turn
 
 
-def build_model_instructions(capability_index: list[dict[str, str]] | None = None) -> str:
+def build_model_instructions(
+    capability_index: list[dict[str, str]] | None = None, *, active_task_enabled: bool = True
+) -> str:
     seat = build_seat_bootstrap()
     capabilities = capability_index or []
     capability_text = ", ".join(item["family"] for item in capabilities) or "none"
-    return (
+    base = (
         f"{seat.principle} "
         "You are speaking directly with your owner, Jaco. "
         "Be useful, concise when the task is simple, and explicit about uncertainty. "
@@ -22,6 +25,17 @@ def build_model_instructions(capability_index: list[dict[str, str]] | None = Non
         f"Enabled capability families currently visible through Atlas are: {capability_text}. "
         "When a task needs environment access, search the capability registry rather than guessing operation names. "
         "Tool calls describe operational intent; approval-required calls are prepared for the owner instead of being denied."
+    )
+    if not active_task_enabled:
+        return base
+    return (
+        base
+        + " Atlas maintains a protected active-task checkpoint without extra inference. When the semantic meaning of the active task changes, append exactly one "
+        "<atlas_task_state_delta>{json}</atlas_task_state_delta> block at the very end of the response. The block is hidden runtime metadata, not owner-visible prose. "
+        "Allowed JSON fields are objective, constraints, decisions, findings, open_questions, next_step, status, and replace. Decisions are objects with text and optional rationale. "
+        "If work must remain active beyond this response, emit a delta with status=active and a concise next_step; if no valid delta is emitted, the runtime may close the task after this response. "
+        "Use status=complete when the current multi-step task is genuinely finished. Never put tool status, file hashes, resource IDs, action IDs, timestamps, or other runtime-derived facts in this delta; the runtime owns those facts. "
+        "Omit the block only when there is no semantic task state that must survive this response."
     )
 
 
@@ -105,9 +119,9 @@ def tool_observation_to_provider_message(block, *, compact: bool = False) -> dic
         parts.append("full canonical observation retained")
         return {"role": "developer", "content": " · ".join(parts)}
 
-    encoded = json.dumps(detail, ensure_ascii=False, default=str, separators=(",", ":"))
-    if len(encoded) > 6000:
-        encoded = encoded[:6000] + "…"
+    projected, metadata = bound_model_evidence(detail, char_limit=5_600)
+    projected = attach_projection_metadata(projected, metadata)
+    encoded = json.dumps(projected, ensure_ascii=False, default=str, separators=(",", ":"))
     return {
         "role": "developer",
         "content": f"Durable runtime evidence: {operation} [{phase}] {encoded}",

@@ -50,7 +50,7 @@ async def _execute_task(task_id: UUID, settings: Settings, runtime: CapabilityRu
         if name == "atlas_capability_search":
             query = str(arguments.get("query") or "")
             limit = int(arguments.get("limit") or 8)
-            result = {"operations": [item.model_dump(mode="json") for item in runtime.search(query, limit)]}
+            result = {"operations": runtime.search_cards(query, limit)}
             async with factory() as observation_session:
                 await TranscriptRepository(observation_session).append_turn(
                     transcript.id, Actor.TOOL,
@@ -144,7 +144,7 @@ async def _execute_task(task_id: UUID, settings: Settings, runtime: CapabilityRu
     status = "succeeded"
     try:
         async for delta in provider.stream_text(
-            instructions=build_model_instructions(runtime.compact_index()),
+            instructions=build_model_instructions(runtime.compact_index(), active_task_enabled=False),
             messages=messages,
             tool_handler=tool_handler,
         ):

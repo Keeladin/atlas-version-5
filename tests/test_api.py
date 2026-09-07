@@ -166,3 +166,44 @@ def test_working_context_trims_oldest_exchange_if_compaction_is_not_enough(monke
     assert policy["stage"] == "history_trimmed"
     assert policy["selected_exchanges"] == 1
     assert policy["budget_exceeded"] is False
+
+
+def test_working_context_never_evicts_active_task_checkpoint(monkeypatch) -> None:
+    import asyncio
+    from uuid import uuid4
+
+    from atlas.api.app import _assemble_working_context
+    from atlas.runtime.task_state import (
+        TaskStateDelta,
+        merge_semantic_delta,
+        new_task_state,
+    )
+    from atlas.transcript.models import Actor, TextBlock, Transcript, Turn
+
+    class FakeProvider:
+        async def count_input_tokens(self, *, instructions, messages):
+            return 100 + sum(len(str(message.get("content", ""))) for message in messages)
+
+    transcript_id = uuid4()
+    turns = []
+    for index in range(4):
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.OWNER, blocks=[TextBlock(text="o" * 900)]))
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text="a" * 900)]))
+    task_state = merge_semantic_delta(
+        new_task_state("Keep continuity"),
+        TaskStateDelta(objective="Finish the active multi-step task", next_step="Run verification"),
+    )
+
+    monkeypatch.setattr("atlas.api.app.settings.working_context_exchanges", 4)
+    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 2800)
+
+    messages, policy = asyncio.run(
+        _assemble_working_context(FakeProvider(), Transcript(id=transcript_id, active_task_state=task_state), turns)
+    )
+
+    assert policy["stage"] == "history_trimmed"
+    assert policy["selected_exchanges"] < 4
+    task_messages = [message for message in messages if "Protected active-task checkpoint" in str(message.get("content", ""))]
+    assert len(task_messages) == 1
+    assert "Finish the active multi-step task" in task_messages[0]["content"]
+    assert "Run verification" in task_messages[0]["content"]
