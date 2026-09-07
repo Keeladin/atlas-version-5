@@ -210,6 +210,8 @@ async def test_owner_attachment_reference_survives_file_change(pg_factory, tmp_p
     monkeypatch.setattr(app_module.settings, 'openai_api_key_file', key)
     monkeypatch.setattr(app_module.settings, 'workspace_root', workspace)
     monkeypatch.setattr(app_module, 'artifact_store', artifacts)
+    async def enabled(): return {'atlas.local_storage', 'atlas.evidence'}
+    monkeypatch.setattr(app_module.capability_runtime, 'enabled_capabilities', enabled)
     response = await app_module.stream_conversation(app_module.ChatRequest(text='Read this', attachments=['note.txt']))
     attached.write_text('Changed after attachment')
     async for _ in response.body_iterator: pass
@@ -302,8 +304,15 @@ async def test_queued_schedule_executes_snapshot_once(pg_factory, tmp_path, monk
         task = await session.get(ScheduledTaskRow, task_id)
         task.prompt = 'New mutable intent'
         await session.commit()
-    assert await runner.run_due_once(settings, CapabilityRuntime()) == 1
-    assert await runner.run_due_once(settings, CapabilityRuntime()) == 0
+    runtime = CapabilityRuntime()
+    enabled = set()
+    async def policy(): return set(enabled)
+    runtime.policy_reader = policy
+    assert await runner.run_due_once(settings, runtime) == 0
+    assert seen == []  # Disabling schedules leaves the occurrence queued.
+    enabled.add('atlas.schedules')
+    assert await runner.run_due_once(settings, runtime) == 1
+    assert await runner.run_due_once(settings, runtime) == 0
     assert len(seen) == 1 and 'Original snapshot intent' in seen[0]['content']
     assert 'New mutable intent' not in seen[0]['content']
     async with pg_factory() as session:
@@ -391,7 +400,7 @@ async def test_interruption_dismissal_cannot_hide_other_attention_types(pg_facto
         attention_id = attention.id
 
     async with pg_factory() as session:
-        with pytest.raises(ProposalIntegrityError, match='Only interruption notices'):
+        with pytest.raises(ProposalIntegrityError, match='Only informational notices'):
             await AuthorityStore(session).dismiss_interruption(attention_id)
         await session.rollback()
         assert (await session.get(OwnerAttentionRow, attention_id)).resolved is False

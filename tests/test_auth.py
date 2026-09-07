@@ -1,13 +1,15 @@
 
 import atlas.api.app as app_module
+import httpx
+import pytest
 from atlas.auth.service import AuthService
-from fastapi.testclient import TestClient
-
-client = TestClient(app_module.app)
 
 
-def test_auth_status_is_open_in_development() -> None:
-    response = client.get("/api/auth/status")
+@pytest.mark.asyncio
+async def test_auth_status_is_open_in_development() -> None:
+    transport = httpx.ASGITransport(app=app_module.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/api/auth/status")
     assert response.status_code == 200
     assert response.json()["authenticated"] is True
 

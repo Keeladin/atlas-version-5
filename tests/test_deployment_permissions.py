@@ -31,3 +31,17 @@ def test_deploy_stops_runtime_before_migration_and_starts_after() -> None:
     start = script.index("systemctl start atlas-v5.service")
     assert stop < migrate < start
     assert "systemctl restart atlas-v5.service" not in script
+
+
+def test_deploy_enters_maintenance_before_replacing_code_or_dependencies():
+    script = (DEPLOYMENT / "deploy-host.sh").read_text()
+    stop = script.index("systemctl stop atlas-v5.service")
+    assert stop < script.index('rsync -a --delete')
+    assert stop < script.index('"${UV_BIN}" sync')
+    assert stop < script.index('install -d -o root -g atlas-v5')
+
+
+def test_production_owner_projects_are_mounted_read_only():
+    unit = (DEPLOYMENT / 'systemd' / 'atlas-v5.service').read_text()
+    assert 'BindReadOnlyPaths=/home/jaco/Projects:/var/lib/atlas-v5/projects' in unit
+    assert 'BindPaths=/home/jaco/Projects:' not in unit

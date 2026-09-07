@@ -1,31 +1,42 @@
+import httpx
+import pytest
 from atlas.api.app import app
-from fastapi.testclient import TestClient
-
-client = TestClient(app)
 
 
-def test_bootstrap_endpoint() -> None:
-    response = client.get("/api/bootstrap")
+async def app_request(method: str, path: str):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        return await client.request(method, path)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_endpoint() -> None:
+    response = await app_request("GET", "/api/bootstrap")
     assert response.status_code == 200
     body = response.json()
     assert body["identity"] == "Atlas"
     assert body["environment_registry_available"] is True
 
 
-def test_registry_endpoint_exposes_enabled_projection_only() -> None:
-    response = client.get("/api/registry")
+@pytest.mark.asyncio
+async def test_registry_endpoint_exposes_enabled_projection_only(monkeypatch) -> None:
+    async def owner_enabled():
+        return {"atlas.artifacts", "atlas.evidence", "atlas.local_storage", "atlas.project_folders", "atlas.schedules"}
+    monkeypatch.setattr("atlas.api.app.capability_runtime.enabled_capabilities", owner_enabled)
+    response = await app_request("GET", "/api/registry")
     assert response.status_code == 200
     capabilities = response.json()["capabilities"]
     assert [item["id"] for item in capabilities] == ["atlas.artifacts", "atlas.evidence", "atlas.local_storage", "atlas.project_folders", "atlas.schedules"]
 
 
-def test_control_route_serves_spa_entrypoint(tmp_path, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_control_route_serves_spa_entrypoint(tmp_path, monkeypatch) -> None:
     import atlas.api.app as app_module
 
     (tmp_path / "index.html").write_text('<div id="root"></div>')
     monkeypatch.setattr(app_module.settings, "frontend_dist", tmp_path)
 
-    response = client.get("/control")
+    response = await app_request("GET", "/control")
     assert response.status_code == 200
     assert '<div id="root"></div>' in response.text
 
@@ -37,11 +48,12 @@ def test_context_pressure_states() -> None:
     assert _context_pressure_state(900_000, 1_000_000) == "red"
 
 
-def test_control_restart_endpoint_requests_supervised_restart(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_control_restart_endpoint_requests_supervised_restart(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr("atlas.api.app._restart_api_process", lambda: calls.append("restart"))
 
-    response = client.post("/api/control/restart")
+    response = await app_request("POST", "/api/control/restart")
 
     assert response.status_code == 202
     assert response.json() == {"status": "restarting"}
@@ -129,7 +141,7 @@ def test_working_context_compacts_old_successful_tools_before_trimming(monkeypat
         turns.append(Turn(transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text=f"atlas {index}")]))
 
     monkeypatch.setattr("atlas.api.app.settings.working_context_exchanges", 3)
-    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 3400)
+    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 4534)  # 75% initial seat is 3400 tokens
     monkeypatch.setattr("atlas.api.app.settings.working_context_raw_tool_exchanges", 1)
 
     messages, policy = asyncio.run(_assemble_working_context(FakeProvider(), Transcript(id=transcript_id), turns))

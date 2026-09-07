@@ -13,6 +13,7 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Query,
     Request,
     UploadFile,
 )
@@ -42,6 +43,7 @@ from atlas.db import database_health, get_session_factory
 from atlas.integrations import GoogleWorkspaceService
 from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
+from atlas.registry.repository import RegistryRepository
 from atlas.registry.service import build_phase0_registry
 from atlas.runtime.bootstrap import build_seat_bootstrap
 from atlas.runtime.conversation import (
@@ -72,6 +74,7 @@ from atlas.runtime.task_state import (
 from atlas.schedules import ScheduleService
 from atlas.schedules.runner import scheduler_loop
 from atlas.storage import LocalStorageService, ProjectFolderService
+from atlas.storage.changes import ProjectChanges
 from atlas.transcript.models import Actor, ArtifactRefBlock, TextBlock
 from atlas.transcript.repository import TranscriptRepository
 
@@ -90,6 +93,7 @@ class ChatRequest(BaseModel):
 
 class ActionDecision(BaseModel):
     approve: bool
+    reviewed_target_hash: str | None = None
 
 
 @asynccontextmanager
@@ -186,7 +190,33 @@ async def bootstrap():
 
 @app.get("/api/registry")
 async def registry_projection():
-    return {"capabilities": registry.enabled_projection()}
+    enabled = await capability_runtime.enabled_capabilities()
+    return {"capabilities": [entry for entry in registry.all_entries() if entry.id in enabled]}
+
+
+async def require_capability(capability_id: str):
+    if capability_id not in await capability_runtime.enabled_capabilities():
+        raise HTTPException(status_code=403, detail="This capability is disabled or unavailable. Enable it in Control before use.")
+
+
+class CapabilitySetting(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/control/capabilities")
+async def owner_capabilities(session: Annotated[AsyncSession, Depends(get_session)]):
+    return {"items": await RegistryRepository(session).owner_settings()}
+
+
+@app.put("/api/control/capabilities/{capability_id}")
+async def set_owner_capability(capability_id: str, setting: CapabilitySetting,
+        session: Annotated[AsyncSession, Depends(get_session)]):
+    try:
+        await RegistryRepository(session).set_enabled(capability_id, setting.enabled)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await session.commit()
+    return {"id": capability_id, "enabled": setting.enabled}
 
 
 def _credential_projection(label: str, path) -> dict[str, object]:
@@ -261,6 +291,7 @@ async def restart_api(background_tasks: BackgroundTasks):
 
 @app.get("/api/control/configuration")
 async def control_configuration():
+    enabled = await capability_runtime.enabled_capabilities()
     google = next((entry for entry in registry.all_entries() if entry.id == "google.workspace"), None)
     github = next((entry for entry in registry.all_entries() if entry.id == "github.mcp"), None)
     return {
@@ -274,7 +305,7 @@ async def control_configuration():
                 "id": "google.workspace",
                 "label": "Google Workspace",
                 "configured": settings.gws_configured,
-                "enabled": bool(google and google.enabled),
+                "enabled": bool(google and google.id in enabled),
                 "availability": google.availability if google else "unavailable",
                 "operations": google.executable_operations if google else [],
                 "transport": "local Google Workspace bridge",
@@ -283,7 +314,7 @@ async def control_configuration():
                 "id": "github.mcp",
                 "label": "GitHub",
                 "configured": settings.github_configured,
-                "enabled": bool(github and github.enabled),
+                "enabled": bool(github and github.id in enabled),
                 "availability": github.availability if github else "unavailable",
                 "operations": github.executable_operations if github else [],
                 "transport": "official GitHub MCP · stdio · read only",
@@ -358,12 +389,14 @@ async def decide_action(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": "cancelled", "action_id": str(action.id)}
 
+    if not decision.reviewed_target_hash:
+        raise HTTPException(status_code=409, detail="Reload and review the exact proposal before approval")
     try:
         proposal = store.verify_proposal(action)
     except ProposalIntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     arguments = proposal["arguments"]
-    descriptor = capability_runtime.descriptor(action.operation)
+    descriptor = await capability_runtime.descriptor_current(action.operation)
     if descriptor is None or descriptor.capability_id != proposal["capability_id"]:
         raise HTTPException(status_code=409, detail="Approved capability identity is no longer available")
     validation_error = capability_runtime.validate_arguments(action.operation, arguments)
@@ -373,7 +406,7 @@ async def decide_action(
     run = await session.get(RunRow, action.run_id)
     transcript_id = run.transcript_id if run is not None else None
     try:
-        await store.begin_execution(action)
+        await store.begin_execution(action, reviewed_target_hash=decision.reviewed_target_hash)
         if transcript_id is not None:
             await EvidenceStore(session, artifact_store).record(transcript_id, operation=action.operation,
                 phase="executing", detail={"status": "executing"}, run_id=action.run_id,
@@ -426,9 +459,9 @@ async def _persist_tool_observation(
 
 
 async def _assemble_working_context(provider: OpenAIProvider, transcript, turns):
-    instructions = build_model_instructions(capability_runtime.compact_index())
+    instructions = build_model_instructions(await capability_runtime.compact_index_current())
     exchange_limit = max(1, settings.working_context_exchanges)
-    token_budget = max(1, min(settings.working_context_tokens, settings.openai_context_window))
+    token_budget = max(1, int(min(settings.working_context_tokens, settings.openai_context_window) * 0.75))
     raw_tool_exchanges = max(0, settings.working_context_raw_tool_exchanges)
     active_turns = context_turns(turns, transcript.summarized_through_turn_id)
     selected_turns = _recent_exchange_turns(active_turns, exchange_limit)
@@ -498,7 +531,8 @@ async def _assemble_working_context(provider: OpenAIProvider, transcript, turns)
     selected_exchanges = sum(1 for turn in selected_turns if turn.actor == Actor.OWNER)
     return messages, {
         "input_tokens": input_tokens,
-        "token_budget": token_budget,
+        "token_budget": settings.working_context_tokens,
+        "initial_context_budget": token_budget,
         "exchange_limit": exchange_limit,
         "selected_exchanges": selected_exchanges,
         "compacted_tool_turns": len(compact_ids),
@@ -597,8 +631,8 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
         raise HTTPException(status_code=503, detail="OpenAI provider is not configured")
     repository = TranscriptRepository(session)
     transcript = await repository.get_or_create_active()
-    turns = await repository.list_turns(transcript.id)
-    provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve)
+    turns = await repository.list_recent_turns(transcript.id)
+    provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
     _, policy = await _assemble_working_context(provider, transcript, turns)
     input_tokens = int(policy["input_tokens"])
     limit_tokens = int(policy["token_budget"])
@@ -619,13 +653,14 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
         raise HTTPException(status_code=503, detail="OpenAI provider is not configured")
     repository = TranscriptRepository(session)
     transcript = await repository.get_or_create_active()
-    turns = await repository.list_turns(transcript.id)
+    turns = await repository.list_recent_turns(transcript.id)
     provider = OpenAIProvider(
         api_key=api_key, model=settings.openai_model,
         capability_call_limit=settings.capability_call_limit,
         capability_completion_reserve=settings.capability_completion_reserve,
+        capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window),
     )
-    instructions = build_model_instructions(capability_runtime.compact_index())
+    instructions = build_model_instructions(await capability_runtime.compact_index_current())
     static_tokens = await provider.count_input_tokens(instructions=instructions, messages=[])
     _, working_policy = await _assemble_working_context(provider, transcript, turns)
     current_tokens = int(working_policy["input_tokens"])
@@ -714,6 +749,7 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
         "static_tokens": static_tokens,
         "current_context_tokens": current_tokens,
         "canonical_transcript_tokens": canonical_tokens,
+        "measurement_scope": "Latest 20 owner exchanges, at most 500 canonical turns",
         "limit_tokens": limit_tokens,
         "provider_limit_tokens": settings.openai_context_window,
         "pressure": current_tokens / max(1, limit_tokens),
@@ -733,12 +769,13 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
 
 
 @app.get("/api/conversation")
-async def conversation(session: Annotated[AsyncSession, Depends(get_session)]):
+async def conversation(session: Annotated[AsyncSession, Depends(get_session)],
+        before_sequence: int | None = Query(default=None, ge=1), limit: int = Query(default=200, ge=1, le=200)):
     repository = TranscriptRepository(session)
     transcript = await repository.get_or_create_active()
-    turns = await repository.list_turns(transcript.id)
+    turns = await repository.list_turns(transcript.id, before_sequence=before_sequence, limit=limit)
     await session.commit()
-    return {"transcript": transcript, "turns": turns}
+    return {"transcript": transcript, "turns": turns, "next_before_sequence": turns[0].sequence if len(turns) == limit and turns[0].sequence > 1 else None}
 
 
 def _begin_owner_checkpoint(state, request, owner_turn_id):
@@ -751,6 +788,8 @@ def _begin_owner_checkpoint(state, request, owner_turn_id):
 async def stream_conversation(request: ChatRequest):
     text = request.text.strip()
     attachment_paths = [path.strip() for path in request.attachments if path.strip()]
+    if attachment_paths:
+        await require_capability("atlas.local_storage")
     if not text and not attachment_paths:
         raise HTTPException(status_code=422, detail="Message text or an attachment is required")
 
@@ -786,10 +825,10 @@ async def stream_conversation(request: ChatRequest):
         )
         transcript.active_task_state = task_state
         await session.commit()
-        turns = await repository.list_turns(transcript.id)
+        turns = await repository.list_recent_turns(transcript.id)
 
     try:
-        provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve)
+        provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
         async with maintain_heartbeat(factory, run_id):
             messages = await _prepare_provider_messages(provider, transcript, turns)
     except BaseException:
@@ -800,13 +839,14 @@ async def stream_conversation(request: ChatRequest):
 
     provider_evidence_id = None
 
-    async def observation_handler(payload: dict[str, Any]) -> None:
+    async def observation_handler(payload: dict[str, Any]) -> str:
         nonlocal provider_evidence_id
         async with factory() as session:
             provider_evidence_id, _ = await EvidenceStore(session, artifact_store).record(transcript.id,
                 operation="provider.openai", phase="observed", detail=payload, run_id=run_id,
                 checkpoint=False, trust="external")
             await session.commit()
+            return str(provider_evidence_id)
 
     async def task_state_handler(payload: dict[str, Any]) -> None:
         try:
@@ -830,15 +870,20 @@ async def stream_conversation(request: ChatRequest):
                 run_id=run_id, checkpoint=False, trust="model")
             await task_session.commit()
 
+    async def checkpoint_reader():
+        async with factory() as session:
+            state = await TranscriptRepository(session).get_active_task_state(transcript.id)
+            return active_task_provider_message(state)
+
     async def generate() -> AsyncIterator[str]:
         chunks: list[str] = []
         completed = False
         try:
             async with maintain_heartbeat(factory, run_id):
                 async for delta in provider.stream_text(
-                    instructions=build_model_instructions(capability_runtime.compact_index()),
+                    instructions=build_model_instructions(await capability_runtime.compact_index_current()),
                     messages=messages, tool_handler=tool_handler,
-                    task_state_handler=task_state_handler, observation_handler=observation_handler,
+                    task_state_handler=task_state_handler, observation_handler=observation_handler, checkpoint_reader=checkpoint_reader,
                 ):
                     chunks.append(delta)
                     yield json.dumps({"type": "delta", "text": delta}) + "\n"
@@ -864,6 +909,7 @@ async def stream_conversation(request: ChatRequest):
 
 @app.get("/api/storage/local")
 async def local_storage(path: str = ""):
+    await require_capability("atlas.local_storage")
     service = LocalStorageService(settings.workspace_root, settings.workspace_display_root)
     try:
         return await asyncio.to_thread(service.list_directory, path)
@@ -876,6 +922,7 @@ async def local_storage(path: str = ""):
 
 @app.get("/api/storage/drive")
 async def drive_storage(folder_id: str = "root"):
+    await require_capability("google.workspace")
     if not settings.gws_configured:
         raise HTTPException(status_code=503, detail="Google Workspace is not configured")
     service = GoogleWorkspaceService(
@@ -890,8 +937,19 @@ async def drive_storage(folder_id: str = "root"):
         raise HTTPException(status_code=502, detail=f"Google Drive read failed: {exc}") from exc
 
 
+@app.get("/api/project-changes/{change_id}")
+async def project_change_download(change_id: UUID):
+    service = ProjectChanges(ProjectFolderService(settings.projects_root, settings.projects_display_root, settings.project_checkpoint_root))
+    try:
+        path = await asyncio.to_thread(service.download, change_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Project change not found") from exc
+    return FileResponse(path, media_type="application/zip", filename=f"atlas-change-{change_id}.zip")
+
+
 @app.get("/api/storage/projects")
 async def project_folders(path: str = ""):
+    await require_capability("atlas.project_folders")
     service = ProjectFolderService(settings.projects_root, settings.projects_display_root)
     try:
         return await asyncio.to_thread(service.list_directory, path)
@@ -937,6 +995,7 @@ def _repository_projection(output: Any) -> list[dict[str, Any]]:
 
 @app.get("/api/repositories")
 async def repositories():
+    await require_capability("github.mcp")
     result = await capability_runtime.call(
         "github.search_repositories",
         {"query": f"user:{settings.github_owner}", "page": 1, "perPage": 100, "minimal_output": False},
@@ -950,6 +1009,7 @@ async def repositories():
 
 @app.post("/api/storage/local/upload")
 async def upload_local_storage(file: UploadFile, path: str = ""):
+    await require_capability("atlas.local_storage")
     data = await file.read()
     if len(data) > 100 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="File exceeds the 100 MB workspace upload limit")
@@ -968,6 +1028,7 @@ async def upload_artifact(
     file: UploadFile,
     session: Annotated[AsyncSession, Depends(get_session)],
 ):
+    await require_capability("atlas.artifacts")
     data = await file.read()
     media_type = file.content_type or "application/octet-stream"
     kind = ArtifactKind.IMAGE if media_type.startswith("image/") else ArtifactKind.FILE

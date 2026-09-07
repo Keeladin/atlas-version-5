@@ -15,6 +15,24 @@ class CapabilityRuntime:
     def __init__(self, operations: list[OperationDescriptor] | None = None) -> None:
         self._operations: dict[str, OperationDescriptor] = {item.id: item for item in operations or []}
         self._executors: dict[str, Executor] = {}
+        self.policy_reader = None
+
+    async def enabled_capabilities(self) -> set[str]:
+        if self.policy_reader is None:
+            return {item.capability_id for item in self._operations.values()} | {"openai.web"}
+        return await self.policy_reader()
+
+    async def compact_index_current(self):
+        enabled = await self.enabled_capabilities()
+        return [item for item in self.compact_index() if item["capability_id"] in enabled]
+
+    async def search_cards_current(self, query: str, limit: int = 8):
+        enabled = await self.enabled_capabilities()
+        return self.search_cards(query, limit, enabled=enabled)
+
+    async def descriptor_current(self, operation_id: str):
+        item = self.descriptor(operation_id)
+        return item if item is not None and item.capability_id in await self.enabled_capabilities() else None
 
     def register(self, descriptor: OperationDescriptor, executor: Executor) -> None:
         self._operations[descriptor.id] = descriptor
@@ -72,9 +90,9 @@ class CapabilityRuntime:
             return f"Invalid {path}: schema rule {error.validator} failed"
         return None
 
-    def search_cards(self, query: str, limit: int = 8) -> list[dict[str, object]]:
+    def search_cards(self, query: str, limit: int = 8, *, enabled: set[str] | None = None) -> list[dict[str, object]]:
         cards: list[dict[str, object]] = []
-        for item in self.search(query, limit):
+        for item in self.search(query, limit, enabled=enabled):
             schema = item.input_schema or {}
             properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
             required = schema.get("required") if isinstance(schema.get("required"), list) else []
@@ -92,10 +110,12 @@ class CapabilityRuntime:
             })
         return cards
 
-    def search(self, query: str, limit: int = 8) -> list[OperationDescriptor]:
+    def search(self, query: str, limit: int = 8, *, enabled: set[str] | None = None) -> list[OperationDescriptor]:
         terms = {term for term in query.casefold().replace("/", " ").replace(".", " ").split() if term}
         scored: list[tuple[int, OperationDescriptor]] = []
         for item in self.operations():
+            if enabled is not None and item.capability_id not in enabled:
+                continue
             haystack = f"{item.id} {item.family} {item.description}".casefold()
             score = sum(3 if term in item.id.casefold() else 1 for term in terms if term in haystack)
             if score or not terms:
@@ -115,6 +135,9 @@ class CapabilityRuntime:
         executor = self._executors.get(operation_id)
         if descriptor is None or executor is None:
             return CapabilityCallResult(status="unavailable", operation_id=operation_id, message="Operation is not registered or enabled.")
+        if descriptor.capability_id not in await self.enabled_capabilities():
+            return CapabilityCallResult(status="forbidden", operation_id=operation_id,
+                output={"failure_phase": "before_dispatch"}, message="The owner has not enabled this capability, or its current permission could not be verified.")
         if descriptor.authority == AuthorityMode.FORBIDDEN:
             return CapabilityCallResult(status="forbidden", operation_id=operation_id, message="Operation is outside current Atlas authority.")
         validation_error = self.validate_arguments(operation_id, arguments)

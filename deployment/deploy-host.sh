@@ -46,6 +46,12 @@ if [[ ! -f ${ROOT_DIR}/frontend/dist/index.html ]]; then
   exit 1
 fi
 
+# Maintenance starts before changing any installed files or dependencies.
+# On failure leave the runtime stopped; do not restart mixed/partial code.
+if systemctl cat atlas-v5.service >/dev/null 2>&1; then
+  systemctl stop atlas-v5.service
+fi
+
 install -d -o root -g atlas-v5 -m 0750 \
   "${APP_DIR}" \
   "${APP_DIR}/backend" \
@@ -172,7 +178,6 @@ bash "${ROOT_DIR}/deployment/grant-maintenance-access.sh"
 # Schema migrations may introduce constraints the currently running code does
 # not understand. Stop the old runtime before migration and fail closed: if
 # Alembic fails, set -e exits here and Atlas remains stopped for inspection.
-systemctl stop atlas-v5.service
 
 runuser -u atlas-v5 -- /bin/bash -c '
   set -a

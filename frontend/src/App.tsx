@@ -3,7 +3,8 @@ import { startAuthentication, startRegistration, type PublicKeyCredentialCreatio
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
-import { ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { approvalFields } from './approval'
+import { getOwnerCapabilities, setOwnerCapability, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -63,6 +64,23 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const databaseOk = Boolean(health?.database.ok)
   const providerOk = Boolean(health?.provider.configured)
   const [turns, setTurns] = useState<Turn[]>([])
+  const [historyCursor, setHistoryCursor] = useState<number | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  function installConversation(conversation: Conversation) {
+    setTurns(conversation.turns)
+    setHistoryCursor(conversation.next_before_sequence)
+  }
+  async function loadOlderConversation() {
+    if (!historyCursor || historyLoading) return
+    setHistoryLoading(true)
+    try {
+      const older = await getConversation(historyCursor)
+      setTurns((current) => [...older.turns, ...current.filter((turn) => !older.turns.some((old) => old.id === turn.id))])
+      setHistoryCursor(older.next_before_sequence)
+    } catch (cause) { setError(String(cause)) }
+    finally { setHistoryLoading(false) }
+  }
+
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null)
   const [draft, setDraft] = useState('')
   const [streamingText, setStreamingText] = useState('')
@@ -95,16 +113,17 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    getConversation().then((conversation) => setTurns(conversation.turns)).catch((cause) => setError(String(cause)))
+    getConversation().then(installConversation).catch((cause) => setError(String(cause)))
     getConversationContext().then(setConversationContext).catch(() => setConversationContext(null))
     getPendingActions().then(setPendingActions).catch(() => setPendingActions([]))
     getRecentActions(4).then(setRecentActions).catch(() => setRecentActions([]))
     getScheduledTasks(true).then(setScheduledTasks).catch(() => setScheduledTasks([]))
   }, [])
 
+  const latestTurnId = turns.at(-1)?.id
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [turns, streamingText])
+  }, [latestTurnId, streamingText])
 
   const visibleTurns = useMemo(() => turns.filter((turn) => turn.actor === 'owner' || turn.actor === 'atlas'), [turns])
 
@@ -180,7 +199,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   async function handleActionDecision(action: PendingAction, approve: boolean) {
     if (!action.action_id) return
     try {
-      await decideAction(action.action_id, approve)
+      await decideAction(action.action_id, approve, action.detail.reviewed_target_hash)
       setPendingActions(await getPendingActions())
       setRecentActions(await getRecentActions(4))
       setScheduledTasks(await getScheduledTasks(true))
@@ -242,7 +261,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     try {
       await streamMessage(requestText, attachmentPaths, (delta) => setStreamingText((current) => current + delta))
       const conversation = await getConversation()
-      setTurns(conversation.turns)
+      installConversation(conversation)
       setConversationContext(await getConversationContext().catch(() => null))
       setPendingActions(await getPendingActions())
       setRecentActions(await getRecentActions(4))
@@ -258,7 +277,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         setTurns((current) => current.filter((turn) => turn.id !== optimistic.id))
       }
       const conversation = await getConversation().catch(() => null)
-      if (conversation) setTurns(conversation.turns)
+      if (conversation) installConversation(conversation)
       const attention = await getPendingActions().catch(() => null)
       if (attention) setPendingActions(attention)
     } finally {
@@ -285,8 +304,11 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
   function renderPendingAction(action: PendingAction) {
     const args = action.detail.arguments ?? {}
-    const isMail = action.detail.operation === 'gmail.message.send'
     const uncertain = action.state === 'uncertain'
+    if (action.state === 'staged_change') {
+      return <div className="approval-widget" key={action.id}><strong>{action.title}</strong><span>{action.detail.path}</span><p>{action.detail.message}</p>
+        <div className="approval-actions"><a href={action.detail.download_url} download>Download change bundle</a><button type="button" onClick={() => { void handleInterruptionDismiss(action) }}>Dismiss</button></div></div>
+    }
     if (action.state === 'interrupted') {
       return (
         <div className="approval-widget uncertain" key={action.id}>
@@ -305,8 +327,11 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         <strong>{uncertain ? (action.detail.display_label ?? action.title) : action.title}</strong>
         {uncertain && action.detail.target ? <span className="attention-target">{action.detail.target}</span> : <span>{action.detail.operation ?? 'Proposed action'}</span>}
         {uncertain ? <div className="approval-mail"><p>{action.detail.message ?? 'Atlas started this action but cannot confirm whether it completed.'}</p>{action.detail.execution_started_at ? <span><b>Started:</b> {new Date(action.detail.execution_started_at).toLocaleString()}</span> : null}{action.detail.external_id ? <span><b>External ID:</b> {action.detail.external_id}</span> : null}</div> : null}
-        {!uncertain && isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}
-        {uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionAcknowledge(action) }}>Acknowledge</button></div> : <div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div>}
+        {!uncertain && action.detail.reviewable ? <div className="approval-payload">
+          {approvalFields(action.detail.operation ?? '', args).map((field) => <div key={field.key}><b>{field.label}</b><pre>{field.value === '' ? '(empty)' : field.value}</pre></div>)}
+          <details><summary>Complete prepared action</summary><pre>{JSON.stringify(action.detail.proposal, null, 2)}</pre></details>
+        </div> : !uncertain ? <p>{action.detail.message ?? 'Exact proposal details are unavailable. Reload before approving.'}</p> : null}
+        {uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionAcknowledge(action) }}>Acknowledge</button></div> : <div className="approval-actions"><button type="button" disabled={!action.detail.reviewable || !action.detail.reviewed_target_hash} onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div>}
       </div>
     )
   }
@@ -345,7 +370,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
           </section> : <section className="activity-section">
             <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
-            {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} persisted turns in the current transcript.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
+            {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
           </section>}
         </aside>
       </> : null}
@@ -478,6 +503,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             ) : (
               <>
                 <div className={`chat-space${visibleTurns.length ? ' has-conversation' : ''}`}>
+                  {historyCursor ? <button type="button" disabled={historyLoading} onClick={() => { void loadOlderConversation() }}>{historyLoading ? 'Loading…' : 'Load older conversation'}</button> : null}
                   {visibleTurns.length === 0 && !streamingText ? (
                     <div className="phase-message"><span className="phase-label">PHASE 1</span><h2>The model is in the seat.</h2><p>Conversation is Atlas-owned and durable. Start anywhere.</p></div>
                   ) : (
@@ -511,7 +537,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             <div className="activity-divider" />
             <section className="activity-section latest-section">
               <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
-              {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} persisted turns in the current transcript.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
+              {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
             </section>
             <div className="activity-divider" />
             <section className="activity-section scheduled-section">
@@ -584,6 +610,19 @@ function OwnerLogin({ status, onAuthenticated }: { status: AuthStatus; onAuthent
 }
 
 function ControlPage({ health }: { health: Health | null }) {
+  const [capabilities, setCapabilities] = useState<OwnerCapability[]>([])
+  const [capabilityBusy, setCapabilityBusy] = useState<string | null>(null)
+  const [capabilityError, setCapabilityError] = useState<string | null>(null)
+  useEffect(() => { getOwnerCapabilities().then(setCapabilities).catch((cause) => setCapabilityError(String(cause))) }, [])
+  async function toggleCapability(item: OwnerCapability) {
+    setCapabilityBusy(item.id); setCapabilityError(null)
+    try {
+      await setOwnerCapability(item.id, !item.enabled)
+      setCapabilities(await getOwnerCapabilities())
+      setConfiguration(await getControlConfiguration())
+    } catch (cause) { setCapabilityError(String(cause)) }
+    finally { setCapabilityBusy(null) }
+  }
   const [configuration, setConfiguration] = useState<ControlConfiguration | null>(null)
   const [configurationError, setConfigurationError] = useState<string | null>(null)
   const [contextStats, setContextStats] = useState<ConversationContextStats | null>(null)
@@ -633,8 +672,8 @@ function ControlPage({ health }: { health: Health | null }) {
         <section className="control-card control-wide">
           <div className="panel-title">Context</div>
           {contextStatsError ? <p className="warning-text">{contextStatsError}</p> : contextStats ? <>
-            <div className="context-summary-grid"><div><span>Current model input</span><strong>{formatTokens(contextStats.current_context_tokens)}</strong></div><div><span>Full transcript input</span><strong>{formatTokens(contextStats.canonical_transcript_tokens)}</strong></div><div><span>Static seat overhead</span><strong>{formatTokens(contextStats.static_tokens)}</strong></div><div><span>Transcript messages</span><strong>{contextStats.transcript.owner_messages + contextStats.transcript.atlas_messages}</strong></div></div>
-            <p className="control-note context-policy-note">Working policy: {contextStats.policy.exchange_limit} exchange maximum · {formatTokens(contextStats.policy.token_budget)} budget · currently {contextStats.policy.selected_exchanges} exchanges · {contextStats.policy.compacted_tool_turns} compacted tool turns · {contextStats.policy.stage.replaceAll('_', ' ')}{contextStats.policy.budget_exceeded ? ' · owner-turn fail-open' : ''}.</p>
+            <div className="context-summary-grid"><div><span>Current model input</span><strong>{formatTokens(contextStats.current_context_tokens)}</strong></div><div><span>Recent evidence input</span><strong>{formatTokens(contextStats.canonical_transcript_tokens)}</strong></div><div><span>Static seat overhead</span><strong>{formatTokens(contextStats.static_tokens)}</strong></div><div><span>Messages in measured window</span><strong>{contextStats.transcript.owner_messages + contextStats.transcript.atlas_messages}</strong></div></div>
+            <p className="control-note context-policy-note">Working policy: {contextStats.policy.exchange_limit} exchange maximum · {formatTokens(contextStats.policy.token_budget)} budget · currently {contextStats.policy.selected_exchanges} exchanges · {contextStats.policy.compacted_tool_turns} compacted tool turns · {contextStats.policy.stage.replaceAll('_', ' ')}{contextStats.policy.budget_exceeded ? ' · exceeds initial context reserve' : ''}.</p>
             <div className="context-window-table"><div className="context-window-row context-window-head"><span>Window</span><span>Model input</span><span>Conversation</span><span>Messages</span><span>Tools</span></div>{contextStats.windows.map((window) => <div className="context-window-row" key={window.exchanges}><strong>{window.exchanges} exchanges</strong><span>{formatTokens(window.input_tokens)}</span><span>{formatTokens(window.dynamic_tokens)}</span><span>{window.owner_messages} + {window.atlas_messages}</span><span>{window.tool_observations}</span></div>)}</div>
             <p className="control-note">{contextStats.transcript.owner_messages} owner messages · {contextStats.transcript.atlas_messages} Atlas messages · {contextStats.transcript.tool_observations} tool observations · largest message {contextStats.transcript.largest_message_characters.toLocaleString()} characters.</p>
             <div className="context-tool-heading"><div><span>Tool footprint · last {contextStats.tool_analysis.scope_exchanges} exchanges</span><strong>{formatTokens(contextStats.tool_analysis.projected_tokens)} projected tokens</strong></div><span>{contextStats.tool_analysis.observations} observations</span></div>
@@ -644,6 +683,14 @@ function ControlPage({ health }: { health: Health | null }) {
             <p className="control-note">Tool token figures are measured against the live provider tokenizer with Atlas's fixed seat removed. Raw tool evidence remains unchanged in PostgreSQL; this analysis only measures its model-visible projection.</p>
             <p className="control-note">Model input includes Atlas instructions and tool definitions. Conversation is the additional recent-window load above that static seat. The canonical transcript remains untouched.</p>
           </> : <p>Calculating context statistics…</p>}
+        </section>
+        <section className="control-card control-wide"><div className="panel-title">Atlas capabilities</div>
+          <p className="control-note">Choose which capabilities Atlas may use. Changes apply to new dispatches, including scheduled work and pending approvals. Work already dispatched may finish.</p>
+          {capabilityError ? <p className="warning-text">{capabilityError}</p> : null}
+          <div className="control-list">{capabilities.map((item) => <div className="control-config-row" key={item.id}>
+            <div><strong>{item.family}</strong><span>{item.description}</span><span>{item.availability}</span></div>
+            <button type="button" role="switch" aria-checked={item.enabled} disabled={capabilityBusy !== null} onClick={() => { void toggleCapability(item) }}>{item.enabled ? 'Enabled' : 'Disabled'}</button>
+          </div>)}</div>
         </section>
         <section className="control-card control-wide"><div className="panel-title">MCP Configuration</div>{configurationError ? <p className="warning-text">{configurationError}</p> : configuration ? <div className="control-list">{configuration.mcps.map((mcp) => <div className="control-config-row" key={mcp.id}><div><strong>{mcp.label}</strong><span>{mcp.id} · {mcp.transport}</span></div><div className="control-config-meta"><span className={mcp.configured && mcp.enabled ? 'healthy-text' : 'warning-text'}>{mcp.configured && mcp.enabled ? 'Enabled' : 'Unavailable'}</span><span>{mcp.operations.length > 8 ? `${mcp.operations.length} operations discovered on demand` : (mcp.operations.length ? mcp.operations.join(', ') : 'No operations exposed')}</span></div></div>)}</div> : <p>Checking MCP configuration…</p>}</section>
         <section className="control-card control-wide"><div className="panel-title">Credentials</div><p className="control-note">Credential values are never displayed. Control only shows configuration, authentication and protection state.</p>{configuration ? <div className="control-list">{configuration.credentials.map((credential) => <div className="control-config-row" key={credential.label}><div><strong>{credential.label}</strong><span className="control-path">{credential.path ?? 'No credential storage configured'}</span></div><div className="control-config-meta"><span className={credential.configured ? 'healthy-text' : 'warning-text'}>{credential.configured ? 'Provisioned' : 'Missing'}</span>{credential.authenticated !== null ? <span className={credential.authenticated ? 'healthy-text' : 'warning-text'}>{credential.authenticated ? 'Authenticated' : 'Authentication failed'}</span> : null}{credential.scope ? <span>Scope: {credential.scope}</span> : null}<span className={credential.protected ? 'healthy-text' : 'warning-text'}>{credential.protected ? 'Protected' : 'Check permissions'}</span></div></div>)}</div> : <p>Checking credential configuration…</p>}</section>

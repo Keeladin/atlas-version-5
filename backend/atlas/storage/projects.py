@@ -37,7 +37,12 @@ def serialized_mutation(method):
 
 
 class ProjectFolderService(LocalStorageService):
-    """Bounded project browser and safe single-file mutation service."""
+    """Bounded project browser with legacy mutation primitives.
+
+    Live mutations require exclusive ownership of the tree; their hash/lock
+    checks cannot coordinate arbitrary editors. Runtime capabilities must use
+    ProjectChanges for owner projects, mounted read-only in production.
+    """
 
     _HIDDEN_NAMES: ClassVar[set[str]] = {".git", ".venv", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules"}
     _PROJECT_MARKERS = (".git", "pyproject.toml", "package.json", "README.md", "docker-compose.yml", "compose.yml")

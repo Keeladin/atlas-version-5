@@ -115,13 +115,28 @@ class TranscriptRepository:
             created_at=row.created_at,
         )
 
-    async def list_turns(self, transcript_id: UUID) -> list[Turn]:
+    async def list_recent_turns(self, transcript_id: UUID, *, exchanges: int = 20, limit: int = 500) -> list[Turn]:
+        owner_sequences = list((await self.session.execute(select(TurnRow.sequence).where(
+            TurnRow.transcript_id == transcript_id, TurnRow.actor == Actor.OWNER.value)
+            .order_by(TurnRow.sequence.desc()).limit(max(1, min(exchanges, 50))))).scalars())
+        turns = await self.list_turns(transcript_id, limit=limit,
+            after_sequence=min(owner_sequences) - 1 if owner_sequences else None)
+        # A tool-heavy turn must not evict its initiating owner request.
+        if owner_sequences and not any(turn.sequence == owner_sequences[0] for turn in turns):
+            owner = await self.list_turns(transcript_id, limit=1, before_sequence=owner_sequences[0] + 1)
+            turns = owner + turns[-(limit - 1):]
+        return turns
+
+    async def list_turns(self, transcript_id: UUID, *, limit: int = 200,
+            before_sequence: int | None = None, after_sequence: int | None = None) -> list[Turn]:
         result = await self.session.execute(
             select(TurnRow)
             .where(TurnRow.transcript_id == transcript_id)
-            .order_by(TurnRow.sequence)
+            .where(TurnRow.sequence < before_sequence if before_sequence is not None else True,
+                TurnRow.sequence > after_sequence if after_sequence is not None else True)
+            .order_by(TurnRow.sequence.desc()).limit(max(1, min(limit, 500)))
         )
-        return [
+        return list(reversed([
             Turn(
                 id=row.id,
                 transcript_id=row.transcript_id,
@@ -131,4 +146,4 @@ class TranscriptRepository:
                 created_at=row.created_at,
             )
             for row in result.scalars()
-        ]
+        ]))

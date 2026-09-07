@@ -170,10 +170,12 @@ class AuthorityStore:
             raise ProposalIntegrityError("Action proposal integrity check failed")
         return proposal
 
-    async def begin_execution(self, action: ActionRow) -> dict[str, Any]:
+    async def begin_execution(self, action: ActionRow, *, reviewed_target_hash: str | None = None) -> dict[str, Any]:
         await self._lock_run(action.run_id)
         action = await self.session.get(ActionRow, action.id, populate_existing=True)
         proposal = self.verify_proposal(action)
+        if reviewed_target_hash is not None and not hmac.compare_digest(reviewed_target_hash, action.target_hash):
+            raise ProposalIntegrityError("The proposal changed after review; reload its exact details")
         result = await self.session.execute(
             update(ActionRow)
             .where(ActionRow.id == action.id, ActionRow.status == ActionStatus.PREPARED.value)
@@ -220,6 +222,14 @@ class AuthorityStore:
                 action = await self.session.get(ActionRow, row.action_id)
                 if action is not None:
                     detail.update(_owner_action_context(action))
+                    if action.status == ActionStatus.PREPARED.value:
+                        try:
+                            proposal = self.verify_proposal(action)
+                            detail.update({"operation": action.operation, "arguments": proposal["arguments"],
+                                "proposal": proposal, "reviewed_target_hash": action.target_hash, "reviewable": True})
+                        except ProposalIntegrityError:
+                            detail.update({"arguments": {}, "reviewable": False,
+                                "message": "The exact proposal is unavailable or expired. Cancel it and request a new proposal."})
             items.append({
                 "id": str(row.id), "action_id": str(row.action_id) if row.action_id else None, "state": row.state,
                 "title": row.title, "detail": detail, "created_at": row.created_at,
@@ -232,8 +242,8 @@ class AuthorityStore:
         )).scalar_one_or_none()
         if attention is None:
             raise LookupError("Attention item not found")
-        if attention.state != "interrupted" or attention.action_id is not None:
-            raise ProposalIntegrityError("Only interruption notices can be dismissed")
+        if attention.state not in {"interrupted", "staged_change"} or attention.action_id is not None:
+            raise ProposalIntegrityError("Only informational notices can be dismissed")
         if attention.resolved:
             return
         attention.resolved = True

@@ -199,3 +199,37 @@ Interrupted foreground work in Needs You now exposes `Continue` and `Dismiss` in
 `Dismiss` resolves only the durable `interrupted` owner-attention row. It does not change the active-task checkpoint, run outcome or action evidence, and the backend rejects attempts to use this endpoint to hide uncertain-action attention. The Continue control is disabled while another foreground send/upload is active or the model is unavailable.
 
 Validation after this patch: **168 backend tests** against disposable PostgreSQL, **5 frontend transport/API tests**, Ruff, frontend lint/build, Python compilation and whitespace checks.
+
+
+## 2026-09-07 — Remaining review issues
+
+This entry supersedes the earlier direct-project-mutation and owner-turn fail-open descriptions above.
+
+Approval now reads verified canonical proposal data rather than the duplicated attention payload. Every argument is visible, including full mail recipients/body, Calendar patches and unknown nested fields. Approval sends the reviewed hash and the locked transition checks it again; missing/invalid/expired/changed payloads cannot execute through that approval.
+
+Shared-file changes now use `storage/changes.py`: create/update, move and approved delete operations save a downloadable ZIP containing baseline bytes, proposed bytes where applicable, mode, expected hash and diff. A `staged_change` notice exposes the bundle in Needs You. Live owner files stay untouched, including a save at the last staging boundary. Owner integration happens through their editor/VCS. The production Projects mount is read-only. Legacy low-level mutation primitives remain for existing isolated-tree tests; no runtime capability calls them and they make no concurrency promise against independent editors.
+
+Registry startup preserves existing owner enablement and initializes newly discovered capabilities disabled. Control exposes persistent switches. Discovery, operation lookup/call, prepared approvals, storage entrypoints and each provider-native web request consult current policy; unavailable policy fails closed. Disabling schedules pauses queued occurrences. Runtime authentication, canonical evidence and owner recovery remain available independently of model capability switches.
+
+Working-context database reads now fetch bounded recent history (20 exchanges, at most 500 rows, retaining the latest owner request); UI history loads in 200-turn pages. Initial assembly reserves 25% of the input budget for continuation. The provider recounts every tool-loop request, compacts whole tool rounds with exact canonical evidence locators, and refreshes the protected foreground checkpoint. Oversized protected input interrupts safely rather than evicting it or dispatching over budget. Control statistics describe a bounded recent window, not the entire transcript.
+
+`maintenance/backup.py` and `deployment/backup-host.sh` define offline PostgreSQL+artifact+checkpoint/bundle snapshots and restoration into empty targets. Files and directories are flushed before completion is marked, manifests detect damaged/incomplete snapshots, and restoration verifies database artifact references. Credentials/configuration need a separate protected backup. Deployment stops the runtime before changing installed code/interpreter/dependencies. See `22-backup-and-recovery.md` for the operational procedure and recovery limitations.
+
+Regression coverage includes canonical approval binding, persistent revocation, native web revocation during token counting, an actual bounded provider continuation, the production staging factory and owner-save race, bounded PostgreSQL history, paused schedules, and an actual disposable PostgreSQL backup/restore. No production state or live provider effect is used by these tests.
+
+Verification outcome: **fixed** for these five review items. Enforcement stays at the existing canonical proposal/action, capability dispatch, provider request and storage/deployment boundaries. Project staging is necessary because Atlas cannot enforce a filesystem CAS against arbitrary owner editors. Existing inspection, exact evidence replay, permitted dispatch, owner uploads, task continuity and scheduled execution after re-enablement remain covered.
+
+A fresh read-only candidate review identified an OFF→ON automatic-action race and an unguarded artifact-upload route. Both reproduced as failing regressions before correction. Automatic effect classification now uses the stable descriptor before the executing action commits; current owner policy still decides dispatch. Explicit artifact uploads now check their capability, while internal canonical evidence persistence remains runtime infrastructure. The same two regressions pass after correction, and enabled owner uploads still preserve exact bytes.
+
+Changed implementation areas: `actions/authority.py`, `api/app.py`, `capabilities/{factory,service}.py`, `registry/{repository,service}.py`, `runtime/execution.py`, `providers/openai.py`, `schedules/runner.py`, `transcript/repository.py`, `storage/{projects,changes}.py`, `maintenance/backup.py`, frontend approval/history/control code, deployment script/unit, and CI PostgreSQL client setup. New focused coverage is in `test_remaining_hardening.py`, `test_backup_restore.py`, and `frontend/tests/approval.test.mjs`; existing API, recovery and deployment tests were extended.
+
+Validation gates, in order:
+
+1. Syntax/static checks: `uv run ruff check backend tests migrations`, `uv run python -m compileall -q backend tests migrations`, `bash -n deployment/*.sh`, and `git diff --check` passed.
+2. Focused regressions: canonical approval integrity/review hash, full field/transport projection, late owner saves at the staging boundary, disabled dispatch/native web/artifact upload, automatic-action identity across enablement changes, bounded history/continuations and exact backup/restore passed. The two independently reported candidate gaps failed before correction and passed afterward. These tests show the reported triggers no longer reproduce through the runtime boundaries.
+3. Integration/package checks: `ATLAS_TEST_DATABASE_URL=<disposable PostgreSQL URL> uv run pytest -q --tb=short` passed **183 tests** with no skips or warnings. This includes clean/historical `alembic upgrade head` and `alembic check`, and backup/restore into two disposable databases. A subsequent focused upload test also verified the enabled success path.
+4. Frontend: `npm run lint`, `npm run test` (**9 passed**) and `npm run build` passed after the final UI change. Loading older pages does not trigger the new-message scroll-to-bottom behavior.
+
+The remaining Starlette/AnyIO test warning was removed without suppressing it or downgrading dependencies: the two API test modules that used `fastapi.testclient.TestClient` now use HTTPX `AsyncClient` with `ASGITransport`. This avoids Starlette's currently deprecated `anyio.abc.BlockingPortal` alias while continuing to exercise the ASGI application directly. A fresh PostgreSQL-backed full-suite run passed **183 tests with zero warnings**.
+
+Production state, services and provider effects were not touched. This change has not been committed or deployed. Hosted CI, real browser interaction, live provider dispatch and power-loss injection were not run; local integration used PostgreSQL 18 and provider doubles. The disposable database was stopped after validation. The backup rehearsal proves restoration of captured state, not reconciliation of effects performed after a historical snapshot.

@@ -22,9 +22,9 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Active-task checkpoint survives ordinary history trimming | `test_task_state.py`, `test_api.py` | Covered |
 | Model task-state deltas cannot overwrite runtime-owned facts | `test_task_state.py` | Covered |
 | Large UTF-8 resources can be bounded and reacquired by line range | `test_local_storage.py`, `test_provider_resources.py` | Covered |
-| Capability discovery uses compact operation cards and reuses identical same-turn searches | `test_capabilities.py`, `test_provider_resources.py` | Covered |
-| Project edits are preview-bound and stale-owner changes refuse overwrite | `test_local_storage.py`, `test_runtime_invariants.py` | Covered |
-| Project writes checkpoint dirty state before mutation | `test_local_storage.py` | Covered |
+| Capability discovery uses compact operation cards and rechecks current owner policy | `test_capabilities.py`, `test_provider_resources.py` | Covered |
+| Legacy isolated-tree edits are preview-bound and stale-owner changes refuse overwrite | `test_local_storage.py`, `test_runtime_invariants.py` | Covered |
+| Legacy isolated-tree writes checkpoint dirty state before mutation | `test_local_storage.py` | Covered |
 | Project writes cannot cross project/path/symlink/protected-material boundaries | `test_local_storage.py`, `test_runtime_invariants.py` | Covered |
 | Project move/delete refuse stale hashes | `test_local_storage.py`, `test_runtime_invariants.py` | Covered |
 | Passkey bearer token is stored only as a hash and expired sessions fail closed | `test_auth.py`, `test_auth_sessions.py` | Covered |
@@ -43,6 +43,14 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Interrupted attention can be dismissed without changing task/run truth; uncertain attention cannot be hidden by that control | `test_evidence_recovery.py`, `frontend/tests/conversation.test.mjs` | Real PostgreSQL + frontend API |
 | Durable queued schedules execute original intent once after interruption | `test_evidence_recovery.py` | Real PostgreSQL + provider double |
 | Clean and historical database upgrades preserve conversation/task/completed-run history | `test_migrations.py` | Real PostgreSQL |
+
+| Approval shows complete canonical arguments and binds dispatch to the displayed hash | `test_remaining_hardening.py`, `frontend/tests/approval.test.mjs` | PostgreSQL + frontend field projection |
+| Owner enablement survives startup and revokes discovery, direct calls and native web | `test_remaining_hardening.py` | PostgreSQL + provider double |
+| Production project operations stage changes and preserve a concurrent owner save | `test_remaining_hardening.py`, `test_deployment_permissions.py` | Real filesystem + factory + unit configuration |
+| Recent history is SQL-bounded and tool continuations stay within budget with task/evidence retained | `test_remaining_hardening.py` | PostgreSQL + provider double |
+| Queued occurrences pause while scheduling capability is disabled | `test_evidence_recovery.py` | PostgreSQL + provider double |
+| Offline state restores exactly into empty targets and rejects corrupt/populated targets | `test_backup_restore.py` | Two disposable PostgreSQL databases + artifact directories |
+| Deployment stops runtime before installed code/dependency replacement | `test_deployment_permissions.py` | Script ordering |
 
 ## Still intentionally thin
 

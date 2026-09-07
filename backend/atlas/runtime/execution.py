@@ -5,7 +5,7 @@ from uuid import UUID
 from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import ActionStatus
 from atlas.capabilities import AuthorityMode, EffectKind
-from atlas.persistence.models import ActionRow
+from atlas.persistence.models import ActionRow, OwnerAttentionRow
 from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import require_live_run
 
@@ -54,6 +54,12 @@ class RunExecutor:
                 await store.complete(action_id, status=status,
                     result={'status': result.status, 'evidence_id': str(evidence_id)},
                     external_id=external_effect_id(result.output))
+            if (not late and result.status == 'succeeded' and result.operation_id.startswith('storage.projects.')
+                    and isinstance(result.output, dict) and result.output.get('status') == 'staged'):
+                change_id = UUID(result.output['change_id'])
+                session.add(OwnerAttentionRow(run_id=self.run_id, state='staged_change', title='Project change ready to review',
+                    detail={'message': 'Live project files are unchanged. Download the bundle and integrate it through your editor or version-control workflow.',
+                        'download_url': f'/api/project-changes/{change_id}', 'path': result.output.get('path')}))
             await session.commit()
             frozen = {**frozen, 'action_status': action.status}
             if late:
@@ -66,17 +72,19 @@ class RunExecutor:
             await session.commit()
         if name == 'atlas_capability_search':
             query = str(arguments.get('query') or '')
-            result = {'operations': self.runtime.search_cards(query, int(arguments.get('limit') or 8))}
+            result = {'operations': await self.runtime.search_cards_current(query, int(arguments.get('limit') or 8))}
             async with self.factory() as session:
-                await EvidenceStore(session, self.artifacts).record(self.transcript_id,
+                evidence_id, _ = await EvidenceStore(session, self.artifacts).record(self.transcript_id,
                     operation=name, phase='searched', detail={'query': query, 'result': result},
                     run_id=self.run_id, checkpoint=False, trust='internal')
                 await session.commit()
-            return result
+            return {**result, 'evidence_id': str(evidence_id)}
         if name != 'atlas_capability_call':
             return {'status': 'unavailable', 'message': 'Unknown Atlas capability control tool.'}
         operation = str(arguments.get('operation_id') or '')
         args = arguments.get('arguments', {})
+        # Effect classification must remain stable across owner policy changes.
+        # Dispatch checks current permission separately after action identity commits.
         descriptor = self.runtime.descriptor(operation)
         validation_error = self.runtime.validate_arguments(operation, args)
         action_id = None

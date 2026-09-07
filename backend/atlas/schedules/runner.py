@@ -64,6 +64,8 @@ async def claim_due(settings: Settings) -> int:
 
 async def _execute_task(run_id: UUID, settings: Settings, runtime: CapabilityRuntime) -> None:
     """Claim a previously persisted occurrence; never reconstruct it from mutable intent."""
+    if "atlas.schedules" not in await runtime.enabled_capabilities():
+        return
     factory = get_session_factory()
     artifacts = ArtifactStore(settings.artifact_dir)
     async with factory() as session:
@@ -83,17 +85,18 @@ async def _execute_task(run_id: UUID, settings: Settings, runtime: CapabilityRun
         async with maintain_heartbeat(factory, run_id):
             provider = OpenAIProvider(api_key=settings.openai_api_key or '', model=settings.openai_model,
                 capability_call_limit=settings.capability_call_limit,
-                capability_completion_reserve=settings.capability_completion_reserve)
+                capability_completion_reserve=settings.capability_completion_reserve, capability_policy=runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
             executor = RunExecutor(factory, runtime, artifacts, run_id=run_id, transcript_id=transcript_id, checkpoint=False)
             async def observation_handler(payload):
                 async with factory() as session:
-                    await EvidenceStore(session, artifacts).record(transcript_id, operation='provider.openai',
+                    evidence_id, _ = await EvidenceStore(session, artifacts).record(transcript_id, operation='provider.openai',
                         phase='observed', detail=payload, run_id=run_id, checkpoint=False)
                     await session.commit()
+                    return str(evidence_id)
             messages = [{'role': 'user', 'content':
                 f"Scheduled owner intent for {snapshot['scheduled_for']} ({snapshot['timezone']}):\n{snapshot['prompt']}"}]
             chunks = []
-            async for delta in provider.stream_text(instructions=build_model_instructions(runtime.compact_index(), active_task_enabled=False),
+            async for delta in provider.stream_text(instructions=build_model_instructions(await runtime.compact_index_current(), active_task_enabled=False),
                     messages=messages, tool_handler=executor.tool_handler, observation_handler=observation_handler):
                 chunks.append(delta)
         answer = ''.join(chunks).strip()
@@ -116,7 +119,7 @@ async def _execute_task(run_id: UUID, settings: Settings, runtime: CapabilityRun
 
 
 async def run_due_once(settings: Settings, runtime: CapabilityRuntime) -> int:
-    if settings.openai_api_key is None:
+    if settings.openai_api_key is None or "atlas.schedules" not in await runtime.enabled_capabilities():
         return 0
     await claim_due(settings)
     async with get_session_factory()() as session:

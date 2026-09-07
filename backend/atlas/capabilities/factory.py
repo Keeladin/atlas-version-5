@@ -1,12 +1,16 @@
+from sqlalchemy.exc import SQLAlchemyError
+
 from atlas.artifacts.store import ArtifactStore
 from atlas.capabilities import AuthorityMode, EffectKind, OperationDescriptor
 from atlas.config import Settings
 from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.registry.repository import RegistryRepository
 from atlas.registry.service import EnvironmentRegistry
 from atlas.runtime.observations import EvidenceStore
 from atlas.schedules import ScheduleService
 from atlas.storage import LocalStorageService, ProjectFolderService
+from atlas.storage.changes import ProjectChanges
 
 from .service import CapabilityRuntime
 
@@ -27,6 +31,14 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         ),
     )
     factory = get_session_factory()
+
+    async def policy_reader():
+        try:
+            async with factory() as session:
+                return await RegistryRepository(session).enabled_ids()
+        except SQLAlchemyError:
+            return set()  # Failure to verify owner permission denies all capability dispatch.
+    runtime.policy_reader = policy_reader
 
     async def evidence_call(method, arguments):
         async with factory() as session:
@@ -67,23 +79,24 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         "storage.projects.preview",
         lambda arguments: projects.preview_file(str(arguments.get("path") or ""), str(arguments.get("content") or "")),
     )
+    changes = ProjectChanges(projects)
     runtime.register_executor(
         "storage.projects.apply",
-        lambda arguments: projects.apply_file(
+        lambda arguments: changes.apply_file(
             str(arguments.get("path") or ""), str(arguments.get("content") or ""),
             str(arguments.get("expected_sha256") or ""), str(arguments.get("change_token") or ""),
         ),
     )
     runtime.register_executor(
         "storage.projects.move",
-        lambda arguments: projects.move_file(
+        lambda arguments: changes.move_file(
             str(arguments.get("source_path") or ""), str(arguments.get("target_path") or ""),
             str(arguments.get("expected_sha256") or ""),
         ),
     )
     runtime.register_executor(
         "storage.projects.delete",
-        lambda arguments: projects.delete_file(str(arguments.get("path") or ""), str(arguments.get("expected_sha256") or "")),
+        lambda arguments: changes.delete_file(str(arguments.get("path") or ""), str(arguments.get("expected_sha256") or "")),
     )
     if settings.github_configured and settings.github_token_file is not None:
         github = GitHubMCPService(

@@ -64,6 +64,7 @@ export type Health = {
 
 export type TextBlock = { type: 'text'; text: string }
 export type Turn = {
+  sequence?: number
   id: string
   transcript_id: string
   actor: 'owner' | 'atlas' | 'tool' | 'system'
@@ -72,6 +73,7 @@ export type Turn = {
 }
 
 export type Conversation = {
+  next_before_sequence: number | null
   transcript: { id: string; created_at: string; closed_at: string | null }
   turns: Turn[]
 }
@@ -82,8 +84,8 @@ export async function getHealth(): Promise<Health> {
   return payload
 }
 
-export async function getConversation(): Promise<Conversation> {
-  const response = await fetch('/api/conversation')
+export async function getConversation(beforeSequence?: number): Promise<Conversation> {
+  const response = await fetch(`/api/conversation${beforeSequence ? `?before_sequence=${beforeSequence}` : ''}`)
   if (!response.ok) throw new Error(`Conversation load failed (${response.status})`)
   return (await response.json()) as Conversation
 }
@@ -338,7 +340,7 @@ export type PendingAction = {
   action_id: string | null
   state: string
   title: string
-  detail: { operation?: string; arguments?: Record<string, unknown>; message?: string; external_id?: string; execution_started_at?: string; display_label?: string; target?: string | null }
+  detail: { download_url?: string; path?: string; reviewable?: boolean; reviewed_target_hash?: string; proposal?: Record<string, unknown>; operation?: string; arguments?: Record<string, unknown>; message?: string; external_id?: string; execution_started_at?: string; display_label?: string; target?: string | null }
   created_at: string
 }
 
@@ -361,11 +363,11 @@ export async function acknowledgeAction(actionId: string): Promise<void> {
   if (!response.ok) throw new Error(body?.detail ?? `Action acknowledgement failed (${response.status})`)
 }
 
-export async function decideAction(actionId: string, approve: boolean): Promise<void> {
+export async function decideAction(actionId: string, approve: boolean, reviewedTargetHash?: string): Promise<void> {
   const response = await fetch(`/api/actions/${encodeURIComponent(actionId)}/decision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ approve }),
+    body: JSON.stringify({ approve, reviewed_target_hash: reviewedTargetHash }),
   })
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Action decision failed (${response.status})`)
@@ -405,4 +407,17 @@ export async function getRecentActions(limit = 8): Promise<RecentAction[]> {
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Recent actions load failed (${response.status})`)
   return (body?.items ?? []) as RecentAction[]
+}
+
+export type OwnerCapability = { id: string; family: string; description: string; enabled: boolean; provisioned: boolean; availability: string }
+export async function getOwnerCapabilities(): Promise<OwnerCapability[]> {
+  const response = await fetch('/api/control/capabilities')
+  if (!response.ok) throw new Error('Could not load capability settings')
+  return (await response.json()).items
+}
+export async function setOwnerCapability(id: string, enabled: boolean): Promise<void> {
+  const response = await fetch(`/api/control/capabilities/${encodeURIComponent(id)}`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+  })
+  if (!response.ok) throw new Error('Capability setting was not saved')
 }

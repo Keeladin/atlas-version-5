@@ -75,7 +75,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         CapabilityEntry(
             id="atlas.project_folders",
             family="Project folders",
-            description="Browse and safely edit files in the owner's real local development project directories.",
+            description="Inspect owner project files and stage downloadable changes for owner integration.",
             source=CapabilitySource.ATLAS,
             enabled=True,
             availability=CapabilityAvailability.AVAILABLE,
@@ -264,19 +264,19 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
     ))
     registry.register_operation(OperationDescriptor(
         id="storage.projects.apply", capability_id="atlas.project_folders", family="Project folders",
-        description="Atomically apply one previously previewed UTF-8 project-file create or update. Refuses stale files and checkpoints dirty Git state first.",
+        description="Stage one previewed UTF-8 project-file create/update as a downloadable change bundle. Live owner files stay untouched; the owner integrates the change.",
         input_schema={"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"},"expected_sha256":{"type":"string"},"change_token":{"type":"string"}},"required":["path","content","expected_sha256","change_token"],"additionalProperties":False},
         effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO,
     ))
     registry.register_operation(OperationDescriptor(
         id="storage.projects.move", capability_id="atlas.project_folders", family="Project folders",
-        description="Atomically rename or move one file within the same project after verifying the file hash and checkpointing dirty Git state.",
+        description="Stage a same-project file move as a downloadable change bundle. Verify the source hash and absent destination; do not move the live owner file.",
         input_schema={"type":"object","properties":{"source_path":{"type":"string"},"target_path":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["source_path","target_path","expected_sha256"],"additionalProperties":False},
         effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO,
     ))
     registry.register_operation(OperationDescriptor(
         id="storage.projects.delete", capability_id="atlas.project_folders", family="Project folders",
-        description="Delete one project file only after owner approval, hash verification, and an automatic checkpoint.",
+        description="Stage a project-file deletion after owner approval and hash verification. Live files remain untouched; the owner integrates the deletion.",
         input_schema={"type":"object","properties":{"path":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","expected_sha256"],"additionalProperties":False},
         effect=EffectKind.DELETE, authority=AuthorityMode.APPROVAL_REQUIRED,
     ))
