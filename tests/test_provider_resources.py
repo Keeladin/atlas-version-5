@@ -95,3 +95,31 @@ def test_capability_budget_hard_limit_is_sixteen_by_default() -> None:
     allowed, message = budget.can_dispatch("storage.projects.apply")
     assert allowed is False
     assert "limit" in str(message)
+
+
+def test_count_input_tokens_uses_neutral_input_for_empty_messages() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from atlas.providers.openai import OpenAIProvider
+
+    class Counter:
+        def __init__(self) -> None:
+            self.kwargs = None
+
+        async def count(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(input_tokens=123)
+
+    counter = Counter()
+    provider = object.__new__(OpenAIProvider)
+    provider.model = "test-model"
+    provider.client = SimpleNamespace(
+        responses=SimpleNamespace(input_tokens=counter),
+    )
+
+    result = asyncio.run(provider.count_input_tokens(instructions="Atlas seat", messages=[]))
+
+    assert result == 123
+    assert counter.kwargs is not None
+    assert counter.kwargs["input"] == [{"role": "user", "content": ""}]

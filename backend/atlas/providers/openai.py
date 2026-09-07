@@ -158,10 +158,14 @@ class OpenAIProvider:
         instructions: str,
         messages: list[dict[str, str]],
     ) -> int:
+        # The Responses token-count endpoint requires an input item even when
+        # Atlas only wants to measure its fixed instructions/tool seat. A
+        # non-empty message envelope with empty text is the neutral baseline.
+        count_input = messages or [{"role": "user", "content": ""}]
         result = await self.client.responses.input_tokens.count(
             model=self.model,
             instructions=instructions,
-            input=messages,
+            input=count_input,
             tools=_MODEL_TOOLS,
         )
         return result.input_tokens
