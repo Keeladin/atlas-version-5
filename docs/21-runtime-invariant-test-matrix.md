@@ -53,6 +53,7 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Deployment stops runtime before installed code/dependency replacement | `test_deployment_permissions.py` | Script ordering |
 | Control-managed connection overrides persist privately across restart and never return submitted credentials | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Filesystem modes + backend/frontend transport |
 | Model setup verifies before save; GitHub/Google setup verify before restart-required activation | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Provider/MCP boundaries with test doubles |
+| Model selection is populated from the authenticated provider catalog; discovery never persists or returns the submitted key, and stored-key refresh stays server-side | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Provider catalog double + frontend transport |
 
 ## Still intentionally thin
 

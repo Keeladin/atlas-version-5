@@ -58,7 +58,7 @@ async def test_model_setup_verifies_before_persisting_and_never_returns_key(monk
     result = await app_module.configure_model_connection(request)
     assert [call[0] for call in calls] == ["verify", "save"]
     assert result == {"ok": True, "detail": "verified", "configured": True,
-        "restart_required": False, "model": "fixture-model"}
+        "restart_required": False, "model": "fixture-model", "provider": "OpenAI"}
     assert "sk-test" not in json.dumps(result)
 
 
@@ -93,3 +93,55 @@ async def test_google_setup_verifies_before_persisting(monkeypatch):
     assert [call[0] for call in calls] == ["verify", "save"]
     assert result["restart_required"] is True
     assert "refresh" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_model_discovery_returns_provider_catalog_without_persisting(monkeypatch):
+    import atlas.api.app as app_module
+
+    calls = []
+    async def discover(key, provider):
+        calls.append((key, provider))
+        return {"ok": True, "provider": "OpenAI", "models": ["model-a", "model-b"], "detail": "2 models"}
+    monkeypatch.setattr(app_module, "_discover_model_catalog", discover)
+    result = await app_module.discover_model_models(app_module.ModelCatalogRequest(
+        provider="openai", api_key="sk-test-" + "d" * 40))
+    assert calls == [("sk-test-" + "d" * 40, "openai")]
+    assert result["models"] == ["model-a", "model-b"]
+    assert "sk-test" not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_is_taken_from_provider_list_not_hardcoded(monkeypatch):
+    import atlas.api.app as app_module
+
+    class Models:
+        def list(self):
+            async def items():
+                for model_id in ("z-model", "a-model", "z-model"):
+                    yield type("Model", (), {"id": model_id})()
+            return items()
+    class Client:
+        models = Models()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return None
+    monkeypatch.setattr(app_module, "AsyncOpenAI", lambda api_key: Client())
+    result = await app_module._discover_model_catalog("secret")
+    assert result["models"] == ["a-model", "z-model"]
+
+
+@pytest.mark.asyncio
+async def test_existing_model_key_can_change_model_without_returning_secret(monkeypatch):
+    import atlas.api.app as app_module
+
+    calls = []
+    monkeypatch.setattr(app_module, "_model_api_key", lambda submitted: "protected-existing-key")
+    async def verify(key, model):
+        calls.append(("verify", key, model)); return {"ok": True, "detail": "verified"}
+    monkeypatch.setattr(app_module, "_verify_model_connection", verify)
+    monkeypatch.setattr(app_module, "save_model_connection",
+        lambda settings, key, model: calls.append(("save", key, model)))
+    result = await app_module.configure_model_connection(app_module.ModelConnectionRequest(
+        provider="openai", model="selected-model"))
+    assert [item[0] for item in calls] == ["verify", "save"]
+    assert "protected-existing-key" not in json.dumps(result)

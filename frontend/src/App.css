@@ -1155,11 +1155,17 @@ button.storage-row:disabled { opacity: 1; cursor: default; }
 .connection-form { display: grid; gap: 10px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-muted); }
 .connection-form label { display: grid; gap: 5px; color: var(--fg-muted); font-size: 10px; font-weight: 600; }
 .connection-form input,
+.connection-form select,
 .connection-form textarea { width: 100%; border: 1px solid var(--border-default); border-radius: 7px; background: var(--bg-inset); color: var(--fg-default); font: 12px/1.45 var(--font-sans); padding: 8px 9px; outline: none; }
 .connection-form textarea { resize: vertical; font-family: var(--font-mono); }
 .connection-form input:focus,
+.connection-form select:focus,
 .connection-form textarea:focus { border-color: var(--accent); }
 .connection-form > span { color: var(--fg-disabled); font-size: 10px; line-height: 1.5; }
+.model-discovery-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.model-discovery-row button { min-height: 30px; border: 1px solid var(--border-default); border-radius: 7px; background: var(--bg-default); color: var(--fg-default); font: 600 10px var(--font-sans); padding: 0 9px; cursor: pointer; }
+.model-discovery-row button:hover:not(:disabled) { background: var(--bg-emphasis); }
+.model-discovery-row span { color: var(--fg-disabled); font-size: 10px; }
 .control-primary-button { width: fit-content; background: #1f6feb; border-color: #4493f888; }
 .control-section-inline { display: flex; justify-content: space-between; align-items: center; gap: 16px; }
 .control-section-inline p { margin: 4px 0 0; }

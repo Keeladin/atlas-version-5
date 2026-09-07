@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
 import { approvalFields } from './approval'
-import { configureGitHubConnection, configureGoogleConnection, configureModelConnection, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -622,8 +622,10 @@ function ControlPage({ health }: { health: Health | null }) {
   const [setupOpen, setSetupOpen] = useState<ControlConnection['id'] | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
   const [connectionMessages, setConnectionMessages] = useState<Record<string, string>>({})
+  const [modelProvider, setModelProvider] = useState('openai')
   const [modelKey, setModelKey] = useState('')
   const [modelName, setModelName] = useState(health?.provider.model ?? 'gpt-5.6-sol')
+  const [modelModels, setModelModels] = useState<string[]>([])
   const [githubToken, setGithubToken] = useState('')
   const [githubOwner, setGithubOwner] = useState('')
   const [googleCredential, setGoogleCredential] = useState('')
@@ -684,11 +686,30 @@ function ControlPage({ health }: { health: Health | null }) {
     finally { setSetupBusy(false) }
   }
 
+  async function handleModelCatalog() {
+    setSetupBusy(true); showConnectionMessage('model', modelKey ? 'Verifying API key and loading models…' : 'Refreshing available models…')
+    try {
+      const result = await discoverModelModels(modelKey || undefined, modelProvider)
+      setModelModels(result.models)
+      setModelName((current) => result.models.includes(current) ? current : '')
+      showConnectionMessage('model', result.detail)
+    } catch (cause) {
+      setModelModels([]); setModelName('')
+      showConnectionMessage('model', cause instanceof Error ? cause.message : String(cause))
+    } finally { setSetupBusy(false) }
+  }
+
+  function handleModelKeyChange(value: string) {
+    setModelKey(value)
+    setModelModels([])
+    setModelName('')
+  }
+
   async function handleSetupSave(id: ControlConnection['id']) {
     setSetupBusy(true); showConnectionMessage(id, 'Verifying before saving…')
     try {
       let result
-      if (id === 'model') result = await configureModelConnection(modelKey, modelName)
+      if (id === 'model') result = await configureModelConnection(modelKey || undefined, modelName, modelProvider)
       else if (id === 'github') result = await configureGitHubConnection(githubToken, githubOwner)
       else {
         let parsed: Record<string, unknown>
@@ -716,10 +737,15 @@ function ControlPage({ health }: { health: Health | null }) {
       <div className="connection-actions"><button type="button" disabled={setupBusy || !connection.configured} onClick={() => { void handleConnectionTest(connection) }}>Test</button><button type="button" onClick={() => setSetupOpen(active ? null : connection.id)}>{active ? 'Close' : connection.configured ? 'Configure' : 'Set up'}</button></div>
       {connectionMessages[connection.id] ? <p className="connection-message">{connectionMessages[connection.id]}</p> : null}
       {active ? <div className="connection-form">
-        {connection.id === 'model' ? <><label>Model<input value={modelName} onChange={(event) => setModelName(event.target.value)} /></label><label>API key<input type="password" autoComplete="off" value={modelKey} placeholder="Enter a new API key" onChange={(event) => setModelKey(event.target.value)} /></label></> : null}
+        {connection.id === 'model' ? <>
+          <label>Provider<select value={modelProvider} onChange={(event) => { setModelProvider(event.target.value); setModelModels([]); setModelName(''); setModelKey('') }}><option value="openai">OpenAI</option></select></label>
+          <label>API key<input type="password" autoComplete="off" value={modelKey} placeholder={connection.configured ? 'Leave blank to use the protected key, or enter a replacement' : 'Enter API key'} onChange={(event) => handleModelKeyChange(event.target.value)} /></label>
+          <div className="model-discovery-row"><button type="button" disabled={setupBusy || (!connection.configured && !modelKey)} onClick={() => { void handleModelCatalog() }}>{setupBusy ? 'Checking…' : modelKey ? 'Verify API key & load models' : 'Refresh models'}</button>{modelModels.length ? <span>{modelModels.length} models available</span> : <span>Models are loaded from the provider after the credential is accepted.</span>}</div>
+          <label>Model<select value={modelName} disabled={!modelModels.length} onChange={(event) => setModelName(event.target.value)}><option value="">{modelModels.length ? 'Select a model…' : 'Verify the API key first'}</option>{modelModels.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+        </> : null}
         {connection.id === 'github' ? <><label>GitHub owner<input value={githubOwner} onChange={(event) => setGithubOwner(event.target.value)} /></label><label>Personal access token<input type="password" autoComplete="off" value={githubToken} placeholder="Enter a new token" onChange={(event) => setGithubToken(event.target.value)} /></label><span>Atlas verifies the token against the official read-only GitHub MCP before saving it.</span></> : null}
         {connection.id === 'google' ? <><label>Authorized-user credential<textarea rows={6} value={googleCredential} placeholder='Paste Google OAuth authorized_user JSON' onChange={(event) => setGoogleCredential(event.target.value)} /></label><span>Authorize on a browser-capable machine with gws auth login --services drive,gmail,calendar, then export with gws auth export --unmasked and paste that authorized_user JSON here. Atlas verifies it before saving.</span></> : null}
-        <button className="control-primary-button" type="button" disabled={setupBusy || (connection.id === 'model' && (!modelKey || !modelName)) || (connection.id === 'github' && (!githubToken || !githubOwner)) || (connection.id === 'google' && !googleCredential)} onClick={() => { void handleSetupSave(connection.id) }}>{setupBusy ? 'Verifying…' : 'Verify & save'}</button>
+        <button className="control-primary-button" type="button" disabled={setupBusy || (connection.id === 'model' && (!modelName || !modelModels.length)) || (connection.id === 'github' && (!githubToken || !githubOwner)) || (connection.id === 'google' && !googleCredential)} onClick={() => { void handleSetupSave(connection.id) }}>{setupBusy ? 'Verifying…' : connection.id === 'model' ? 'Verify selected model & save' : 'Verify & save'}</button>
       </div> : null}
     </section>
   }

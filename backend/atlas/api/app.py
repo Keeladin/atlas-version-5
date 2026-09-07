@@ -21,6 +21,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel, SecretStr, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -211,8 +212,14 @@ class CapabilitySetting(BaseModel):
     enabled: bool
 
 
+class ModelCatalogRequest(BaseModel):
+    provider: str = "openai"
+    api_key: SecretStr | None = None
+
+
 class ModelConnectionRequest(BaseModel):
-    api_key: SecretStr
+    provider: str = "openai"
+    api_key: SecretStr | None = None
     model: str
 
 
@@ -241,6 +248,35 @@ async def set_owner_capability(capability_id: str, setting: CapabilitySetting,
     return {"id": capability_id, "enabled": setting.enabled}
 
 
+def _model_api_key(submitted: SecretStr | None) -> str:
+    supplied = submitted.get_secret_value().strip() if submitted is not None else ""
+    api_key = supplied or settings.openai_api_key
+    if not api_key:
+        raise RuntimeError("Enter an API key or configure the Model API first")
+    return api_key
+
+
+def _normalize_model_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized != "openai":
+        raise ValueError(f"Unsupported model provider: {provider}")
+    return normalized
+
+
+async def _discover_model_catalog(api_key: str, provider: str = "openai") -> dict[str, object]:
+    _normalize_model_provider(provider)
+    async with AsyncOpenAI(api_key=api_key) as client:
+        models = sorted({item.id async for item in client.models.list() if isinstance(item.id, str) and item.id})
+    if not models:
+        raise RuntimeError("Provider accepted the credential but returned no available models")
+    return {
+        "ok": True,
+        "provider": "OpenAI",
+        "models": models,
+        "detail": f"Authenticated; {len(models)} models available to this API key.",
+    }
+
+
 async def _verify_model_connection(api_key: str, model: str) -> dict[str, object]:
     provider = OpenAIProvider(api_key=api_key, model=model)
     tokens = await provider.count_input_tokens(
@@ -248,7 +284,7 @@ async def _verify_model_connection(api_key: str, model: str) -> dict[str, object
         messages=[{"role": "user", "content": "ping"}],
         tools=[],
     )
-    return {"ok": True, "detail": f"Authenticated; tokenizer returned {tokens} input tokens."}
+    return {"ok": True, "detail": f"Selected model accepted; tokenizer returned {tokens} input tokens."}
 
 
 def _temporary_secret(name: str, value: str) -> Path:
@@ -292,16 +328,26 @@ def _verify_google_connection(credentials: dict[str, Any]) -> dict[str, object]:
         path.unlink(missing_ok=True)
 
 
+@app.post("/api/control/connections/model/models")
+async def discover_model_models(request: ModelCatalogRequest):
+    try:
+        api_key = _model_api_key(request.api_key)
+        return await _discover_model_catalog(api_key, request.provider)
+    except (OSError, OpenAIError, RuntimeError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"Model discovery failed: {exc}") from exc
+
+
 @app.put("/api/control/connections/model")
 async def configure_model_connection(request: ModelConnectionRequest):
-    api_key = request.api_key.get_secret_value().strip()
     model = request.model.strip()
     try:
+        _normalize_model_provider(request.provider)
+        api_key = _model_api_key(request.api_key)
         verification = await _verify_model_connection(api_key, model)
         await asyncio.to_thread(save_model_connection, settings, api_key, model)
-    except (OSError, RuntimeError, ValueError, TypeError) as exc:
+    except (OSError, OpenAIError, RuntimeError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=f"Model API verification failed: {exc}") from exc
-    return {**verification, "configured": True, "restart_required": False, "model": model}
+    return {**verification, "configured": True, "restart_required": False, "model": model, "provider": "OpenAI"}
 
 
 @app.post("/api/control/connections/model/test")

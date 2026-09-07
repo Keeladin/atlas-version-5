@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { configureGitHubConnection, configureGoogleConnection, configureModelConnection, testControlConnection } from '../src/api.ts'
+import { configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, testControlConnection } from '../src/api.ts'
 
 async function capture(exercise) {
   const original = globalThis.fetch
@@ -17,7 +17,7 @@ test('model setup sends credential only to the dedicated owner control endpoint'
   const request = await capture(() => configureModelConnection('sk-secret', 'gpt-model'))
   assert.equal(request.url, '/api/control/connections/model')
   assert.equal(request.options.method, 'PUT')
-  assert.deepEqual(JSON.parse(request.options.body), { api_key: 'sk-secret', model: 'gpt-model' })
+  assert.deepEqual(JSON.parse(request.options.body), { provider: 'openai', model: 'gpt-model', api_key: 'sk-secret' })
 })
 
 test('GitHub and Google setup use separate connection endpoints', async () => {
@@ -31,4 +31,17 @@ test('connection test never needs credential material from the browser', async (
   assert.equal(request.url, '/api/control/connections/github/test')
   assert.equal(request.options.method, 'POST')
   assert.equal(request.options.body, undefined)
+})
+
+
+test('model discovery verifies the submitted key and asks the provider for its catalog', async () => {
+  const request = await capture(() => discoverModelModels('sk-new'))
+  assert.equal(request.url, '/api/control/connections/model/models')
+  assert.equal(request.options.method, 'POST')
+  assert.deepEqual(JSON.parse(request.options.body), { provider: 'openai', api_key: 'sk-new' })
+})
+
+test('configured model discovery can refresh with the protected server-side key', async () => {
+  const request = await capture(() => discoverModelModels())
+  assert.deepEqual(JSON.parse(request.options.body), { provider: 'openai' })
 })

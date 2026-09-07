@@ -344,7 +344,8 @@ export async function getControlConfiguration(): Promise<ControlConfiguration> {
 }
 
 
-export type ConnectionResult = { ok: boolean; detail: string; configured?: boolean; restart_required?: boolean; model?: string; owner?: string }
+export type ConnectionResult = { ok: boolean; detail: string; configured?: boolean; restart_required?: boolean; model?: string; owner?: string; provider?: string }
+export type ModelCatalogResult = ConnectionResult & { provider: string; models: string[] }
 
 async function connectionRequest(path: string, init: RequestInit): Promise<ConnectionResult> {
   const response = await fetch(path, init)
@@ -357,8 +358,16 @@ export async function testControlConnection(id: 'model' | 'google' | 'github'): 
   return connectionRequest(`/api/control/connections/${id}/test`, { method: 'POST' })
 }
 
-export async function configureModelConnection(apiKey: string, model: string): Promise<ConnectionResult> {
-  return connectionRequest('/api/control/connections/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ api_key: apiKey, model }) })
+export async function discoverModelModels(apiKey?: string, provider = 'openai'): Promise<ModelCatalogResult> {
+  const payload: Record<string, string> = { provider }
+  if (apiKey) payload.api_key = apiKey
+  return connectionRequest('/api/control/connections/model/models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) as Promise<ModelCatalogResult>
+}
+
+export async function configureModelConnection(apiKey: string | undefined, model: string, provider = 'openai'): Promise<ConnectionResult> {
+  const payload: Record<string, string> = { provider, model }
+  if (apiKey) payload.api_key = apiKey
+  return connectionRequest('/api/control/connections/model', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
 }
 
 export async function configureGitHubConnection(token: string, owner: string): Promise<ConnectionResult> {
