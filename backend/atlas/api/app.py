@@ -980,11 +980,14 @@ async def upload_artifact(
     return artifact
 
 
+@app.get("/control", include_in_schema=False)
+@app.get("/control/", include_in_schema=False)
+async def control_page() -> FileResponse:
+    index = settings.frontend_dist / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=503, detail="Frontend bundle is not built")
+    return FileResponse(index)
+
+
 if settings.frontend_dist.is_dir():
-
-    @app.get("/control", include_in_schema=False)
-    @app.get("/control/", include_in_schema=False)
-    async def control_page() -> FileResponse:
-        return FileResponse(settings.frontend_dist / "index.html")
-
     app.mount("/", StaticFiles(directory=settings.frontend_dist, html=True), name="frontend")

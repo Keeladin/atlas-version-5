@@ -19,7 +19,12 @@ def test_registry_endpoint_exposes_enabled_projection_only() -> None:
     assert [item["id"] for item in capabilities] == ["atlas.artifacts", "atlas.local_storage", "atlas.project_folders", "atlas.schedules"]
 
 
-def test_control_route_serves_spa_entrypoint() -> None:
+def test_control_route_serves_spa_entrypoint(tmp_path, monkeypatch) -> None:
+    import atlas.api.app as app_module
+
+    (tmp_path / "index.html").write_text('<div id="root"></div>')
+    monkeypatch.setattr(app_module.settings, "frontend_dist", tmp_path)
+
     response = client.get("/control")
     assert response.status_code == 200
     assert '<div id="root"></div>' in response.text
