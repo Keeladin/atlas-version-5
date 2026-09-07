@@ -33,6 +33,19 @@ def context_turns(turns: list[Turn], summarized_through_turn_id: UUID | None = N
     return turns
 
 
+def tool_observation_to_provider_message(block) -> dict[str, str]:
+    detail = getattr(block, "detail", {}) or {}
+    encoded = json.dumps(detail, ensure_ascii=False, default=str, separators=(",", ":"))
+    if len(encoded) > 6000:
+        encoded = encoded[:6000] + "…"
+    operation = getattr(block, "operation", None) or "runtime"
+    phase = getattr(block, "phase", None) or "observed"
+    return {
+        "role": "developer",
+        "content": f"Durable runtime evidence: {operation} [{phase}] {encoded}",
+    }
+
+
 def turns_to_provider_messages(
     turns: list[Turn],
     *,
@@ -60,14 +73,5 @@ def turns_to_provider_messages(
             for block in turn.blocks:
                 if getattr(block, "type", None) != "tool_observation":
                     continue
-                detail = getattr(block, "detail", {}) or {}
-                encoded = json.dumps(detail, ensure_ascii=False, default=str, separators=(",", ":"))
-                if len(encoded) > 6000:
-                    encoded = encoded[:6000] + "…"
-                operation = getattr(block, "operation", None) or "runtime"
-                phase = getattr(block, "phase", None) or "observed"
-                messages.append({
-                    "role": "developer",
-                    "content": f"Durable runtime evidence: {operation} [{phase}] {encoded}",
-                })
+                messages.append(tool_observation_to_provider_message(block))
     return messages

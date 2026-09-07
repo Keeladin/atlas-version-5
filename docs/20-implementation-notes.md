@@ -113,3 +113,7 @@ Uncertain actions now have an explicit Acknowledge control. Acknowledgement reso
 ## 2026-09-07 — Context statistics instrumentation
 
 Control now exposes owner-authenticated context statistics calculated from the canonical PostgreSQL transcript without displaying transcript contents. The view compares the current model-visible input with bounded recent windows of 5, 10, 15, and 20 owner exchanges, includes intervening tool evidence, separates fixed seat/tool-definition overhead from the recent-window load, and reports transcript message/tool counts. This instrumentation is intentionally observational: it does not trim, purge, summarize, or otherwise mutate the canonical transcript and exists to tune a future bounded working-context policy from real Atlas usage.
+
+## 2026-09-07 — Tool context footprint analysis
+
+Control context instrumentation now measures the model-visible footprint of structured tool evidence over the most recent 20 owner exchanges. It groups observations by operation, reports exact provider-tokenizer marginal token counts with the fixed Atlas seat removed, separates observation counts across exchanges 1–10, 11–15, and 16–20, and identifies the heaviest individual observations without exposing their raw payloads. Canonical tool evidence in PostgreSQL remains unchanged. This is diagnostic input for the bounded context assembler and future evidence-compaction policy, not a retention mutation.

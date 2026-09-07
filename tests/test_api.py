@@ -65,3 +65,32 @@ def test_recent_exchange_turns_starts_at_requested_owner_message() -> None:
     assert stats["atlas_messages"] == 2
     assert stats["tool_observations"] == 2
     assert stats["transcript_turns"] == 6
+
+
+def test_tool_evidence_records_track_exchange_age_and_payload() -> None:
+    from uuid import uuid4
+
+    from atlas.api.app import _tool_band, _tool_evidence_records
+    from atlas.transcript.models import Actor, TextBlock, ToolObservationBlock, Turn
+
+    transcript_id = uuid4()
+    turns = []
+    for index in range(16):
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.OWNER, blocks=[TextBlock(text=f"owner {index}")]))
+        if index in {0, 5, 15}:
+            turns.append(Turn(
+                transcript_id=transcript_id,
+                actor=Actor.TOOL,
+                blocks=[ToolObservationBlock(operation=f"demo.{index}", phase="succeeded", detail={"value": index})],
+            ))
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text=f"atlas {index}")]))
+
+    records = _tool_evidence_records(turns)
+
+    assert [record["exchange_age"] for record in records] == [16, 11, 1]
+    assert [_tool_band(int(record["exchange_age"])) for record in records] == [
+        "exchanges_16_20", "exchanges_11_15", "last_10"
+    ]
+    assert records[0]["operation"] == "demo.0"
+    assert records[0]["payload_characters"] > 0
+    assert records[0]["message"]["role"] == "developer"

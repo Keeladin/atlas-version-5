@@ -115,6 +115,22 @@ export type ContextWindowStats = {
   transcript_turns: number
 }
 
+export type ToolOperationStats = {
+  operation: string
+  observations: number
+  projected_tokens: number
+  payload_characters: number
+  bands: { last_10: number; exchanges_11_15: number; exchanges_16_20: number }
+}
+
+export type HeavyToolObservation = {
+  operation: string
+  phase: string
+  exchange_age: number
+  projected_tokens: number
+  payload_characters: number
+}
+
 export type ConversationContextStats = {
   transcript_id: string
   static_tokens: number
@@ -126,6 +142,13 @@ export type ConversationContextStats = {
   summary_present: boolean
   transcript: Omit<ContextWindowStats, 'exchanges' | 'input_tokens' | 'dynamic_tokens'>
   windows: ContextWindowStats[]
+  tool_analysis: {
+    scope_exchanges: number
+    observations: number
+    projected_tokens: number
+    operations: ToolOperationStats[]
+    largest_observations: HeavyToolObservation[]
+  }
 }
 
 export async function getConversationContextStats(): Promise<ConversationContextStats> {

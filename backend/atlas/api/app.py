@@ -42,6 +42,7 @@ from atlas.runtime.bootstrap import build_seat_bootstrap
 from atlas.runtime.conversation import (
     build_model_instructions,
     context_turns,
+    tool_observation_to_provider_message,
     turns_to_provider_messages,
 )
 from atlas.runtime.startup import initialize_phase0
@@ -492,6 +493,40 @@ def _turn_statistics(turns) -> dict[str, int]:
     }
 
 
+def _tool_evidence_records(turns) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    owner_sequence = 0
+    for turn in turns:
+        if turn.actor == Actor.OWNER:
+            owner_sequence += 1
+            continue
+        if turn.actor != Actor.TOOL:
+            continue
+        for block in turn.blocks:
+            if getattr(block, "type", None) != "tool_observation":
+                continue
+            message = tool_observation_to_provider_message(block)
+            records.append({
+                "operation": getattr(block, "operation", None) or "runtime",
+                "phase": getattr(block, "phase", None) or "observed",
+                "exchange_sequence": owner_sequence,
+                "payload_characters": len(message["content"]),
+                "message": message,
+            })
+    for record in records:
+        sequence = int(record["exchange_sequence"])
+        record["exchange_age"] = max(1, owner_sequence - sequence + 1)
+    return records
+
+
+def _tool_band(exchange_age: int) -> str:
+    if exchange_age <= 10:
+        return "last_10"
+    if exchange_age <= 15:
+        return "exchanges_11_15"
+    return "exchanges_16_20"
+
+
 @app.get("/api/conversation/context")
 async def conversation_context(session: Annotated[AsyncSession, Depends(get_session)]):
     api_key = settings.openai_api_key
@@ -554,6 +589,69 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
             "dynamic_tokens": max(0, input_tokens - static_tokens),
             **_turn_statistics(window_turns),
         })
+    tool_scope_turns = _recent_exchange_turns(turns, 20)
+    tool_records = _tool_evidence_records(tool_scope_turns)
+    operation_groups: dict[str, dict[str, Any]] = {}
+    for record in tool_records:
+        operation = str(record["operation"])
+        group = operation_groups.setdefault(operation, {
+            "messages": [],
+            "observations": 0,
+            "payload_characters": 0,
+            "bands": {"last_10": 0, "exchanges_11_15": 0, "exchanges_16_20": 0},
+        })
+        group["messages"].append(record["message"])
+        group["observations"] += 1
+        group["payload_characters"] += int(record["payload_characters"])
+        group["bands"][_tool_band(int(record["exchange_age"]))] += 1
+
+    semaphore = asyncio.Semaphore(4)
+
+    async def count_dynamic(messages: list[dict[str, str]]) -> int:
+        if not messages:
+            return 0
+        async with semaphore:
+            total = await provider.count_input_tokens(instructions=instructions, messages=messages)
+        return max(0, total - static_tokens)
+
+    operation_names = sorted(operation_groups)
+    largest_candidates = sorted(
+        tool_records, key=lambda item: int(item["payload_characters"]), reverse=True
+    )[:8]
+    measurement_tasks = [count_dynamic([record["message"] for record in tool_records])]
+    measurement_tasks.extend(
+        count_dynamic(operation_groups[name]["messages"]) for name in operation_names
+    )
+    measurement_tasks.extend(count_dynamic([record["message"]]) for record in largest_candidates)
+    measurements = await asyncio.gather(*measurement_tasks)
+
+    tool_total_tokens = measurements[0]
+    operation_token_values = measurements[1 : 1 + len(operation_names)]
+    largest_token_values = measurements[1 + len(operation_names) :]
+    tool_operations = []
+    for operation, projected_tokens in zip(operation_names, operation_token_values, strict=True):
+        group = operation_groups[operation]
+        tool_operations.append({
+            "operation": operation,
+            "observations": group["observations"],
+            "projected_tokens": projected_tokens,
+            "payload_characters": group["payload_characters"],
+            "bands": group["bands"],
+        })
+    tool_operations.sort(key=lambda item: int(item["projected_tokens"]), reverse=True)
+
+    largest_observations = [
+        {
+            "operation": record["operation"],
+            "phase": record["phase"],
+            "exchange_age": record["exchange_age"],
+            "projected_tokens": projected_tokens,
+            "payload_characters": record["payload_characters"],
+        }
+        for record, projected_tokens in zip(largest_candidates, largest_token_values, strict=True)
+    ]
+    largest_observations.sort(key=lambda item: int(item["projected_tokens"]), reverse=True)
+
     limit_tokens = settings.openai_context_window
     return {
         "transcript_id": str(transcript.id),
@@ -566,6 +664,13 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
         "summary_present": bool(transcript.context_summary),
         "transcript": _turn_statistics(turns),
         "windows": windows,
+        "tool_analysis": {
+            "scope_exchanges": min(20, _turn_statistics(tool_scope_turns)["owner_messages"]),
+            "observations": len(tool_records),
+            "projected_tokens": tool_total_tokens,
+            "operations": tool_operations,
+            "largest_observations": largest_observations,
+        },
     }
 
 
