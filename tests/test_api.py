@@ -41,3 +41,27 @@ def test_control_restart_endpoint_requests_supervised_restart(monkeypatch) -> No
     assert response.status_code == 202
     assert response.json() == {"status": "restarting"}
     assert calls == ["restart"]
+
+
+def test_recent_exchange_turns_starts_at_requested_owner_message() -> None:
+    from uuid import uuid4
+
+    from atlas.api.app import _recent_exchange_turns, _turn_statistics
+    from atlas.transcript.models import Actor, TextBlock, ToolObservationBlock, Turn
+
+    transcript_id = uuid4()
+    turns = []
+    for index in range(4):
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.OWNER, blocks=[TextBlock(text=f"owner {index}")]))
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.TOOL, blocks=[ToolObservationBlock(operation="demo", detail={})]))
+        turns.append(Turn(transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text=f"atlas {index}")]))
+
+    selected = _recent_exchange_turns(turns, 2)
+    stats = _turn_statistics(selected)
+
+    assert selected[0].actor == Actor.OWNER
+    assert selected[0].blocks[0].text == "owner 2"
+    assert stats["owner_messages"] == 2
+    assert stats["atlas_messages"] == 2
+    assert stats["tool_observations"] == 2
+    assert stats["transcript_turns"] == 6

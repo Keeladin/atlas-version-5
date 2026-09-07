@@ -109,3 +109,7 @@ Validation at this checkpoint: Ruff clean, 90 backend tests passing, frontend li
 Needs You now enriches uncertain actions from their durable action evidence with a safe owner-readable label and target, rather than exposing only internal capability names. Project apply/move/delete actions show paths, while sensitive payloads such as file contents, hashes, tokens, and mail bodies are not added to uncertain-action summaries. Existing unresolved items gain this context dynamically.
 
 Uncertain actions now have an explicit Acknowledge control. Acknowledgement resolves the owner-attention item without rewriting the durable action or run outcome from `uncertain`, preserving the audit truth while allowing Needs You to return to zero once the owner has reviewed the ambiguity.
+
+## 2026-09-07 — Context statistics instrumentation
+
+Control now exposes owner-authenticated context statistics calculated from the canonical PostgreSQL transcript without displaying transcript contents. The view compares the current model-visible input with bounded recent windows of 5, 10, 15, and 20 owner exchanges, includes intervening tool evidence, separates fixed seat/tool-definition overhead from the recent-window load, and reports transcript message/tool counts. This instrumentation is intentionally observational: it does not trim, purge, summarize, or otherwise mutate the canonical transcript and exists to tune a future bounded working-context policy from real Atlas usage.

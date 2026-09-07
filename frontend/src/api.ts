@@ -102,6 +102,39 @@ export async function getConversationContext(): Promise<ConversationContext> {
   return body as ConversationContext
 }
 
+export type ContextWindowStats = {
+  exchanges: number
+  input_tokens: number
+  dynamic_tokens: number
+  owner_messages: number
+  atlas_messages: number
+  tool_observations: number
+  owner_characters: number
+  atlas_characters: number
+  largest_message_characters: number
+  transcript_turns: number
+}
+
+export type ConversationContextStats = {
+  transcript_id: string
+  static_tokens: number
+  current_context_tokens: number
+  canonical_transcript_tokens: number
+  limit_tokens: number
+  pressure: number
+  state: 'green' | 'amber' | 'red'
+  summary_present: boolean
+  transcript: Omit<ContextWindowStats, 'exchanges' | 'input_tokens' | 'dynamic_tokens'>
+  windows: ContextWindowStats[]
+}
+
+export async function getConversationContextStats(): Promise<ConversationContextStats> {
+  const response = await fetch('/api/conversation/context/stats')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Context statistics load failed (${response.status})`)
+  return body as ConversationContextStats
+}
+
 export async function streamMessage(
   text: string,
   attachments: string[],

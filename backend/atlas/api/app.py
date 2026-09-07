@@ -451,6 +451,47 @@ def _context_pressure_state(input_tokens: int, limit_tokens: int) -> str:
     return "green"
 
 
+def _recent_exchange_turns(turns, exchange_count: int):
+    owner_indexes = [index for index, turn in enumerate(turns) if turn.actor == Actor.OWNER]
+    if not owner_indexes or len(owner_indexes) <= exchange_count:
+        return turns
+    return turns[owner_indexes[-exchange_count]:]
+
+
+def _turn_statistics(turns) -> dict[str, int]:
+    owner_messages = 0
+    atlas_messages = 0
+    tool_observations = 0
+    owner_characters = 0
+    atlas_characters = 0
+    largest_message_characters = 0
+    for turn in turns:
+        if turn.actor in (Actor.OWNER, Actor.ATLAS):
+            text = "\n".join(
+                block.text for block in turn.blocks if getattr(block, "type", None) == "text"
+            ).strip()
+            if turn.actor == Actor.OWNER:
+                owner_messages += 1
+                owner_characters += len(text)
+            else:
+                atlas_messages += 1
+                atlas_characters += len(text)
+            largest_message_characters = max(largest_message_characters, len(text))
+        elif turn.actor == Actor.TOOL:
+            tool_observations += sum(
+                1 for block in turn.blocks if getattr(block, "type", None) == "tool_observation"
+            )
+    return {
+        "owner_messages": owner_messages,
+        "atlas_messages": atlas_messages,
+        "tool_observations": tool_observations,
+        "owner_characters": owner_characters,
+        "atlas_characters": atlas_characters,
+        "largest_message_characters": largest_message_characters,
+        "transcript_turns": len(turns),
+    }
+
+
 @app.get("/api/conversation/context")
 async def conversation_context(session: Annotated[AsyncSession, Depends(get_session)]):
     api_key = settings.openai_api_key
@@ -474,6 +515,57 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
         "limit_tokens": limit_tokens,
         "pressure": input_tokens / max(1, limit_tokens),
         "state": _context_pressure_state(input_tokens, limit_tokens),
+    }
+
+
+@app.get("/api/conversation/context/stats")
+async def conversation_context_stats(session: Annotated[AsyncSession, Depends(get_session)]):
+    api_key = settings.openai_api_key
+    if api_key is None:
+        raise HTTPException(status_code=503, detail="OpenAI provider is not configured")
+    repository = TranscriptRepository(session)
+    transcript = await repository.get_or_create_active()
+    turns = await repository.list_turns(transcript.id)
+    provider = OpenAIProvider(
+        api_key=api_key, model=settings.openai_model,
+        capability_call_limit=settings.capability_call_limit,
+        capability_completion_reserve=settings.capability_completion_reserve,
+    )
+    instructions = build_model_instructions(capability_runtime.compact_index())
+    static_tokens = await provider.count_input_tokens(instructions=instructions, messages=[])
+    current_messages = turns_to_provider_messages(
+        turns, context_summary=transcript.context_summary,
+        summarized_through_turn_id=transcript.summarized_through_turn_id,
+    )
+    current_tokens = await provider.count_input_tokens(instructions=instructions, messages=current_messages)
+    canonical_tokens = await provider.count_input_tokens(
+        instructions=instructions, messages=turns_to_provider_messages(turns)
+    )
+    windows = []
+    for exchange_count in (5, 10, 15, 20):
+        window_turns = _recent_exchange_turns(turns, exchange_count)
+        window_messages = turns_to_provider_messages(
+            window_turns, context_summary=transcript.context_summary
+        )
+        input_tokens = await provider.count_input_tokens(instructions=instructions, messages=window_messages)
+        windows.append({
+            "exchanges": exchange_count,
+            "input_tokens": input_tokens,
+            "dynamic_tokens": max(0, input_tokens - static_tokens),
+            **_turn_statistics(window_turns),
+        })
+    limit_tokens = settings.openai_context_window
+    return {
+        "transcript_id": str(transcript.id),
+        "static_tokens": static_tokens,
+        "current_context_tokens": current_tokens,
+        "canonical_transcript_tokens": canonical_tokens,
+        "limit_tokens": limit_tokens,
+        "pressure": current_tokens / max(1, limit_tokens),
+        "state": _context_pressure_state(current_tokens, limit_tokens),
+        "summary_present": bool(transcript.context_summary),
+        "transcript": _turn_statistics(turns),
+        "windows": windows,
     }
 
 
