@@ -64,7 +64,7 @@ At this checkpoint Ruff passes, the frontend production build passes, and the ba
 
 The first post-review hardening pass implements the five owner-approved runtime fixes without adding a new integration.
 
-Consequential approval proposals now bind the exact operation, canonical arguments, owner principal, capability identity, creation time and expiry into the stored target hash. Approval revalidates that payload and fails closed on mismatch or expiry. Approved actions transition atomically from `prepared` to durable `executing` and commit before external dispatch. Completed effects land as `succeeded`, known pre-dispatch failures as `failed`, and ambiguous dispatch failures as `uncertain`; action idempotency keys are now populated and externally returned identifiers are retained when available.
+Consequential approval proposals now bind the exact operation, canonical arguments, owner principal, capability identity, creation time and expiry into the stored target hash. Approval revalidates that payload and fails closed on mismatch or expiry. Approved actions transition atomically from `prepared` to durable `executing` and commit before external dispatch. Completed effects land as `succeeded`, known pre-dispatch failures as `failed`, and ambiguous dispatch failures as `uncertain`; per-action idempotency identities are persisted for future replay/reconciliation work, but they are not yet provider-enforced; externally returned identifiers are retained when available.
 
 Tool activity is now durable structured transcript evidence. Capability searches, prepared calls, automatic calls, results and approved consequential outcomes are stored as `tool_observation` blocks and projected back into later model context as runtime evidence rather than owner-authored chat.
 
@@ -91,3 +91,15 @@ Production systemd changes the Projects bind from read-only to read/write. Deplo
 `UNCERTAIN` is now a first-class run outcome rather than being collapsed back into `FAILED`. An uncertain action retains or creates unresolved owner attention, marks its run `uncertain`, and remains visible in Needs You with an explicit message that Atlas cannot confirm whether the external effect completed. The UI does not present approval/cancel controls for this state.
 
 Consequential execution now records `execution_started_at` when entering `EXECUTING`. A reconciler runs once at startup and then periodically. With the default five-minute stale threshold it compare-and-set transitions abandoned `EXECUTING` actions to `UNCERTAIN`, raises durable owner attention, and prevents the runtime from silently treating the action as failed or replayable. The poll interval and stale threshold are runtime-configurable.
+
+## 2026-09-06 — Runtime invariant test hardening
+
+The test suite was expanded around runtime failure modes rather than an arbitrary coverage target. New regression coverage now directly defends action outcome separation, uncertain-action visibility, stale-execution CAS reconciliation, scheduled recurrence and owner-transcript isolation, rollover fail-open behavior, bounded tool evidence, project preview/stale/delete/move safeguards, passkey session/challenge lifecycle, and Alembic-chain integrity. The maintained matrix is `docs/21-runtime-invariant-test-matrix.md`.
+
+## 2026-09-07 — Runtime controls and protected project reads
+
+Mobile owner-session ergonomics now keep Log out visible beside the compact transcript token counter. Control exposes an owner-authenticated Restart API action: the API accepts the request, terminates itself gracefully, and the systemd unit uses `Restart=always` to restore service without granting the web process sudo or systemctl authority. The Control UI waits for the service to disappear and return before reloading.
+
+The bounded project capability now applies the existing protected-material boundary to reads as well as writes. Protected directories and credential/key/token material are hidden from listings and rejected on acquisition, and resolved symlink targets are checked so a benign-looking path cannot bypass the boundary.
+
+Validation at this checkpoint: Ruff clean, 90 backend tests passing, frontend lint 0 warnings / 0 errors, and the production frontend build passing.

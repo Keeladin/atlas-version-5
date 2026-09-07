@@ -33,8 +33,18 @@ class ProjectFolderService(LocalStorageService):
         self.checkpoint_root = checkpoint_root
 
     def list_directory(self, relative_path: str = "") -> dict:
+        if relative_path.strip("/"):
+            self._assert_readable(relative_path)
         listing = super().list_directory(relative_path)
-        listing["entries"] = [item for item in listing["entries"] if item["name"] not in self._HIDDEN_NAMES]
+        listing["entries"] = [
+            item
+            for item in listing["entries"]
+            if item["name"] not in self._HIDDEN_NAMES
+            and self._protected_reason(
+                "/".join(part for part in (relative_path.strip("/"), item["name"]) if part)
+            )
+            is None
+        ]
         if not relative_path.strip("/"):
             root = self.root.resolve(strict=True)
             listing["entries"] = [
@@ -47,8 +57,11 @@ class ProjectFolderService(LocalStorageService):
         return listing
 
     def acquire_file(self, relative_path: str, *, max_bytes: int = 25 * 1024 * 1024) -> dict:
-        result = super().acquire_file(relative_path, max_bytes=max_bytes)
+        self._assert_readable(relative_path)
         path = self._existing_file(relative_path)
+        root = self.root.resolve(strict=True)
+        self._assert_readable(path.relative_to(root).as_posix())
+        result = super().acquire_file(relative_path, max_bytes=max_bytes)
         stat_result = path.stat()
         result["resource"]["sha256"] = self._sha256(path)
         result["resource"]["modified_at"] = datetime.fromtimestamp(stat_result.st_mtime, UTC).isoformat()
@@ -226,17 +239,26 @@ class ProjectFolderService(LocalStorageService):
         self._assert_editable(target.relative_to(root).as_posix())
         return target
 
-    def _assert_editable(self, relative_path: str) -> None:
+    def _protected_reason(self, relative_path: str) -> str | None:
         parts = [part.casefold() for part in Path(relative_path).parts]
         name = parts[-1] if parts else ""
         if any(part in self._PROTECTED_COMPONENTS for part in parts):
-            raise ValueError("Protected project paths cannot be modified by the normal project-write capability")
+            return "protected project path"
         if name == ".env" or name.startswith(".env.") or name in self._PROTECTED_FILENAMES:
-            raise ValueError("Environment, credential, and key files are protected from normal project writes")
+            return "environment, credential, or key file"
         if Path(name).suffix.casefold() in self._PROTECTED_SUFFIXES:
-            raise ValueError("Private key material is protected from normal project writes")
+            return "private key material"
         if "credential" in name or "token" in name:
-            raise ValueError("Credential and token files are protected from normal project writes")
+            return "credential or token file"
+        return None
+
+    def _assert_readable(self, relative_path: str) -> None:
+        if self._protected_reason(relative_path) is not None:
+            raise ValueError("protected project material cannot be read by the normal project capability")
+
+    def _assert_editable(self, relative_path: str) -> None:
+        if self._protected_reason(relative_path) is not None:
+            raise ValueError("protected project material cannot be modified by the normal project-write capability")
 
     def _checkpoint(self, target: Path, relative_path: str) -> dict:
         root = self.root.resolve(strict=True)

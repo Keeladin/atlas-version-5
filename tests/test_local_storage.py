@@ -185,3 +185,36 @@ def test_project_git_invocation_marks_repo_as_safe_directory(monkeypatch: pytest
     assert result == "ok\n"
     assert "-c" in seen
     assert f"safe.directory={tmp_path}" in seen
+
+
+def test_project_reads_hide_and_reject_protected_material(tmp_path: Path) -> None:
+    project = tmp_path / "Demo"
+    project.mkdir()
+    (project / "README.md").write_text("demo\n")
+    (project / ".env").write_text("TOKEN=secret\n")
+    (project / ".git").mkdir()
+    (project / ".git" / "config").write_text("secret\n")
+    (project / "secrets").mkdir()
+    (project / "secrets" / "api-token.txt").write_text("secret\n")
+    service = ProjectFolderService(tmp_path, "/home/jaco/Projects", tmp_path / ".checkpoints")
+
+    listing = service.list_directory("Demo")
+    assert [item["name"] for item in listing["entries"]] == ["README.md"]
+    for path in ("Demo/.env", "Demo/.git/config", "Demo/secrets/api-token.txt"):
+        with pytest.raises(ValueError, match="cannot be read"):
+            service.acquire_file(path)
+    with pytest.raises(ValueError, match="cannot be read"):
+        service.list_directory("Demo/secrets")
+
+
+def test_project_read_cannot_bypass_protection_through_symlink(tmp_path: Path) -> None:
+    project = tmp_path / "Demo"
+    project.mkdir()
+    secrets = project / "secrets"
+    secrets.mkdir()
+    (secrets / "api.key").write_text("SUPER-SECRET-VALUE\n")
+    (project / "notes.md").symlink_to(secrets / "api.key")
+    service = ProjectFolderService(tmp_path, "/home/jaco/Projects", tmp_path / ".checkpoints")
+
+    with pytest.raises(ValueError, match="protected project material cannot be read"):
+        service.acquire_file("Demo/notes.md")
