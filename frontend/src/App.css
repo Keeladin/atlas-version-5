@@ -902,6 +902,8 @@ button.storage-row:disabled { opacity: 1; cursor: default; }
   font: 600 11px var(--font-sans);
 }
 
+.approval-actions button:disabled { opacity: .45; cursor: not-allowed; }
+
 .activity-trace { display: grid; gap: 10px; margin-top: 13px; }
 .trace-row { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 10px; }
 .trace-row strong { display: block; font-size: 11px; line-height: 1.35; }

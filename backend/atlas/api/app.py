@@ -307,6 +307,18 @@ async def recent_actions(session: Annotated[AsyncSession, Depends(get_session)],
     return {"items": await AuthorityStore(session).recent_activity(limit)}
 
 
+@app.post("/api/attention/{attention_id}/dismiss")
+async def dismiss_attention(attention_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
+    try:
+        await AuthorityStore(session).dismiss_interruption(attention_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProposalIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await session.commit()
+    return {"status": "dismissed", "attention_id": str(attention_id)}
+
+
 @app.post("/api/actions/{action_id}/acknowledge")
 async def acknowledge_action(action_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
     try:

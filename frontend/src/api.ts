@@ -349,6 +349,12 @@ export async function getPendingActions(): Promise<PendingAction[]> {
   return (body?.items ?? []) as PendingAction[]
 }
 
+export async function dismissAttention(attentionId: string): Promise<void> {
+  const response = await fetch(`/api/attention/${encodeURIComponent(attentionId)}/dismiss`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Attention dismissal failed (${response.status})`)
+}
+
 export async function acknowledgeAction(actionId: string): Promise<void> {
   const response = await fetch(`/api/actions/${encodeURIComponent(actionId)}/acknowledge`, { method: 'POST' })
   const body = await response.json().catch(() => null)

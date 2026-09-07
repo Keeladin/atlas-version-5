@@ -226,6 +226,19 @@ class AuthorityStore:
             })
         return items
 
+    async def dismiss_interruption(self, attention_id: UUID) -> None:
+        attention = (await self.session.execute(
+            select(OwnerAttentionRow).where(OwnerAttentionRow.id == attention_id).with_for_update()
+        )).scalar_one_or_none()
+        if attention is None:
+            raise LookupError("Attention item not found")
+        if attention.state != "interrupted" or attention.action_id is not None:
+            raise ProposalIntegrityError("Only interruption notices can be dismissed")
+        if attention.resolved:
+            return
+        attention.resolved = True
+        attention.resolved_at = datetime.now(UTC)
+
     async def acknowledge_uncertain(self, action_id: UUID) -> None:
         action = await self.session.get(ActionRow, action_id)
         if action is None:

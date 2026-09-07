@@ -3,7 +3,7 @@ import { startAuthentication, startRegistration, type PublicKeyCredentialCreatio
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
-import { ForegroundConflictError, acknowledgeAction, decideAction, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -200,6 +200,15 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     }
   }
 
+  async function handleInterruptionDismiss(action: PendingAction) {
+    try {
+      await dismissAttention(action.id)
+      setPendingActions(await getPendingActions())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
   async function addComposerFiles(files: FileList | File[]) {
     const items = Array.from(files)
     if (!items.length || composerUploading || sending) return
@@ -216,14 +225,9 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     }
   }
 
-  async function sendMessage() {
-    const text = draft.trim()
-    if ((!text && composerAttachments.length === 0) || sending || composerUploading) return
-    const attachments = [...composerAttachments]
+  async function submitOwnerMessage(requestText: string, attachments: LocalStorageEntry[], restoreOnConflict: boolean) {
+    if ((!requestText && attachments.length === 0) || sending || composerUploading) return
     const attachmentPaths = attachments.map((file) => file.path)
-    const requestText = text
-    setDraft('')
-    setComposerAttachments([])
     setError(null)
     setSending(true)
     setStreamingText('')
@@ -247,8 +251,10 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
       if (cause instanceof ForegroundConflictError) {
-        setDraft(requestText)
-        setComposerAttachments(attachments)
+        if (restoreOnConflict) {
+          setDraft(requestText)
+          setComposerAttachments(attachments)
+        }
         setTurns((current) => current.filter((turn) => turn.id !== optimistic.id))
       }
       const conversation = await getConversation().catch(() => null)
@@ -259,6 +265,50 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       setSending(false)
       setStreamingText('')
     }
+  }
+
+  async function sendMessage() {
+    const text = draft.trim()
+    if ((!text && composerAttachments.length === 0) || sending || composerUploading) return
+    const attachments = [...composerAttachments]
+    setDraft('')
+    setComposerAttachments([])
+    await submitOwnerMessage(text, attachments, true)
+  }
+
+  async function handleInterruptionContinue() {
+    if (!providerOk || sending || composerUploading) return
+    setView('home')
+    setMobileActivity(null)
+    await submitOwnerMessage('continue', [], false)
+  }
+
+  function renderPendingAction(action: PendingAction) {
+    const args = action.detail.arguments ?? {}
+    const isMail = action.detail.operation === 'gmail.message.send'
+    const uncertain = action.state === 'uncertain'
+    if (action.state === 'interrupted') {
+      return (
+        <div className="approval-widget uncertain" key={action.id}>
+          <strong>{action.title}</strong>
+          <p>{action.detail.message ?? 'Atlas work was interrupted.'}</p>
+          <span>Continue creates a new owner turn. Prior actions will not be replayed automatically.</span>
+          <div className="approval-actions">
+            <button type="button" disabled={!providerOk || sending || composerUploading} onClick={() => { void handleInterruptionContinue() }}>Continue</button>
+            <button type="button" onClick={() => { void handleInterruptionDismiss(action) }}>Dismiss</button>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className={`approval-widget${uncertain ? ' uncertain' : ''}`} key={action.id}>
+        <strong>{uncertain ? (action.detail.display_label ?? action.title) : action.title}</strong>
+        {uncertain && action.detail.target ? <span className="attention-target">{action.detail.target}</span> : <span>{action.detail.operation ?? 'Proposed action'}</span>}
+        {uncertain ? <div className="approval-mail"><p>{action.detail.message ?? 'Atlas started this action but cannot confirm whether it completed.'}</p>{action.detail.execution_started_at ? <span><b>Started:</b> {new Date(action.detail.execution_started_at).toLocaleString()}</span> : null}{action.detail.external_id ? <span><b>External ID:</b> {action.detail.external_id}</span> : null}</div> : null}
+        {!uncertain && isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}
+        {uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionAcknowledge(action) }}>Acknowledge</button></div> : <div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div>}
+      </div>
+    )
   }
 
   return (
@@ -291,7 +341,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
           {mobileActivity === 'needs' ? <section className="activity-section attention-section">
             <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
             {error ? <p className="activity-empty">{error}</p> : null}
-            {pendingActions.map((action) => { const args = action.detail.arguments ?? {}; const isMail = action.detail.operation === 'gmail.message.send'; const uncertain = action.state === 'uncertain'; if (action.state === 'interrupted') return <div className="approval-widget uncertain" key={action.id}><strong>{action.title}</strong><p>{action.detail.message ?? 'Atlas work was interrupted.'}</p><span>Send a new message to continue. Prior actions will not be replayed automatically.</span></div>; return <div className={`approval-widget${uncertain ? ' uncertain' : ''}`} key={action.id}><strong>{uncertain ? (action.detail.display_label ?? action.title) : action.title}</strong>{uncertain && action.detail.target ? <span className="attention-target">{action.detail.target}</span> : <span>{action.detail.operation ?? 'Proposed action'}</span>}{uncertain ? <div className="approval-mail"><p>{action.detail.message ?? 'Atlas started this action but cannot confirm whether it completed.'}</p>{action.detail.execution_started_at ? <span><b>Started:</b> {new Date(action.detail.execution_started_at).toLocaleString()}</span> : null}{action.detail.external_id ? <span><b>External ID:</b> {action.detail.external_id}</span> : null}</div> : null}{!uncertain && isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}{uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionAcknowledge(action) }}>Acknowledge</button></div> : <div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div>}</div> })}
+            {pendingActions.map(renderPendingAction)}
             {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
           </section> : <section className="activity-section">
             <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
@@ -455,7 +505,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             <section className="activity-section attention-section">
               <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
               {error ? <p className="activity-empty">{error}</p> : null}
-              {pendingActions.map((action) => { const args = action.detail.arguments ?? {}; const isMail = action.detail.operation === 'gmail.message.send'; const uncertain = action.state === 'uncertain'; if (action.state === 'interrupted') return <div className="approval-widget uncertain" key={action.id}><strong>{action.title}</strong><p>{action.detail.message ?? 'Atlas work was interrupted.'}</p><span>Send a new message to continue. Prior actions will not be replayed automatically.</span></div>; return <div className={`approval-widget${uncertain ? ' uncertain' : ''}`} key={action.id}><strong>{uncertain ? (action.detail.display_label ?? action.title) : action.title}</strong>{uncertain && action.detail.target ? <span className="attention-target">{action.detail.target}</span> : <span>{action.detail.operation ?? 'Proposed action'}</span>}{uncertain ? <div className="approval-mail"><p>{action.detail.message ?? 'Atlas started this action but cannot confirm whether it completed.'}</p>{action.detail.execution_started_at ? <span><b>Started:</b> {new Date(action.detail.execution_started_at).toLocaleString()}</span> : null}{action.detail.external_id ? <span><b>External ID:</b> {action.detail.external_id}</span> : null}</div> : null}{!uncertain && isMail ? <div className="approval-mail"><span><b>To:</b> {String(args.to ?? '')}</span><span><b>Subject:</b> {String(args.subject ?? '')}</span><p>{String(args.body ?? '')}</p></div> : null}{uncertain ? <div className="approval-actions"><button type="button" onClick={() => { void handleActionAcknowledge(action) }}>Acknowledge</button></div> : <div className="approval-actions"><button type="button" onClick={() => { void handleActionDecision(action, true) }}>Approve</button><button type="button" onClick={() => { void handleActionDecision(action, false) }}>Cancel</button></div>}</div> })}
+              {pendingActions.map(renderPendingAction)}
               {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
             </section>
             <div className="activity-divider" />

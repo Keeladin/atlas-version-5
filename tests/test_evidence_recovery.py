@@ -14,6 +14,7 @@ from atlas.persistence.models import (
     OwnerAttentionRow,
     RunRow,
     ScheduledTaskRow,
+    TranscriptRow,
     TurnRow,
 )
 from atlas.runtime.execution import RunExecutor
@@ -343,3 +344,54 @@ async def test_invalid_non_object_arguments_never_dispatch(pg_factory, tmp_path)
     assert result['status'] == 'failed'
     assert result['output']['failure_phase'] == 'before_dispatch'
     assert dispatched == []
+
+
+@pytest.mark.asyncio
+async def test_interruption_dismissal_resolves_notice_without_touching_task_or_run(pg_factory, tmp_path):
+    from atlas.runtime.recovery import interrupt_run
+
+    transcript_id, run_id = await create_run(pg_factory)
+    checkpoint = {'status': 'active', 'semantic': {'objective': 'Finish Normalizer', 'next_step': 'Run tests'}}
+    async with pg_factory() as session:
+        transcript = await session.get(TranscriptRow, transcript_id)
+        transcript.active_task_state = checkpoint
+        await session.commit()
+
+    await interrupt_run(pg_factory, ArtifactStore(tmp_path / 'artifacts'), run_id, reason='Deployment interrupted inference')
+
+    async with pg_factory() as session:
+        attention = (await session.execute(select(OwnerAttentionRow).where(
+            OwnerAttentionRow.run_id == run_id, OwnerAttentionRow.state == 'interrupted',
+        ))).scalar_one()
+        attention_id = attention.id
+        run_status = (await session.get(RunRow, run_id)).status
+        await AuthorityStore(session).dismiss_interruption(attention_id)
+        await session.commit()
+
+    async with pg_factory() as session:
+        attention = await session.get(OwnerAttentionRow, attention_id)
+        transcript = await session.get(TranscriptRow, transcript_id)
+        assert attention.resolved is True
+        assert attention.resolved_at is not None
+        assert transcript.active_task_state == checkpoint
+        assert (await session.get(RunRow, run_id)).status == run_status
+
+
+@pytest.mark.asyncio
+async def test_interruption_dismissal_cannot_hide_other_attention_types(pg_factory):
+    from atlas.actions.authority import ProposalIntegrityError
+
+    _transcript_id, run_id = await create_run(pg_factory)
+    async with pg_factory() as session:
+        attention = OwnerAttentionRow(
+            run_id=run_id, state='uncertain', title='Uncertain effect', detail={}, resolved=False,
+        )
+        session.add(attention)
+        await session.commit()
+        attention_id = attention.id
+
+    async with pg_factory() as session:
+        with pytest.raises(ProposalIntegrityError, match='Only interruption notices'):
+            await AuthorityStore(session).dismiss_interruption(attention_id)
+        await session.rollback()
+        assert (await session.get(OwnerAttentionRow, attention_id)).resolved is False

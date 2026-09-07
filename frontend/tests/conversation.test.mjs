@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ForegroundConflictError, streamMessage } from '../src/api.ts'
+import { ForegroundConflictError, dismissAttention, streamMessage } from '../src/api.ts'
 
 async function withResponse(response, exercise) {
   const original = globalThis.fetch
@@ -40,4 +40,15 @@ test('an interrupted accepted stream reports interruption without classifying it
     await assert.rejects(streamMessage('Message', [], () => {}),
       (error) => !(error instanceof ForegroundConflictError) && error.message === 'Task state was retained')
   })
+})
+
+
+test('interruption dismissal targets the durable attention item', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, '/api/attention/attention%20id/dismiss')
+    assert.equal(init?.method, 'POST')
+    return new Response('{}')
+  }
+  try { await dismissAttention('attention id') } finally { globalThis.fetch = original }
 })

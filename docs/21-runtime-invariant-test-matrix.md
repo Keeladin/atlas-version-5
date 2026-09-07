@@ -40,6 +40,7 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Public provider web/citation events retain provenance without extra inference | `test_provider_resources.py` | Provider double |
 | Protected aliases/path swaps fail closed; moves never overwrite; permitted snapshot patches remain applicable | `test_local_storage.py` | Real filesystem + Git |
 | Cancelled/abandoned foreground inference releases its slot without losing task/effect truth | `test_evidence_recovery.py` | Real PostgreSQL |
+| Interrupted attention can be dismissed without changing task/run truth; uncertain attention cannot be hidden by that control | `test_evidence_recovery.py`, `frontend/tests/conversation.test.mjs` | Real PostgreSQL + frontend API |
 | Durable queued schedules execute original intent once after interruption | `test_evidence_recovery.py` | Real PostgreSQL + provider double |
 | Clean and historical database upgrades preserve conversation/task/completed-run history | `test_migrations.py` | Real PostgreSQL |
 

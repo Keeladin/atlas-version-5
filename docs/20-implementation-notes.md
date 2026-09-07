@@ -180,14 +180,22 @@ Verification uses disposable PostgreSQL schemas only. Tests cover concurrent own
 
 No code deployment, production migration, or live provider effect is part of this change. Before deploying the new runtime, stop the old runtime during migration. `deployment/deploy-host.sh` now enforces this order: it stops `atlas-v5.service` before `alembic upgrade head`, leaves Atlas stopped if migration fails, and starts the service only after a successful migration. Historical raw payload rows are preserved; the new artifact representation applies to new observations, without rewriting old evidence. Real power-loss/provider-boundary crash testing and browser automation remain outside the current harness.
 
-Verification outcome: **fixed**, validated in the V5 working tree on 2026-09-07. The final run passed **165 backend tests** with the PostgreSQL integration fixture enabled, plus **4 frontend transport tests**. One existing Starlette/AnyIO deprecation warning remains.
+Verification outcome: **fixed**, validated in the V5 working tree on 2026-09-07. The final hardening run passed **166 backend tests** with the PostgreSQL integration fixture enabled, plus **4 frontend transport tests**. One existing Starlette/AnyIO deprecation warning remains.
 
 | Verification gate | Commands / evidence | Result |
 | --- | --- | --- |
 | Static/import checks | `uv run ruff check backend tests migrations`; `uv run python -m compileall -q backend tests migrations`; `bash -n deployment/*.sh`; `git diff --check` | Pass |
 | Security triggers and ordinary controls | Protected aliases, substituted final symlinks, racing move parents/destinations, filtered dirty checkpoints, ordinary reads/edits, and executable/binary/symlink patch round trips in `tests/test_local_storage.py` | Pass; original protected-content and overwrite reproductions no longer succeed |
-| Runtime and persistence checks | `ATLAS_TEST_DATABASE_URL=<disposable PostgreSQL URL> uv run pytest -q` | 165 pass, no skipped integration tests |
+| Runtime and persistence checks | `ATLAS_TEST_DATABASE_URL=<disposable PostgreSQL URL> uv run pytest -q` | 166 pass, no skipped integration tests |
 | Migration compatibility | `tests/test_migrations.py` runs `alembic upgrade` from empty and historical schemas, followed by `alembic check` | Pass; no schema drift |
 | Frontend checks | In `frontend/`: `npm run lint && npm run test && npm run build` | Pass; 4 transport tests |
 
 Changed boundaries are `runtime/task_state.py`, `transcript/repository.py`, persistence models and three migrations; `actions/authority.py`, `runtime/execution.py`, capability validation and API decisions; `storage/projects.py`, `storage/local.py`, artifact storage, `runtime/observations.py` and provider projection; `runtime/recovery.py`, action reconciliation and schedule execution; and the frontend conflict/interruption surfaces. Tests and CI now exercise these contracts. Validation uses synthetic resources, real filesystem/Git operations and disposable PostgreSQL; it does not claim live-provider effects, browser automation or power-loss fault injection.
+
+## 2026-09-07 — Direct controls for interrupted work
+
+Interrupted foreground work in Needs You now exposes `Continue` and `Dismiss` in both desktop and mobile through one shared renderer. `Continue` submits an ordinary owner turn containing `continue`; it does not replay an earlier action or bypass the foreground execution path. A successful new owner turn continues to resolve the prior interruption notice through the existing recovery contract.
+
+`Dismiss` resolves only the durable `interrupted` owner-attention row. It does not change the active-task checkpoint, run outcome or action evidence, and the backend rejects attempts to use this endpoint to hide uncertain-action attention. The Continue control is disabled while another foreground send/upload is active or the model is unavailable.
+
+Validation after this patch: **168 backend tests** against disposable PostgreSQL, **5 frontend transport/API tests**, Ruff, frontend lint/build, Python compilation and whitespace checks.
