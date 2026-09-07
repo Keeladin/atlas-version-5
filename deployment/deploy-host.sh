@@ -66,18 +66,12 @@ install -d -o atlas-v5 -g atlas-v5 -m 0770 /var/lib/atlas-v5/workspace
 install -d -o atlas-v5 -g atlas-v5 -m 0750 /var/lib/atlas-v5/projects
 install -d -o atlas-v5 -g atlas-v5 -m 0700 /var/lib/atlas-v5/auth /var/lib/atlas-v5/project-checkpoints
 
-# Atlas may edit owner project source through its bounded project capability.
-# ACLs grant only filesystem access; application-level path, hash, checkpoint and authority rules still apply.
+# Project ACLs are provisioned separately by reconcile-project-access.sh.
+# Deployments must not recursively rewrite owner project permissions.
 if ! command -v setfacl >/dev/null 2>&1; then
-  echo "setfacl is required for safe Atlas project write access." >&2
+  echo "setfacl is required for Atlas maintenance access." >&2
   exit 1
 fi
-find /home/jaco/Projects \
-  \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o \
-  -type d -exec setfacl -n -m u:atlas-v5:rwx,u:jaco:rwx,m::rwx,d:u:atlas-v5:rwx,d:u:jaco:rwx,d:m::rwx {} +
-find /home/jaco/Projects \
-  \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o \
-  -type f -exec setfacl -n -m u:atlas-v5:rw-,u:jaco:rw-,m::rw- {} +
 
 if ! grep -q '^ATLAS_WORKSPACE_ROOT=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_WORKSPACE_ROOT=/var/lib/atlas-v5/workspace' >> /etc/atlas-v5/config/runtime.env
@@ -172,6 +166,8 @@ chown -R root:atlas-v5 "${VENV_DIR}"
 find "${VENV_DIR}" -type d -exec chmod 0750 {} +
 find "${VENV_DIR}" -type f -exec chmod u=rw,g=r,o= {} +
 find "${VENV_DIR}/bin" -type f -exec chmod u=rwx,g=rx,o= {} +
+
+bash "${ROOT_DIR}/deployment/grant-maintenance-access.sh"
 
 runuser -u atlas-v5 -- /bin/bash -c '
   set -a

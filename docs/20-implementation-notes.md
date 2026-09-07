@@ -84,7 +84,7 @@ Writes use same-directory temporary files, fsync and atomic replacement while pr
 
 Targeted preview/apply/move operations remain automatic within those safeguards. Deletes remain owner-approval-required. Automatic project mutations now enter the durable action spine as `executing` before filesystem dispatch and land in the normal action/tool evidence trail afterward, so safe write access does not reintroduce the post-facto execution-recording gap fixed earlier in the day.
 
-Production systemd changes the Projects bind from read-only to read/write. Deployment grants `atlas-v5` explicit ACL write access to project source while retaining Jaco's access on newly created files. Protected/generated trees such as `.git`, `node_modules`, `.venv` and `__pycache__` are excluded from the ACL grant.
+Production systemd changes the Projects bind from read-only to read/write. Project filesystem access is provisioned explicitly by `deployment/reconcile-project-access.sh`, which grants `atlas-v5` bounded ACL write access while retaining Jaco's access and default inheritance for future files. Normal deployments do not recursively rewrite `/home/jaco/Projects`. Protected/generated trees such as `.git`, `node_modules`, `.venv` and `__pycache__` are excluded from reconciliation.
 
 ## 2026-09-06 — Uncertain execution made durable and visible
 
@@ -128,7 +128,7 @@ The top-rail context indicator now reports the bounded working-context budget in
 
 ## 2026-09-07 — Continuous integration baseline
 
-Atlas now has a GitHub Actions CI gate for `main` pushes, pull requests, and manual runs. The backend job uses Python 3.14 with the locked `uv` dependency graph and a disposable PostgreSQL 17 service, runs Ruff, proves a blank database migrates through the complete Alembic chain to `head`, and runs the full backend suite. The frontend job uses Node 22 with `npm ci`, oxlint, TypeScript compilation, and the Vite production build. Workflow permissions are read-only and stale runs for the same ref are cancelled.
+Atlas now has a GitHub Actions CI gate for `main` pushes, pull requests, and manual runs. The backend job uses the repository-pinned Python 3.14.7 with the locked `uv` dependency graph and a disposable PostgreSQL 17 service, runs Ruff, proves a blank database migrates through the complete Alembic chain to `head`, and runs the full backend suite. The frontend job uses Node 22 with `npm ci`, oxlint, TypeScript compilation, and the Vite production build. Workflow permissions are read-only and stale runs for the same ref are cancelled.
 
 The CI path was exercised locally before publishing against a disposable PostgreSQL 17 container: the full migration chain completed, 100 backend tests passed, Ruff was clean, frontend lint reported zero warnings/errors, and the production frontend build completed.
 
@@ -138,4 +138,13 @@ The first hosted clean-checkout run exposed a repository-integrity defect that t
 
 Atlas now pins its application interpreter through the repository `.python-version` file. CI consumes that pin directly, and host deployment installs the same uv-managed interpreter under `/opt/atlas-v5/python` before synchronizing the production virtual environment. Ubuntu's system Python remains distribution-managed and is not replaced. The initial pin is Python 3.14.7.
 
-Project ACL refresh also now uses `setfacl -n` with explicit access masks: `m::rwx` for directories and `m::rw-` for regular files. This fixes a deployment bug where a later `setfacl -m` recalculated an ACL mask from inherited `group::rwx` state and could turn ordinary source files from mode 0664 into 0674, causing Ruff EXE002 failures. The ACL policy now grants Atlas and Jaco their intended access without manufacturing execute bits.
+Project ACL reconciliation uses `setfacl -n` with explicit access masks: `m::rwx` for directories and `m::rw-` for regular files. This fixes the earlier bug where `setfacl -m` recalculated an ACL mask from inherited `group::rwx` state and could turn ordinary source files from mode 0664 into 0674, causing Ruff EXE002 failures. Reconciliation is now an explicit bootstrap/maintenance action rather than something every deployment repeats.
+
+
+## 2026-09-07 — Maintenance permissions separated from deployment
+
+The dedicated `atlas-v5` runtime identity remains in place for this trial, but routine deployment no longer walks or rewrites the owner project tree. Existing/default project ACLs continue to provide runtime access; a moved or newly introduced pre-existing project tree can be reconciled deliberately with `sudo bash deployment/reconcile-project-access.sh <project-path>`. Bootstrap performs that reconciliation once when `/home/jaco/Projects` already exists.
+
+Production inspection is now a separate read-only concern. `deployment/grant-maintenance-access.sh` grants Jaco read/traverse ACLs only under `/opt/atlas-v5`; deployment and the Google/GitHub integration bootstrap scripts call it after writing production files. `/etc/atlas-v5` configuration and secrets are deliberately outside that grant. This keeps the service identity and systemd sandbox while removing elevation from ordinary deployed-code inspection.
+
+Atomic project replacement is intentionally unchanged in this trial. Because the service account creates the replacement inode, an Atlas-edited file can still become owned by `atlas-v5`; changing that would require either weakening the atomic-write design or granting a narrowly scoped ownership privilege, so it remains an explicit point to evaluate rather than being hidden behind more permission repair.

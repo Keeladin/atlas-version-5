@@ -13,11 +13,15 @@ DB_NAME="atlas_v5"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 apt-get update
-apt-get install -y postgresql-18 postgresql-18-pgvector openssl rsync
+apt-get install -y postgresql-18 postgresql-18-pgvector openssl rsync acl
 systemctl enable --now postgresql
 
 if ! id "${APP_USER}" >/dev/null 2>&1; then
   useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin "${APP_USER}"
+fi
+
+if [[ -d /home/jaco/Projects ]]; then
+  bash "${ROOT_DIR}/deployment/reconcile-project-access.sh" /home/jaco/Projects
 fi
 
 install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0700 \

@@ -6,6 +6,8 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 GITHUB_USER=${GITHUB_USER:-jaco}
 GITHUB_REPO=${GITHUB_MCP_REPO:-github/github-mcp-server}
 GITHUB_MCP_VERSION=${GITHUB_MCP_VERSION:-v1.12.0}
@@ -58,6 +60,7 @@ set_env ATLAS_GITHUB_TOKEN_FILE "${TOKEN_TARGET}"
 set_env ATLAS_GITHUB_MCP_TOOLSETS "repos,git,pull_requests,issues"
 chown root:atlas-v5 "${RUNTIME_ENV}"
 chmod 0640 "${RUNTIME_ENV}"
+bash "${ROOT_DIR}/deployment/grant-maintenance-access.sh"
 
 echo "GitHub MCP is provisioned for Atlas V5 in read-only mode."
 echo "Mutation tools remain disabled at the MCP server boundary."

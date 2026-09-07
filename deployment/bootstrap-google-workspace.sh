@@ -6,6 +6,8 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 GWS_SOURCE=${1:-/home/jaco/Projects/atlas-agent-state/production/bin/gws}
 CONFIG_SOURCE=${2:-/home/jaco/Projects/atlas-agent-state/production/google-workspace/config}
 RUNTIME_ENV=/etc/atlas-v5/config/runtime.env
@@ -45,5 +47,6 @@ set_env ATLAS_GWS_WORKSPACE_DIR "${STATE_ROOT}/workspace"
 
 chown root:atlas-v5 "${RUNTIME_ENV}"
 chmod 0640 "${RUNTIME_ENV}"
+bash "${ROOT_DIR}/deployment/grant-maintenance-access.sh"
 echo "Google Workspace OAuth configuration provisioned for Atlas V5."
 echo "OAuth secrets remain hidden; Atlas-side authority still controls mutations."
