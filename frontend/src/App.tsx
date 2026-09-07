@@ -255,7 +255,9 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     <div className="atlas-shell">
       <header className="persistent-bar">
         <div className="brand-cluster">
-          <img className="brand-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
+          <a className="brand-avatar-link" href="/control" aria-label="Open Control" title="Open Control">
+            <img className="brand-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
+          </a>
           <strong>Atlas</strong><span className="version-tag">V5</span>
         </div>
         <div className="persistent-context"><span className="context-item active">Home</span><a className="context-item context-link" href="/control">Control</a></div>

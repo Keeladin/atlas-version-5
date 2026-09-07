@@ -72,6 +72,18 @@ a { color: inherit; }
   border-right: 1px solid var(--border-default);
 }
 
+.brand-avatar-link {
+  display: inline-flex;
+  flex: 0 0 24px;
+  border-radius: 7px;
+  text-decoration: none;
+}
+
+.brand-avatar-link:focus-visible {
+  outline: 2px solid var(--fg-muted);
+  outline-offset: 2px;
+}
+
 .brand-avatar {
   width: 24px;
   height: 24px;
