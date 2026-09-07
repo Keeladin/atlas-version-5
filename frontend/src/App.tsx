@@ -3,7 +3,7 @@ import { startAuthentication, startRegistration, type PublicKeyCredentialCreatio
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
-import { decideAction, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { decideAction, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type ConversationContext, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -58,7 +58,7 @@ function storageTitle(path: string): string {
   return path.split('/').filter(Boolean).at(-1) ?? 'Workspace'
 }
 
-function AtlasPage({ health }: { health: Health | null }) {
+function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () => Promise<void> }) {
   const runtimeOk = Boolean(health)
   const databaseOk = Boolean(health?.database.ok)
   const providerOk = Boolean(health?.provider.configured)
@@ -258,6 +258,7 @@ function AtlasPage({ health }: { health: Health | null }) {
           <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'needs' ? null : 'needs')}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
           <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'latest' ? null : 'latest')}>Latest</button>
           <span className="mobile-token-count" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of provider context window` : 'Provider token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />{conversationContext ? `${formatTokens(conversationContext.input_tokens)}/${formatTokens(conversationContext.limit_tokens)}` : '—/1M'}</span>
+          <button type="button" className="mobile-auth-control" onClick={() => { void onLogout() }}>Log out</button>
         </div>
       </header>
 
@@ -512,16 +513,45 @@ function OwnerLogin({ status, onAuthenticated }: { status: AuthStatus; onAuthent
 function ControlPage({ health }: { health: Health | null }) {
   const [configuration, setConfiguration] = useState<ControlConfiguration | null>(null)
   const [configurationError, setConfigurationError] = useState<string | null>(null)
+  const [restartState, setRestartState] = useState<'idle' | 'requesting' | 'waiting' | 'error'>('idle')
+  const [restartMessage, setRestartMessage] = useState<string | null>(null)
 
   useEffect(() => {
     getControlConfiguration().then(setConfiguration).catch((cause) => setConfigurationError(String(cause)))
   }, [])
 
+  async function handleRestart() {
+    if (restartState === 'requesting' || restartState === 'waiting') return
+    if (!window.confirm('Restart the Atlas API now? Active requests will be interrupted.')) return
+    setRestartState('requesting')
+    setRestartMessage('Requesting restart…')
+    try {
+      await restartApi()
+      setRestartState('waiting')
+      setRestartMessage('Restart requested. Waiting for the API to come back…')
+      let sawOffline = false
+      for (let attempt = 0; attempt < 40; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500))
+        try {
+          await getHealth()
+          if (sawOffline || attempt >= 6) { window.location.reload(); return }
+        } catch {
+          sawOffline = true
+        }
+      }
+      setRestartState('error')
+      setRestartMessage('Restart was requested, but Atlas did not come back in time. Refresh this page to check it.')
+    } catch (cause) {
+      setRestartState('error')
+      setRestartMessage(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
   return (
     <div className="control-shell">
       <header className="control-topbar"><div className="control-title-cluster"><img className="control-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" /><div><div className="eyebrow">ATLAS V5</div><h1>Control</h1></div></div><a className="control-link" href="/">Back to Atlas</a></header>
       <main className="control-grid">
-        <section className="control-card"><div className="panel-title">Runtime</div><dl><div><dt>Version</dt><dd>{health?.version ?? 'checking'}</dd></div><div><dt>Environment</dt><dd>{health?.environment ?? 'checking'}</dd></div><div><dt>Status</dt><dd>{health?.status ?? 'checking'}</dd></div></dl></section>
+        <section className="control-card"><div className="panel-title">Runtime</div><dl><div><dt>Version</dt><dd>{health?.version ?? 'checking'}</dd></div><div><dt>Environment</dt><dd>{health?.environment ?? 'checking'}</dd></div><div><dt>Status</dt><dd>{health?.status ?? 'checking'}</dd></div></dl><div className="control-runtime-actions"><button className="control-restart-button" type="button" onClick={() => { void handleRestart() }} disabled={restartState === 'requesting' || restartState === 'waiting'}>{restartState === 'requesting' || restartState === 'waiting' ? 'Restarting…' : 'Restart API'}</button>{restartMessage ? <span className={restartState === 'error' ? 'warning-text' : ''}>{restartMessage}</span> : <span>Gracefully restarts the supervised API service.</span>}</div></section>
         <section className="control-card"><div className="panel-title">PostgreSQL</div><p className={health?.database.ok ? 'healthy-text' : 'warning-text'}>{health?.database.ok ? 'Connected and healthy.' : 'Not connected yet.'}</p></section>
         <section className="control-card"><div className="panel-title">Model</div><dl><div><dt>Provider</dt><dd>{health?.provider.provider ?? 'checking'}</dd></div><div><dt>Model</dt><dd>{health?.provider.model ?? 'checking'}</dd></div><div><dt>Credential</dt><dd className={health?.provider.configured ? 'healthy-text' : 'warning-text'}>{health?.provider.configured ? 'Configured' : 'Missing'}</dd></div></dl></section>
         <section className="control-card control-wide"><div className="panel-title">MCP Configuration</div>{configurationError ? <p className="warning-text">{configurationError}</p> : configuration ? <div className="control-list">{configuration.mcps.map((mcp) => <div className="control-config-row" key={mcp.id}><div><strong>{mcp.label}</strong><span>{mcp.id} · {mcp.transport}</span></div><div className="control-config-meta"><span className={mcp.configured && mcp.enabled ? 'healthy-text' : 'warning-text'}>{mcp.configured && mcp.enabled ? 'Enabled' : 'Unavailable'}</span><span>{mcp.operations.length > 8 ? `${mcp.operations.length} operations discovered on demand` : (mcp.operations.length ? mcp.operations.join(', ') : 'No operations exposed')}</span></div></div>)}</div> : <p>Checking MCP configuration…</p>}</section>
@@ -532,11 +562,11 @@ function ControlPage({ health }: { health: Health | null }) {
   )
 }
 
-function AuthenticatedApp() {
+function AuthenticatedApp({ onLogout }: { onLogout: () => Promise<void> }) {
   const [health, setHealth] = useState<Health | null>(null)
   useEffect(() => { getHealth().then(setHealth).catch(() => setHealth(null)) }, [])
   if (window.location.pathname.startsWith('/control')) return <ControlPage health={health} />
-  return <AtlasPage health={health} />
+  return <AtlasPage health={health} onLogout={onLogout} />
 }
 
 export default function App() {
@@ -548,11 +578,21 @@ export default function App() {
     catch (cause) { setAuthError(cause instanceof Error ? cause.message : String(cause)) }
   }
 
+  async function signOut() {
+    try {
+      await logout()
+      setAuth((current) => current ? { ...current, authenticated: false } : current)
+      setAuthError(null)
+    } catch (cause) {
+      setAuthError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
   useEffect(() => {
     getAuthStatus().then((status) => { setAuth(status); setAuthError(null) }).catch((cause) => setAuthError(cause instanceof Error ? cause.message : String(cause)))
   }, [])
   if (authError) return <div className="auth-shell"><div className="auth-card"><h1>Atlas unavailable</h1><p>{authError}</p></div></div>
   if (!auth) return <div className="auth-shell"><div className="auth-card"><div className="eyebrow">ATLAS V5</div><h1>Checking owner access…</h1></div></div>
   if (!auth.authenticated) return <OwnerLogin status={auth} onAuthenticated={() => void refreshAuth()} />
-  return <AuthenticatedApp />
+  return <AuthenticatedApp onLogout={signOut} />
 }

@@ -1,11 +1,20 @@
 import asyncio
 import json
+import os
+import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import APIError, OpenAIError
@@ -214,6 +223,16 @@ def _google_oauth_projection() -> dict[str, object]:
         "authenticated": authenticated,
         "scope": scope,
     }
+
+
+def _restart_api_process() -> None:
+    os.kill(os.getpid(), signal.SIGTERM)
+
+
+@app.post("/api/control/restart", status_code=202)
+async def restart_api(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_restart_api_process)
+    return {"status": "restarting"}
 
 
 @app.get("/api/control/configuration")

@@ -48,7 +48,9 @@ export async function verifyLogin(challengeId: string, credential: unknown): Pro
 }
 
 export async function logout(): Promise<void> {
-  await fetch('/api/auth/logout', { method: 'POST' })
+  const response = await fetch('/api/auth/logout', { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Logout failed (${response.status})`)
 }
 
 export type Health = {
@@ -248,6 +250,12 @@ export async function getControlConfiguration(): Promise<ControlConfiguration> {
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Control configuration load failed (${response.status})`)
   return body as ControlConfiguration
+}
+
+export async function restartApi(): Promise<void> {
+  const response = await fetch('/api/control/restart', { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `API restart failed (${response.status})`)
 }
 
 export type PendingAction = {

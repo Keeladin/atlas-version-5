@@ -30,3 +30,14 @@ def test_context_pressure_states() -> None:
     assert _context_pressure_state(699_999, 1_000_000) == "green"
     assert _context_pressure_state(700_000, 1_000_000) == "amber"
     assert _context_pressure_state(900_000, 1_000_000) == "red"
+
+
+def test_control_restart_endpoint_requests_supervised_restart(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr("atlas.api.app._restart_api_process", lambda: calls.append("restart"))
+
+    response = client.post("/api/control/restart")
+
+    assert response.status_code == 202
+    assert response.json() == {"status": "restarting"}
+    assert calls == ["restart"]

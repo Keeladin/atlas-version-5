@@ -998,3 +998,33 @@ button.storage-row:disabled { opacity: 1; cursor: default; }
 .approval-widget.uncertain {
   border-color: var(--attention, #d29922);
 }
+
+
+/* Owner session and runtime controls. */
+.mobile-activity-controls .mobile-auth-control {
+  border-color: var(--border-default);
+  color: var(--fg-default);
+}
+
+.control-runtime-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+.control-runtime-actions span {
+  color: var(--fg-disabled);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.control-restart-button {
+  width: fit-content;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid #d2992277;
+  border-radius: 7px;
+  background: #d2992212;
+  color: var(--fg-default);
+  font: 600 11px/1 var(--font-sans);
+  cursor: pointer;
+}
+.control-restart-button:hover:not(:disabled) { background: #d2992220; border-color: #d29922aa; }
