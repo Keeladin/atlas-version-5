@@ -36,6 +36,35 @@ def _target_hash(*, operation: str, arguments: dict[str, Any], principal: str, c
     return hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
 
 
+
+
+def _owner_action_context(action: ActionRow) -> dict[str, Any]:
+    evidence = action.evidence or {}
+    proposal = evidence.get("proposal")
+    arguments = proposal.get("arguments") if isinstance(proposal, dict) else evidence.get("arguments")
+    if not isinstance(arguments, dict):
+        arguments = {}
+
+    operation = action.operation
+    if operation == "storage.projects.apply":
+        return {"display_label": "Update project file", "target": str(arguments.get("path") or "") or None}
+    if operation == "storage.projects.delete":
+        return {"display_label": "Delete project file", "target": str(arguments.get("path") or "") or None}
+    if operation == "storage.projects.move":
+        source = str(arguments.get("source_path") or "")
+        target = str(arguments.get("target_path") or "")
+        return {"display_label": "Move project file", "target": f"{source} → {target}" if source or target else None}
+    if operation == "gmail.message.send":
+        recipient = str(arguments.get("to") or "")
+        subject = str(arguments.get("subject") or "")
+        target = " · ".join(part for part in (recipient, subject) if part)
+        return {"display_label": "Send email", "target": target or None}
+    if operation.startswith("calendar."):
+        title = str(arguments.get("summary") or arguments.get("title") or "")
+        return {"display_label": "Update calendar", "target": title or None}
+    return {"display_label": (evidence.get("summary") or operation), "target": None}
+
+
 class AuthorityStore:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -163,8 +192,34 @@ class AuthorityStore:
         rows = (await self.session.execute(
             select(OwnerAttentionRow).where(OwnerAttentionRow.resolved.is_(False)).order_by(OwnerAttentionRow.created_at)
         )).scalars().all()
-        return [{"id": str(row.id), "action_id": str(row.action_id) if row.action_id else None, "state": row.state,
-                 "title": row.title, "detail": row.detail, "created_at": row.created_at} for row in rows]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            detail = dict(row.detail or {})
+            if row.action_id is not None:
+                action = await self.session.get(ActionRow, row.action_id)
+                if action is not None:
+                    detail.update(_owner_action_context(action))
+            items.append({
+                "id": str(row.id), "action_id": str(row.action_id) if row.action_id else None, "state": row.state,
+                "title": row.title, "detail": detail, "created_at": row.created_at,
+            })
+        return items
+
+    async def acknowledge_uncertain(self, action_id: UUID) -> None:
+        action = await self.session.get(ActionRow, action_id)
+        if action is None:
+            raise LookupError("Action not found")
+        if action.status != ActionStatus.UNCERTAIN.value:
+            raise ProposalIntegrityError("Only uncertain actions can be acknowledged")
+        attention = (await self.session.execute(
+            select(OwnerAttentionRow).where(OwnerAttentionRow.action_id == action.id, OwnerAttentionRow.resolved.is_(False))
+        )).scalar_one_or_none()
+        if attention is None:
+            raise LookupError("Unresolved attention item not found")
+        now = datetime.now(UTC)
+        attention.resolved = True
+        attention.resolved_at = now
+        action.evidence = {**(action.evidence or {}), "owner_acknowledged_at": now.isoformat()}
 
     async def recent_activity(self, limit: int = 8) -> list[dict[str, Any]]:
         rows = (await self.session.execute(

@@ -263,7 +263,7 @@ export type PendingAction = {
   action_id: string | null
   state: string
   title: string
-  detail: { operation?: string; arguments?: Record<string, unknown>; message?: string; external_id?: string; execution_started_at?: string }
+  detail: { operation?: string; arguments?: Record<string, unknown>; message?: string; external_id?: string; execution_started_at?: string; display_label?: string; target?: string | null }
   created_at: string
 }
 
@@ -272,6 +272,12 @@ export async function getPendingActions(): Promise<PendingAction[]> {
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Pending actions load failed (${response.status})`)
   return (body?.items ?? []) as PendingAction[]
+}
+
+export async function acknowledgeAction(actionId: string): Promise<void> {
+  const response = await fetch(`/api/actions/${encodeURIComponent(actionId)}/acknowledge`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Action acknowledgement failed (${response.status})`)
 }
 
 export async function decideAction(actionId: string, approve: boolean): Promise<void> {

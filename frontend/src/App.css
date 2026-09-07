@@ -1028,3 +1028,9 @@ button.storage-row:disabled { opacity: 1; cursor: default; }
   cursor: pointer;
 }
 .control-restart-button:hover:not(:disabled) { background: #d2992220; border-color: #d29922aa; }
+
+.attention-target {
+  color: var(--fg-default) !important;
+  font: 11px/1.45 var(--font-mono) !important;
+  overflow-wrap: anywhere;
+}

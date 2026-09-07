@@ -283,6 +283,18 @@ async def recent_actions(session: Annotated[AsyncSession, Depends(get_session)],
     return {"items": await AuthorityStore(session).recent_activity(limit)}
 
 
+@app.post("/api/actions/{action_id}/acknowledge")
+async def acknowledge_action(action_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
+    try:
+        await AuthorityStore(session).acknowledge_uncertain(action_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ProposalIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await session.commit()
+    return {"status": "acknowledged", "action_id": str(action_id)}
+
+
 @app.post("/api/actions/{action_id}/decision")
 async def decide_action(
     action_id: UUID,

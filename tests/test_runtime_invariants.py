@@ -252,3 +252,42 @@ def test_project_protected_write_names_fail_closed(tmp_path: Path, name: str) ->
     service = ProjectFolderService(tmp_path, "/home/jaco/Projects", tmp_path / ".checkpoints")
     with pytest.raises(ValueError, match="protected"):
         service.preview_file(f"Demo/{name}", "secret\n")
+
+
+def test_uncertain_project_action_projects_owner_readable_context() -> None:
+    from atlas.actions.authority import _owner_action_context
+    action = _executing_action()
+    action.operation = "storage.projects.apply"
+    action.evidence = {
+        "summary": "Apply a project change",
+        "arguments": {
+            "path": "normalizer/README.md",
+            "content": "secretly very large content",
+            "expected_sha256": "a" * 64,
+            "change_token": "private-token",
+        },
+    }
+    context = _owner_action_context(action)
+    assert context == {"display_label": "Update project file", "target": "normalizer/README.md"}
+    assert "content" not in context
+    assert "change_token" not in context
+
+
+@pytest.mark.asyncio
+async def test_owner_can_acknowledge_uncertain_attention_without_rewriting_outcome() -> None:
+    action = _executing_action()
+    action.status = ActionStatus.UNCERTAIN.value
+    attention = OwnerAttentionRow(
+        action_id=action.id, run_id=action.run_id, state="uncertain",
+        title="Uncertain action", detail={}, resolved=False,
+    )
+    run = RunRow(id=action.run_id, kind="foreground", status=RunStatus.UNCERTAIN.value)
+    session = _Session(action, run, [_Result(one=attention)])
+
+    await AuthorityStore(session).acknowledge_uncertain(action.id)
+
+    assert attention.resolved is True
+    assert attention.resolved_at is not None
+    assert action.status == ActionStatus.UNCERTAIN.value
+    assert "owner_acknowledged_at" in action.evidence
+    assert run.status == RunStatus.UNCERTAIN.value

@@ -103,3 +103,9 @@ Mobile owner-session ergonomics now keep Log out visible beside the compact tran
 The bounded project capability now applies the existing protected-material boundary to reads as well as writes. Protected directories and credential/key/token material are hidden from listings and rejected on acquisition, and resolved symlink targets are checked so a benign-looking path cannot bypass the boundary.
 
 Validation at this checkpoint: Ruff clean, 90 backend tests passing, frontend lint 0 warnings / 0 errors, and the production frontend build passing.
+
+## 2026-09-07 — Owner-readable uncertain actions
+
+Needs You now enriches uncertain actions from their durable action evidence with a safe owner-readable label and target, rather than exposing only internal capability names. Project apply/move/delete actions show paths, while sensitive payloads such as file contents, hashes, tokens, and mail bodies are not added to uncertain-action summaries. Existing unresolved items gain this context dynamically.
+
+Uncertain actions now have an explicit Acknowledge control. Acknowledgement resolves the owner-attention item without rewriting the durable action or run outcome from `uncertain`, preserving the audit truth while allowing Needs You to return to zero once the owner has reviewed the ambiguity.
