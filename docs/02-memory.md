@@ -22,9 +22,11 @@ Provider conversation state may keep the active model session warm, but Atlas ow
 
 ## 3. Context assembly
 
-Early in a session the model-visible context may contain the whole transcript. As it grows, Atlas can provide a smaller relevant view while preserving the complete temporary transcript outside the model.
+The canonical transcript and the model-visible working context are separate concerns. Atlas preserves the complete transcript in PostgreSQL while assembling a bounded projection for each foreground model turn.
 
-A new or resumed transcript may begin with a compact context capsule plus a small exact tail of recent turns when verbatim continuity is useful.
+The initial operating policy keeps up to the latest 10 owner/Atlas exchanges inside a 32k-token working budget. Owner and Atlas text remains verbatim while it fits. If the selected window exceeds budget, Atlas first compacts older successful/read-heavy tool observations into small structural evidence records while retaining their full canonical observations in PostgreSQL; it then compacts other successful tool evidence and, only if necessary, drops the oldest exchanges. Failed, uncertain, prepared, or otherwise unresolved evidence is protected from normal compaction. The current owner turn is never silently truncated merely to satisfy the working budget.
+
+A context capsule may still provide orientation across transcript eras, and future retrieval can inject older exact transcript, memory, or indexed knowledge selectively. Bounded working context therefore controls model cost and focus without becoming a retention policy for canonical history.
 ## 4. Short-term memory
 
 When a transcript closes, Atlas associates a context capsule with it and retains the closed transcript in short-term memory for a configurable TTL.

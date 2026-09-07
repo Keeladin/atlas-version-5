@@ -117,3 +117,11 @@ Control now exposes owner-authenticated context statistics calculated from the c
 ## 2026-09-07 — Tool context footprint analysis
 
 Control context instrumentation now measures the model-visible footprint of structured tool evidence over the most recent 20 owner exchanges. It groups observations by operation, reports exact provider-tokenizer marginal token counts with the fixed Atlas seat removed, separates observation counts across exchanges 1–10, 11–15, and 16–20, and identifies the heaviest individual observations without exposing their raw payloads. Canonical tool evidence in PostgreSQL remains unchanged. This is diagnostic input for the bounded context assembler and future evidence-compaction policy, not a retention mutation.
+
+## 2026-09-07 — Bounded working context activated
+
+Atlas now separates canonical transcript growth from provider-visible working context. Foreground inference selects at most the latest 10 owner exchanges and targets a 32,000-token total model-input budget, both runtime-configurable. The existing one-million-token provider context remains capacity rather than the normal operating target. PostgreSQL transcript rows are neither deleted nor rewritten by this policy.
+
+The assembler is token-aware using the provider's input-token counter. When the 10-exchange projection exceeds budget, it first compacts successful/read-heavy tool observations older than the two most recent exchanges, then other compactable successful tool evidence, and only then removes the oldest exchange(s). Compacted evidence preserves operation, phase and safe structural metadata while the complete observation remains canonical. Failed, uncertain, prepared, executing, forbidden and unavailable evidence is excluded from normal compaction. If even the current owner turn cannot fit the target, Atlas fails open rather than silently truncating owner input.
+
+The top-rail context indicator now reports the bounded working-context budget instead of provider capacity, while Control separately reports current model input and full-transcript input. The previous 70%-of-provider-window rollover path no longer drives ordinary foreground context assembly; transcript-era rollover and retrieval remain separate lifecycle concerns.

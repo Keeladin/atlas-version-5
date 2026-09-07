@@ -42,8 +42,13 @@ from atlas.runtime.bootstrap import build_seat_bootstrap
 from atlas.runtime.conversation import (
     build_model_instructions,
     context_turns,
+    tool_observation_is_compactable,
     tool_observation_to_provider_message,
+    tool_turn_exchange_ages,
     turns_to_provider_messages,
+)
+from atlas.runtime.conversation import (
+    recent_exchange_turns as _recent_exchange_turns,
 )
 from atlas.runtime.startup import initialize_phase0
 from atlas.schedules import ScheduleService
@@ -395,52 +400,89 @@ async def _persist_tool_observation(transcript_id: UUID, operation: str, phase: 
         await observation_session.commit()
 
 
-async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns):
-    messages = turns_to_provider_messages(
-        turns,
-        context_summary=transcript.context_summary,
-        summarized_through_turn_id=transcript.summarized_through_turn_id,
-    )
-    input_tokens = await provider.count_input_tokens(
-        instructions=build_model_instructions(capability_runtime.compact_index()),
-        messages=messages,
-    )
+async def _assemble_working_context(provider: OpenAIProvider, transcript, turns):
+    instructions = build_model_instructions(capability_runtime.compact_index())
+    exchange_limit = max(1, settings.working_context_exchanges)
+    token_budget = max(1, min(settings.working_context_tokens, settings.openai_context_window))
+    raw_tool_exchanges = max(0, settings.working_context_raw_tool_exchanges)
     active_turns = context_turns(turns, transcript.summarized_through_turn_id)
-    if input_tokens < int(settings.openai_context_window * 0.70) or len(active_turns) <= 40:
-        return messages
+    selected_turns = _recent_exchange_turns(active_turns, exchange_limit)
+    summary = transcript.context_summary
 
-    archive_turns = active_turns[:-40]
-    summary_messages = turns_to_provider_messages(archive_turns)
-    if transcript.context_summary:
-        summary_messages.insert(0, {
-            "role": "developer",
-            "content": "Existing Atlas context capsule to update:\n" + transcript.context_summary,
-        })
-    summary = (await provider.complete_text(
-        instructions=(
-            "Create a compact durable Atlas context capsule. Preserve owner decisions, preferences, unresolved work, "
-            "important factual context, and structured evidence of actions/results. Do not invent facts. "
-            "Prefer concise operational continuity over conversational wording."
-        ),
-        messages=summary_messages,
-    )).strip()
-    if not summary:
-        return messages
-
-    summarized_through = archive_turns[-1].id
-    factory = get_session_factory()
-    async with factory() as rollover_session:
-        await TranscriptRepository(rollover_session).update_context_summary(
-            transcript.id, summary=summary, summarized_through_turn_id=summarized_through,
+    async def measure(candidate_turns, compact_ids: set[UUID], *, include_summary: bool = True):
+        messages = turns_to_provider_messages(
+            candidate_turns,
+            context_summary=summary if include_summary else None,
+            compact_tool_turn_ids=compact_ids,
         )
-        await rollover_session.commit()
-    transcript.context_summary = summary
-    transcript.summarized_through_turn_id = summarized_through
-    return turns_to_provider_messages(
-        turns,
-        context_summary=summary,
-        summarized_through_turn_id=summarized_through,
-    )
+        input_tokens = await provider.count_input_tokens(instructions=instructions, messages=messages)
+        return messages, input_tokens
+
+    def compactable_ids(candidate_turns) -> set[UUID]:
+        result: set[UUID] = set()
+        for turn in candidate_turns:
+            if turn.actor != Actor.TOOL:
+                continue
+            observations = [
+                block for block in turn.blocks
+                if getattr(block, "type", None) == "tool_observation"
+            ]
+            if observations and all(tool_observation_is_compactable(block) for block in observations):
+                result.add(turn.id)
+        return result
+
+    compact_ids: set[UUID] = set()
+    messages, input_tokens = await measure(selected_turns, compact_ids)
+    stage = "verbatim"
+
+    if input_tokens > token_budget:
+        ages = tool_turn_exchange_ages(selected_turns)
+        compact_ids = {
+            turn_id for turn_id in compactable_ids(selected_turns)
+            if ages.get(turn_id, 1) > raw_tool_exchanges
+        }
+        messages, input_tokens = await measure(selected_turns, compact_ids)
+        stage = "older_tools_compacted"
+
+    if input_tokens > token_budget:
+        compact_ids = compactable_ids(selected_turns)
+        messages, input_tokens = await measure(selected_turns, compact_ids)
+        stage = "successful_tools_compacted"
+
+    owner_count = sum(1 for turn in selected_turns if turn.actor == Actor.OWNER)
+    if input_tokens > token_budget and owner_count > 1:
+        for exchange_count in range(owner_count - 1, 0, -1):
+            trimmed = _recent_exchange_turns(selected_turns, exchange_count)
+            trimmed_ids = compactable_ids(trimmed)
+            candidate_messages, candidate_tokens = await measure(trimmed, trimmed_ids)
+            selected_turns, compact_ids = trimmed, trimmed_ids
+            messages, input_tokens = candidate_messages, candidate_tokens
+            stage = "history_trimmed"
+            if input_tokens <= token_budget:
+                break
+
+    summary_included = bool(summary)
+    if input_tokens > token_budget and summary:
+        messages, input_tokens = await measure(selected_turns, compact_ids, include_summary=False)
+        summary_included = False
+        stage = "capsule_omitted"
+
+    selected_exchanges = sum(1 for turn in selected_turns if turn.actor == Actor.OWNER)
+    return messages, {
+        "input_tokens": input_tokens,
+        "token_budget": token_budget,
+        "exchange_limit": exchange_limit,
+        "selected_exchanges": selected_exchanges,
+        "compacted_tool_turns": len(compact_ids),
+        "summary_included": summary_included,
+        "budget_exceeded": input_tokens > token_budget,
+        "stage": stage,
+    }
+
+
+async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns):
+    messages, _ = await _assemble_working_context(provider, transcript, turns)
+    return messages
 
 
 def _context_pressure_state(input_tokens: int, limit_tokens: int) -> str:
@@ -450,13 +492,6 @@ def _context_pressure_state(input_tokens: int, limit_tokens: int) -> str:
     if ratio >= 0.70:
         return "amber"
     return "green"
-
-
-def _recent_exchange_turns(turns, exchange_count: int):
-    owner_indexes = [index for index, turn in enumerate(turns) if turn.actor == Actor.OWNER]
-    if not owner_indexes or len(owner_indexes) <= exchange_count:
-        return turns
-    return turns[owner_indexes[-exchange_count]:]
 
 
 def _turn_statistics(turns) -> dict[str, int]:
@@ -536,20 +571,16 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
     transcript = await repository.get_or_create_active()
     turns = await repository.list_turns(transcript.id)
     provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve)
-    input_tokens = await provider.count_input_tokens(
-        instructions=build_model_instructions(capability_runtime.compact_index()),
-        messages=turns_to_provider_messages(
-            turns,
-            context_summary=transcript.context_summary,
-            summarized_through_turn_id=transcript.summarized_through_turn_id,
-        ),
-    )
-    limit_tokens = settings.openai_context_window
+    _, policy = await _assemble_working_context(provider, transcript, turns)
+    input_tokens = int(policy["input_tokens"])
+    limit_tokens = int(policy["token_budget"])
     return {
         "input_tokens": input_tokens,
         "limit_tokens": limit_tokens,
+        "provider_limit_tokens": settings.openai_context_window,
         "pressure": input_tokens / max(1, limit_tokens),
         "state": _context_pressure_state(input_tokens, limit_tokens),
+        "policy": policy,
     }
 
 
@@ -568,11 +599,8 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
     )
     instructions = build_model_instructions(capability_runtime.compact_index())
     static_tokens = await provider.count_input_tokens(instructions=instructions, messages=[])
-    current_messages = turns_to_provider_messages(
-        turns, context_summary=transcript.context_summary,
-        summarized_through_turn_id=transcript.summarized_through_turn_id,
-    )
-    current_tokens = await provider.count_input_tokens(instructions=instructions, messages=current_messages)
+    _, working_policy = await _assemble_working_context(provider, transcript, turns)
+    current_tokens = int(working_policy["input_tokens"])
     canonical_tokens = await provider.count_input_tokens(
         instructions=instructions, messages=turns_to_provider_messages(turns)
     )
@@ -652,15 +680,17 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
     ]
     largest_observations.sort(key=lambda item: int(item["projected_tokens"]), reverse=True)
 
-    limit_tokens = settings.openai_context_window
+    limit_tokens = int(working_policy["token_budget"])
     return {
         "transcript_id": str(transcript.id),
         "static_tokens": static_tokens,
         "current_context_tokens": current_tokens,
         "canonical_transcript_tokens": canonical_tokens,
         "limit_tokens": limit_tokens,
+        "provider_limit_tokens": settings.openai_context_window,
         "pressure": current_tokens / max(1, limit_tokens),
         "state": _context_pressure_state(current_tokens, limit_tokens),
+        "policy": working_policy,
         "summary_present": bool(transcript.context_summary),
         "transcript": _turn_statistics(turns),
         "windows": windows,

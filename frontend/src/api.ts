@@ -88,11 +88,24 @@ export async function getConversation(): Promise<Conversation> {
   return (await response.json()) as Conversation
 }
 
+export type WorkingContextPolicy = {
+  input_tokens: number
+  token_budget: number
+  exchange_limit: number
+  selected_exchanges: number
+  compacted_tool_turns: number
+  summary_included: boolean
+  budget_exceeded: boolean
+  stage: 'verbatim' | 'older_tools_compacted' | 'successful_tools_compacted' | 'history_trimmed' | 'capsule_omitted'
+}
+
 export type ConversationContext = {
   input_tokens: number
   limit_tokens: number
+  provider_limit_tokens: number
   pressure: number
   state: 'green' | 'amber' | 'red'
+  policy: WorkingContextPolicy
 }
 
 export async function getConversationContext(): Promise<ConversationContext> {
@@ -137,8 +150,10 @@ export type ConversationContextStats = {
   current_context_tokens: number
   canonical_transcript_tokens: number
   limit_tokens: number
+  provider_limit_tokens: number
   pressure: number
   state: 'green' | 'amber' | 'red'
+  policy: WorkingContextPolicy
   summary_present: boolean
   transcript: Omit<ContextWindowStats, 'exchanges' | 'input_tokens' | 'dynamic_tokens'>
   windows: ContextWindowStats[]
