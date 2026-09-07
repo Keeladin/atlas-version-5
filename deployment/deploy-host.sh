@@ -11,6 +11,8 @@ APP_ROOT=/opt/atlas-v5
 APP_DIR=${APP_ROOT}/app
 VENV_DIR=${APP_ROOT}/venv
 UV_BIN=/home/jaco/.local/bin/uv
+PYTHON_VERSION_FILE="${ROOT_DIR}/.python-version"
+PYTHON_INSTALL_DIR=${APP_ROOT}/python
 
 if ! id atlas-v5 >/dev/null 2>&1; then
   echo "atlas-v5 system identity is missing; run bootstrap-host.sh first." >&2
@@ -30,6 +32,15 @@ if [[ ! -x ${UV_BIN} ]]; then
   echo "uv was not found at ${UV_BIN}." >&2
   exit 1
 fi
+if [[ ! -f ${PYTHON_VERSION_FILE} ]]; then
+  echo "Atlas Python version pin is missing." >&2
+  exit 1
+fi
+PYTHON_VERSION="$(tr -d '[:space:]' < "${PYTHON_VERSION_FILE}")"
+if [[ -z ${PYTHON_VERSION} ]]; then
+  echo "Atlas Python version pin is empty." >&2
+  exit 1
+fi
 if [[ ! -f ${ROOT_DIR}/frontend/dist/index.html ]]; then
   echo "Frontend production build is missing. Run 'cd frontend && npm run build' first." >&2
   exit 1
@@ -40,7 +51,8 @@ install -d -o root -g atlas-v5 -m 0750 \
   "${APP_DIR}/backend" \
   "${APP_DIR}/migrations" \
   "${APP_DIR}/frontend" \
-  "${APP_DIR}/frontend/dist"
+  "${APP_DIR}/frontend/dist" \
+  "${PYTHON_INSTALL_DIR}"
 
 # Owner workspace stays outside Atlas runtime state. Atlas sees only this approved root.
 install -d -o jaco -g atlas-v5 -m 2770 \
@@ -62,10 +74,10 @@ if ! command -v setfacl >/dev/null 2>&1; then
 fi
 find /home/jaco/Projects \
   \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o \
-  -type d -exec setfacl -m u:atlas-v5:rwx,u:jaco:rwx,d:u:atlas-v5:rwx,d:u:jaco:rwx {} +
+  -type d -exec setfacl -n -m u:atlas-v5:rwx,u:jaco:rwx,m::rwx,d:u:atlas-v5:rwx,d:u:jaco:rwx,d:m::rwx {} +
 find /home/jaco/Projects \
   \( -name .git -o -name node_modules -o -name .venv -o -name __pycache__ \) -prune -o \
-  -type f -exec setfacl -m u:atlas-v5:rw-,u:jaco:rw- {} +
+  -type f -exec setfacl -n -m u:atlas-v5:rw-,u:jaco:rw-,m::rw- {} +
 
 if ! grep -q '^ATLAS_WORKSPACE_ROOT=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_WORKSPACE_ROOT=/var/lib/atlas-v5/workspace' >> /etc/atlas-v5/config/runtime.env
@@ -126,6 +138,13 @@ if [[ ! -f /var/lib/atlas-v5/auth/enrolled && ! -f /var/lib/atlas-v5/auth/enroll
   chmod 0600 /var/lib/atlas-v5/auth/enrollment-code
 fi
 
+UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV_BIN}" python install "${PYTHON_VERSION}" --no-bin
+PYTHON_BIN="$(UV_PYTHON_INSTALL_DIR="${PYTHON_INSTALL_DIR}" "${UV_BIN}" python find "${PYTHON_VERSION}" --managed-python --no-project --resolve-links)"
+chown -R root:atlas-v5 "${PYTHON_INSTALL_DIR}"
+find "${PYTHON_INSTALL_DIR}" -type d -exec chmod 0750 {} +
+find "${PYTHON_INSTALL_DIR}" -type f -exec chmod u=rw,g=r,o= {} +
+find "${PYTHON_INSTALL_DIR}" -path '*/bin/*' -type f -exec chmod u=rwx,g=rx,o= {} +
+
 rsync -a --delete \
   --exclude '__pycache__/' \
   --exclude '*.pyc' \
@@ -145,6 +164,7 @@ chown -R root:atlas-v5 "${APP_DIR}"
 export UV_PROJECT_ENVIRONMENT="${VENV_DIR}"
 "${UV_BIN}" sync \
   --project "${APP_DIR}" \
+  --python "${PYTHON_BIN}" \
   --frozen \
   --no-dev
 

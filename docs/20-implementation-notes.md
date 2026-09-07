@@ -133,3 +133,9 @@ Atlas now has a GitHub Actions CI gate for `main` pushes, pull requests, and man
 The CI path was exercised locally before publishing against a disposable PostgreSQL 17 container: the full migration chain completed, 100 backend tests passed, Ruff was clean, frontend lint reported zero warnings/errors, and the production frontend build completed.
 
 The first hosted clean-checkout run exposed a repository-integrity defect that the long-lived server worktree had masked: the broad `artifacts/` ignore rule also ignored the source package `backend/atlas/artifacts/`. The ignore rules are now root-anchored to live state only, the artifact package is tracked, and ignored-source inspection reports no Python source hidden under backend, tests, or migrations.
+
+## 2026-09-07 — Pinned Python runtime and ACL mask hardening
+
+Atlas now pins its application interpreter through the repository `.python-version` file. CI consumes that pin directly, and host deployment installs the same uv-managed interpreter under `/opt/atlas-v5/python` before synchronizing the production virtual environment. Ubuntu's system Python remains distribution-managed and is not replaced. The initial pin is Python 3.14.7.
+
+Project ACL refresh also now uses `setfacl -n` with explicit access masks: `m::rwx` for directories and `m::rw-` for regular files. This fixes a deployment bug where a later `setfacl -m` recalculated an ACL mask from inherited `group::rwx` state and could turn ordinary source files from mode 0664 into 0674, causing Ruff EXE002 failures. The ACL policy now grants Atlas and Jaco their intended access without manufacturing execute bits.
