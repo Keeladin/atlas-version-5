@@ -125,3 +125,9 @@ Atlas now separates canonical transcript growth from provider-visible working co
 The assembler is token-aware using the provider's input-token counter. When the 10-exchange projection exceeds budget, it first compacts successful/read-heavy tool observations older than the two most recent exchanges, then other compactable successful tool evidence, and only then removes the oldest exchange(s). Compacted evidence preserves operation, phase and safe structural metadata while the complete observation remains canonical. Failed, uncertain, prepared, executing, forbidden and unavailable evidence is excluded from normal compaction. If even the current owner turn cannot fit the target, Atlas fails open rather than silently truncating owner input.
 
 The top-rail context indicator now reports the bounded working-context budget instead of provider capacity, while Control separately reports current model input and full-transcript input. The previous 70%-of-provider-window rollover path no longer drives ordinary foreground context assembly; transcript-era rollover and retrieval remain separate lifecycle concerns.
+
+## 2026-09-07 — Continuous integration baseline
+
+Atlas now has a GitHub Actions CI gate for `main` pushes, pull requests, and manual runs. The backend job uses Python 3.14 with the locked `uv` dependency graph and a disposable PostgreSQL 17 service, runs Ruff, proves a blank database migrates through the complete Alembic chain to `head`, and runs the full backend suite. The frontend job uses Node 22 with `npm ci`, oxlint, TypeScript compilation, and the Vite production build. Workflow permissions are read-only and stale runs for the same ref are cancelled.
+
+The CI path was exercised locally before publishing against a disposable PostgreSQL 17 container: the full migration chain completed, 100 backend tests passed, Ruff was clean, frontend lint reported zero warnings/errors, and the production frontend build completed.

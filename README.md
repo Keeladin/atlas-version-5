@@ -19,6 +19,7 @@ The model is the primary semantic decision-maker: it interprets intent, selects 
 - **Project folders:** Atlas can inspect repositories and perform bounded single-file create/update, preview unified diffs, detect stale files with SHA-256, write atomically, preserve file modes, checkpoint dirty Git state, and move files within a project. Deletes require approval. Protected paths and secret/key material are hidden from normal project browsing and rejected for both normal project reads and writes, including resolved symlink targets.
 - **Interface:** React and TypeScript provide the chat/control interface, activity and approval surfaces, responsive mobile layout, Markdown rendering, attachments, visible mobile owner logout, a Control-surface API restart action, and an installable PWA.
 - **Deployment:** FastAPI, PostgreSQL, Alembic, systemd, and Caddy. Production runs as the unprivileged `atlas-v5` user on `127.0.0.1:8086`, with secrets held outside the application tree.
+- **CI:** GitHub Actions validates the locked Python and Node dependency sets, Ruff, a clean PostgreSQL 17 migration from zero to Alembic head, the full backend test suite, frontend lint, and the production frontend build on pushes to `main` and pull requests.
 
 ## Deliberate boundaries
 
