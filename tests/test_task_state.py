@@ -117,3 +117,67 @@ def test_active_semantic_delta_requires_concrete_next_step() -> None:
     delta = TaskStateDelta(status="active", next_step="Run the verification suite")
     assert delta.status == "active"
     assert delta.next_step == "Run the verification suite"
+
+
+def test_full_checkpoint_preserves_every_admitted_semantic_field() -> None:
+    import json
+    delta = TaskStateDelta(
+        objective='O' * 800,
+        constraints=[str(i) + 'C' * 299 for i in range(5)],
+        decisions=[{'text': str(i) + 'D' * 399, 'rationale': 'R' * 400} for i in range(5)],
+        findings=[str(i) + 'F' * 299 for i in range(5)],
+        open_questions=[str(i) + 'Q' * 299 for i in range(5)],
+        next_step='N' * 500, status='active',
+    )
+    state = merge_semantic_delta(new_task_state('owner' * 200), delta)
+    for i in range(16):
+        state = record_runtime_event(state, operation='demo.effect', phase='prepared',
+            evidence_id=str(i), action_id=str(i), arguments={'path': 'p' * 160})
+    message = active_task_provider_message(state)
+    projected = json.loads(message['content'][message['content'].index('{'):])
+    assert projected['semantic'] == state['semantic']
+    assert len(projected['runtime']['pending_actions']) == 16
+    assert 'model_projection' not in projected
+
+
+def test_replace_resets_semantics_only() -> None:
+    state = record_runtime_event(new_task_state('owner'), operation='demo.send',
+        phase='uncertain', evidence_id='evidence', action_id='action')
+    state = merge_semantic_delta(state, TaskStateDelta(objective='old', constraints=['old']))
+    replaced = merge_semantic_delta(state, TaskStateDelta(replace=True, objective='new'))
+    assert replaced['runtime'] == state['runtime']
+    assert replaced['task_id'] == state['task_id']
+    assert replaced['semantic']['constraints'] == []
+    assert replaced['semantic']['objective'] == 'new'
+
+
+def test_oversized_semantic_delta_is_rejected_instead_of_silently_cut() -> None:
+    with pytest.raises(ValidationError):
+        TaskStateDelta(constraints=['constraint'] * 6)
+    with pytest.raises(ValidationError):
+        TaskStateDelta(open_questions=['q' * 301])
+
+
+def test_empty_delta_does_not_change_task_or_complete_it() -> None:
+    state = merge_semantic_delta(new_task_state('owner'), TaskStateDelta(objective='continue'))
+    assert merge_semantic_delta(state, TaskStateDelta()) == state
+    assert state['status'] == 'active'
+    completed = merge_semantic_delta(state, TaskStateDelta(status='complete'))
+    assert completed['status'] == 'complete'
+    assert begin_owner_turn(completed, 'new')['task_id'] != state['task_id']
+
+
+def test_large_unresolved_action_set_has_bounded_projection_and_exact_locator():
+    import json
+    state = new_task_state('Continue')
+    state['semantic']['open_questions'] = ['Resolve all pending work']
+    for index in range(1000):
+        state = record_runtime_event(state, operation='fixture.effect', phase='prepared',
+            evidence_id=str(index), action_id=str(index))
+    projected = active_task_provider_message(state)
+    assert len(state['runtime']['pending_actions']) == 1000
+    assert len(projected['content']) < 10000
+    assert 'Resolve all pending work' in projected['content']
+    assert 'evidence.task.read' in projected['content']
+    assert '"pending_actions_count":1000' in projected['content']
+    assert json.dumps(state['semantic'])

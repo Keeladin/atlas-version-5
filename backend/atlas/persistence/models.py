@@ -6,10 +6,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     LargeBinary,
     String,
     Text,
+    UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -22,6 +25,8 @@ class Base(DeclarativeBase):
 
 class TranscriptRow(Base):
     __tablename__ = "transcripts"
+    __table_args__ = (Index("uq_active_owner_transcript", "kind", unique=True,
+        postgresql_where=text("kind = 'owner' AND closed_at IS NULL")),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     kind: Mapped[str] = mapped_column(String(32), default="owner", index=True)
@@ -30,14 +35,18 @@ class TranscriptRow(Base):
     context_summary: Mapped[str | None] = mapped_column(Text)
     summarized_through_turn_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     active_task_state: Mapped[dict] = mapped_column(JSONB, default=dict)
+    active_task_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    next_turn_sequence: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
 
 
 class TurnRow(Base):
     __tablename__ = "turns"
+    __table_args__ = (UniqueConstraint("transcript_id", "sequence", name="uq_transcript_turn_sequence"),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     transcript_id: Mapped[UUID] = mapped_column(ForeignKey("transcripts.id", ondelete="CASCADE"), index=True)
     actor: Mapped[str] = mapped_column(String(32))
+    sequence: Mapped[int] = mapped_column(BigInteger)
     blocks: Mapped[list[dict]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
@@ -72,6 +81,9 @@ class RegistryEntryRow(Base):
 
 class RunRow(Base):
     __tablename__ = "runs"
+    __table_args__ = (Index("uq_foreground_inference", "transcript_id", unique=True,
+        postgresql_where=text("kind = 'foreground' AND inference_active")),
+        UniqueConstraint("schedule_id", "scheduled_for", name="uq_schedule_occurrence"))
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     kind: Mapped[str] = mapped_column(String(32), index=True)
@@ -81,6 +93,12 @@ class RunRow(Base):
     intent: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    inference_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    inference_status: Mapped[str] = mapped_column(String(32), default="running", server_default="running")
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    schedule_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    trigger_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
 
 
 class ActionRow(Base):

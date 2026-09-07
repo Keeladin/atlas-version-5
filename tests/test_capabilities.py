@@ -83,3 +83,41 @@ def test_capability_search_cards_omit_full_schema_but_keep_argument_contract() -
     assert card["required"] == ["path"]
     assert "input_schema" not in card
     assert "very long schema prose" not in str(card)
+
+
+@pytest.mark.asyncio
+async def test_complete_schema_validation_precedes_proposal_and_dispatch():
+    item = descriptor(AuthorityMode.APPROVAL_REQUIRED)
+    item.input_schema = {'type': 'object', 'properties': {'items': {'type': 'array',
+        'items': {'type': 'integer', 'minimum': 2}}, 'mode': {'enum': ['safe']}},
+        'required': ['items', 'mode'], 'additionalProperties': False}
+    runtime = CapabilityRuntime()
+    called = []
+    runtime.register(item, lambda arguments: called.append('dispatch'))
+    async def sink(*args):
+        called.append('proposal')
+        return 'proposal'
+    for args in ({'items': [True], 'mode': 'safe'}, {'items': [1], 'mode': 'safe'},
+                 {'items': [2], 'mode': 'other'}, {'items': '2', 'mode': 'safe'}):
+        result = await runtime.call(item.id, args, proposal_sink=sink)
+        assert result.status == 'failed'
+        assert result.output['failure_phase'] == 'before_dispatch'
+    assert called == []
+    result = await runtime.call(item.id, {'items': [2], 'mode': 'safe'}, proposal_sink=sink)
+    assert result.status == 'approval_required'
+    assert called == ['proposal']
+
+
+@pytest.mark.asyncio
+async def test_value_error_after_effect_is_ambiguous():
+    item = descriptor()
+    item.effect = EffectKind.CREATE
+    effects = []
+    def execute(args):
+        effects.append('created')
+        raise ValueError('response decode failed')
+    runtime = CapabilityRuntime()
+    runtime.register(item, execute)
+    result = await runtime.call(item.id, {})
+    assert effects == ['created']
+    assert result.output['failure_phase'] == 'ambiguous_dispatch'

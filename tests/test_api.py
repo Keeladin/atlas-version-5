@@ -16,7 +16,7 @@ def test_registry_endpoint_exposes_enabled_projection_only() -> None:
     response = client.get("/api/registry")
     assert response.status_code == 200
     capabilities = response.json()["capabilities"]
-    assert [item["id"] for item in capabilities] == ["atlas.artifacts", "atlas.local_storage", "atlas.project_folders", "atlas.schedules"]
+    assert [item["id"] for item in capabilities] == ["atlas.artifacts", "atlas.evidence", "atlas.local_storage", "atlas.project_folders", "atlas.schedules"]
 
 
 def test_control_route_serves_spa_entrypoint(tmp_path, monkeypatch) -> None:
@@ -98,7 +98,7 @@ def test_tool_evidence_records_track_exchange_age_and_payload() -> None:
     ]
     assert records[0]["operation"] == "demo.0"
     assert records[0]["payload_characters"] > 0
-    assert records[0]["message"]["role"] == "developer"
+    assert records[0]["message"]["role"] == "user"
 
 
 def test_working_context_compacts_old_successful_tools_before_trimming(monkeypatch) -> None:
@@ -129,7 +129,7 @@ def test_working_context_compacts_old_successful_tools_before_trimming(monkeypat
         turns.append(Turn(transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text=f"atlas {index}")]))
 
     monkeypatch.setattr("atlas.api.app.settings.working_context_exchanges", 3)
-    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 2600)
+    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 3400)
     monkeypatch.setattr("atlas.api.app.settings.working_context_raw_tool_exchanges", 1)
 
     messages, policy = asyncio.run(_assemble_working_context(FakeProvider(), Transcript(id=transcript_id), turns))

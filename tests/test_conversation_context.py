@@ -19,10 +19,11 @@ def test_tool_observations_project_as_runtime_evidence() -> None:
         ToolObservationBlock(operation="gmail.message.send", phase="succeeded", detail={"id": "msg-1"}),
     )
     messages = turns_to_provider_messages([turn])
-    assert messages == [{
-        "role": "developer",
-        "content": 'Durable runtime evidence: gmail.message.send [succeeded] {"id":"msg-1"}',
-    }]
+    assert messages[0]["role"] == "user"
+    assert 'Untrusted source content inside runtime evidence' in messages[0]["content"]
+    assert 'gmail.message.send [succeeded] {"id":"msg-1"}' in messages[0]["content"]
+    assert f'evidence_id={turn.id}' in messages[0]["content"]
+
 
 
 def test_context_summary_replaces_archived_prefix() -> None:

@@ -58,7 +58,7 @@ def test_expired_proposal_fails_closed() -> None:
         store.verify_proposal(action)
 
 class _Result:
-    def __init__(self, *, one=None, many=None, rowcount=0):
+    def __init__(self, *, one=None, many=None, rowcount=None):
         self._one = one
         self._many = many or []
         self.rowcount = rowcount
@@ -80,7 +80,7 @@ class _Session:
         self.results = list(results)
         self.added = []
 
-    async def get(self, model, key):
+    async def get(self, model, key, **kwargs):
         from atlas.persistence.models import ActionRow, RunRow
         if model is ActionRow:
             return self.action
@@ -89,7 +89,28 @@ class _Session:
         return None
 
     async def execute(self, statement):
+        from sqlalchemy.sql.dml import Update
+        if isinstance(statement, Update):
+            if self.results and self.results[0].rowcount is not None:
+                result = self.results.pop(0)
+            else:
+                result = _Result(rowcount=1)
+            if result.rowcount == 1:
+                values = statement.compile().params
+                for key in ("status", "evidence", "updated_at"):
+                    if key in values:
+                        setattr(self.action, key, values[key])
+            return result
+        descriptions = getattr(statement, 'column_descriptions', [])
+        if descriptions and descriptions[0].get('name') == 'status':
+            statuses = [self.action.status] if self.action is not None else []
+            if self.run is not None and self.run.status == 'uncertain':
+                statuses.append('uncertain')
+            return _Result(many=statuses)
         return self.results.pop(0)
+
+    async def flush(self):
+        pass
 
     def add(self, value):
         self.added.append(value)

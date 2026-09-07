@@ -1,19 +1,39 @@
 from __future__ import annotations
 
+import ctypes
 import difflib
+import errno
+import fcntl
 import hashlib
 import json
 import os
-import shutil
 import stat
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
 
 from .local import LocalStorageService
+
+
+def serialized_mutation(method):
+    @wraps(method)
+    def call(self, relative_path, *args, **kwargs):
+        self._assert_editable(relative_path)
+        if self.checkpoint_root is None:
+            raise ValueError("Project checkpoint storage is not configured")
+        project = (self.root / relative_path).resolve(strict=False).relative_to(self.root.resolve()).parts[0]
+        locks = self.checkpoint_root / "locks"
+        locks.mkdir(parents=True, exist_ok=True, mode=0o700)
+        key = hashlib.sha256(str(self.root.resolve() / project).encode()).hexdigest()
+        with (locks / key).open("a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            return method(self, relative_path, *args, **kwargs)
+    return call
 
 
 class ProjectFolderService(LocalStorageService):
@@ -40,10 +60,7 @@ class ProjectFolderService(LocalStorageService):
             item
             for item in listing["entries"]
             if item["name"] not in self._HIDDEN_NAMES
-            and self._protected_reason(
-                "/".join(part for part in (relative_path.strip("/"), item["name"]) if part)
-            )
-            is None
+            and self._allowed_for_export(item["path"])
         ]
         if not relative_path.strip("/"):
             root = self.root.resolve(strict=True)
@@ -71,10 +88,54 @@ class ProjectFolderService(LocalStorageService):
         result = super().acquire_file(
             relative_path, max_bytes=max_bytes, start_line=start_line, max_lines=max_lines
         )
-        stat_result = path.stat()
-        result["resource"]["sha256"] = self._sha256(path)
-        result["resource"]["modified_at"] = datetime.fromtimestamp(stat_result.st_mtime, UTC).isoformat()
+        result["resource"]["source"] = "project_folder"
         return result
+
+    @contextmanager
+    def _pinned_target(self, relative_path: str, *, follow_final: bool = True):
+        """Resolve permitted aliases, then traverse without following new symlinks.
+
+        All subsequent filesystem sinks use the pinned directory descriptor,
+        so replacing a pathname with a symlink cannot redirect the operation.
+        """
+        self._assert_readable(relative_path)
+        root = self.root.resolve(strict=True)
+        raw = root / relative_path
+        target = self._target(relative_path) if follow_final else raw.parent.resolve(strict=True) / raw.name
+        canonical = target.relative_to(root)
+        self._assert_readable(canonical.as_posix())
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in canonical.parent.parts:
+                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = next_fd
+            actual_parent = Path(os.readlink(f"/proc/self/fd/{fd}"))
+            self._assert_readable((actual_parent / target.name).relative_to(root).as_posix())
+            yield Path(f"/proc/self/fd/{fd}") / target.name, target
+            if Path(os.readlink(f"/proc/self/fd/{fd}")) != target.parent:
+                raise ValueError("Project directory changed during the operation; verify its outcome before retrying")
+        finally:
+            os.close(fd)
+
+    def _read_checked(self, path: Path, max_bytes: int):
+        relative = path.relative_to(self.root.resolve(strict=True)).as_posix()
+        with self._pinned_target(relative) as (pinned, canonical):
+            fd = os.open(pinned, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError("Only regular project files may be read")
+                if info.st_size > max_bytes:
+                    raise ValueError("Project file exceeds the acquisition/checkpoint size limit")
+                raw = handle.read(max_bytes + 1)
+                if len(raw) > max_bytes:
+                    raise ValueError("Project file exceeds the acquisition/checkpoint size limit")
+        return canonical, raw, info
+
+    def _acquisition_snapshot(self, relative_path: str, max_bytes: int):
+        self._assert_readable(relative_path)
+        return self._read_checked(self.root.resolve(strict=True) / relative_path, max_bytes)
 
     def preview_file(self, relative_path: str, content: str) -> dict:
         target = self._target(relative_path)
@@ -84,13 +145,13 @@ class ProjectFolderService(LocalStorageService):
             raise ValueError("Project edits are limited to 4 MB per file")
         if target.exists():
             current = self._existing_file(relative_path)
-            before_bytes = current.read_bytes()
+            _, before_bytes, info = self._read_checked(current, self._MAX_EDIT_BYTES)
             try:
                 before = before_bytes.decode("utf-8")
             except UnicodeDecodeError as exc:
                 raise ValueError("Safe project editing currently supports UTF-8 text files only") from exc
             before_sha = hashlib.sha256(before_bytes).hexdigest()
-            mode = stat.S_IMODE(current.stat().st_mode)
+            mode = stat.S_IMODE(info.st_mode)
         else:
             before = ""
             before_sha = "absent"
@@ -107,6 +168,7 @@ class ProjectFolderService(LocalStorageService):
             "diff": self._unified_diff(relative_path, before, content, before_sha == "absent"),
         }
 
+    @serialized_mutation
     def apply_file(self, relative_path: str, content: str, expected_sha256: str, change_token: str) -> dict:
         target = self._target(relative_path)
         self._assert_editable(relative_path)
@@ -125,14 +187,15 @@ class ProjectFolderService(LocalStorageService):
             mode = 0o664
         else:
             current = self._existing_file(relative_path)
-            current_sha = self._sha256(current)
+            _, before_bytes, info = self._read_checked(current, self._MAX_EDIT_BYTES)
+            current_sha = hashlib.sha256(before_bytes).hexdigest()
             if current_sha != expected_sha256:
                 raise ValueError("File changed after Atlas read it; refusing to overwrite newer work")
             try:
-                before = current.read_text(encoding="utf-8")
+                before = before_bytes.decode("utf-8")
             except UnicodeDecodeError as exc:
                 raise ValueError("Safe project editing currently supports UTF-8 text files only") from exc
-            mode = stat.S_IMODE(current.stat().st_mode)
+            mode = stat.S_IMODE(info.st_mode)
 
         checkpoint = self._checkpoint(target, relative_path)
         if expected_sha256 == "absent":
@@ -141,19 +204,22 @@ class ProjectFolderService(LocalStorageService):
         elif self._sha256(self._existing_file(relative_path)) != expected_sha256:
             raise ValueError("File changed while Atlas was checkpointing; refusing the write")
 
-        target.parent.mkdir(parents=False, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.atlas-", dir=target.parent)
-        temp_path = Path(temp_name)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(proposed)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temp_path, mode)
-            os.replace(temp_path, target)
-            self._fsync_directory(target.parent)
-        finally:
-            temp_path.unlink(missing_ok=True)
+        with self._pinned_target(relative_path) as (pinned, _):
+            fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.atlas-", dir=pinned.parent)
+            temp_path = Path(temp_name)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(proposed)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temp_path, mode)
+                if expected_sha256 == "absent":
+                    self._rename_noreplace(temp_path, pinned)
+                else:
+                    os.replace(temp_path, pinned)
+                self._fsync_directory(pinned.parent)
+            finally:
+                temp_path.unlink(missing_ok=True)
 
         return {
             "path": relative_path,
@@ -164,27 +230,30 @@ class ProjectFolderService(LocalStorageService):
             "diff": self._unified_diff(relative_path, before, content, expected_sha256 == "absent"),
         }
 
+    @serialized_mutation
     def move_file(self, source_path: str, target_path: str, expected_sha256: str) -> dict:
         self._assert_editable(source_path)
         self._assert_editable(target_path)
         source = self._existing_file(source_path)
         target = self._target(target_path)
-        if source_path.split("/", 1)[0] != target_path.split("/", 1)[0]:
+        root = self.root.resolve(strict=True)
+        if (source.relative_to(root).parts[0] != target.relative_to(root).parts[0]
+                or source_path.split("/", 1)[0] != target_path.split("/", 1)[0]):
             raise ValueError("Project moves must stay within the same project")
-        if target.exists():
+        if os.path.lexists(target):
             raise ValueError("Move target already exists")
         if self._sha256(source) != expected_sha256:
             raise ValueError("Source changed after Atlas read it; refusing to move newer work")
         checkpoint = self._checkpoint(source, source_path)
         if self._sha256(self._existing_file(source_path)) != expected_sha256:
             raise ValueError("Source changed while Atlas was checkpointing; refusing the move")
-        target.parent.resolve(strict=True)
-        os.replace(source, target)
-        self._fsync_directory(source.parent)
-        if target.parent != source.parent:
-            self._fsync_directory(target.parent)
+        with self._pinned_target(source_path) as (pinned_source, _), self._pinned_target(target_path) as (pinned_target, _):
+            self._rename_noreplace(pinned_source, pinned_target)
+            self._fsync_directory(pinned_source.parent)
+            self._fsync_directory(pinned_target.parent)
         return {"status": "moved", "from": source_path, "to": target_path, "sha256": expected_sha256, "checkpoint": checkpoint}
 
+    @serialized_mutation
     def delete_file(self, relative_path: str, expected_sha256: str) -> dict:
         self._assert_editable(relative_path)
         target = self._existing_file(relative_path)
@@ -193,8 +262,9 @@ class ProjectFolderService(LocalStorageService):
         checkpoint = self._checkpoint(target, relative_path)
         if self._sha256(self._existing_file(relative_path)) != expected_sha256:
             raise ValueError("File changed while Atlas was checkpointing; refusing the delete")
-        target.unlink()
-        self._fsync_directory(target.parent)
+        with self._pinned_target(relative_path) as (pinned, _):
+            pinned.unlink()
+            self._fsync_directory(pinned.parent)
         return {"status": "deleted", "path": relative_path, "sha256": expected_sha256, "checkpoint": checkpoint}
 
     def git_status(self, project: str) -> dict:
@@ -205,14 +275,15 @@ class ProjectFolderService(LocalStorageService):
 
     def git_diff(self, project: str) -> dict:
         project_path = self._project_root(project)
-        diff = self._git(project_path, "diff", "--binary", "HEAD", check=False)
+        diff, excluded = self._safe_git_diff(project_path)
         if len(diff.encode("utf-8")) > 2 * 1024 * 1024:
             raise ValueError("Git diff exceeds the 2 MB inspection limit")
-        return {"project": project, "diff": diff}
+        return {"project": project, "diff": diff, "protected_paths_excluded": excluded}
 
     def _project_root(self, project: str) -> Path:
         if not project or "/" in project or project in {".", ".."}:
             raise ValueError("A top-level project name is required")
+        self._assert_readable(project)
         root = self.root.resolve(strict=True)
         path = (root / project).resolve(strict=True)
         if not path.is_relative_to(root) or not path.is_dir():
@@ -220,6 +291,7 @@ class ProjectFolderService(LocalStorageService):
         return path
 
     def _existing_file(self, relative_path: str) -> Path:
+        self._assert_readable(relative_path)
         root = self.root.resolve(strict=True)
         requested = (root / relative_path).resolve(strict=True)
         if not requested.is_relative_to(root):
@@ -261,13 +333,115 @@ class ProjectFolderService(LocalStorageService):
             return "credential or token file"
         return None
 
+    def _assert_allowed(self, relative_path: str, *, writing: bool = False) -> None:
+        root = self.root.resolve(strict=True)
+        candidate = root / relative_path
+        resolved = candidate.resolve(strict=False)
+        if not resolved.is_relative_to(root):
+            raise ValueError("Path is outside the approved project root")
+        if (self._protected_reason(relative_path) is not None
+                or self._protected_reason(resolved.relative_to(root).as_posix()) is not None):
+            verb = "modified" if writing else "read"
+            raise ValueError(f"protected project material cannot be {verb} by the normal project capability")
+
     def _assert_readable(self, relative_path: str) -> None:
-        if self._protected_reason(relative_path) is not None:
-            raise ValueError("protected project material cannot be read by the normal project capability")
+        self._assert_allowed(relative_path)
 
     def _assert_editable(self, relative_path: str) -> None:
-        if self._protected_reason(relative_path) is not None:
-            raise ValueError("protected project material cannot be modified by the normal project-write capability")
+        self._assert_allowed(relative_path, writing=True)
+
+    def _allowed_for_export(self, relative_path: str) -> bool:
+        try:
+            self._assert_readable(relative_path)
+        except (ValueError, OSError):
+            return False
+        return True
+
+    def _safe_git_diff(self, project: Path) -> tuple[str, int]:
+        # Disable external helpers and inspect NUL-separated paths, including
+        # both sides of renames, before allowing Git to render content.
+        baseline = "HEAD" if self._git(project, "rev-parse", "--verify", "HEAD", check=False).strip() else "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+        raw = self._git_bytes(project, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", "--find-renames", baseline)
+        fields = raw.split(b"\0")
+        allowed: set[str] = set()
+        excluded = 0
+        index = 0
+        root = self.root.resolve(strict=True)
+        while index < len(fields) and fields[index]:
+            status = fields[index].decode('ascii')
+            count = 2 if status.startswith(('R', 'C')) else 1
+            paths = [part.decode('utf-8', errors='surrogateescape') for part in fields[index + 1:index + 1 + count]]
+            index += 1 + count
+            if all(self._allowed_for_export((project / path).relative_to(root).as_posix()) for path in paths):
+                allowed.update(paths)
+            else:
+                excluded += len(paths)
+        if not allowed:
+            return "", excluded
+        # Render only immutable permitted snapshots. Git must not reopen the
+        # mutable worktree after our path policy check (parent aliases can race).
+        with tempfile.TemporaryDirectory(prefix="atlas-project-diff-") as temporary:
+            snapshot_root = Path(temporary)
+            (snapshot_root / "a").mkdir()
+            (snapshot_root / "b").mkdir()
+            total = 0
+            for path in sorted(allowed):
+                current = project / path
+                relative = current.relative_to(root).as_posix()
+                self._assert_readable(relative)
+                object_name = f"{baseline}:{path}"
+                exists = self._git(project, "cat-file", "-t", object_name, check=False).strip()
+                if exists == "blob":
+                    size = int(self._git(project, "cat-file", "-s", object_name).strip())
+                    if total + size > self._MAX_CHECKPOINT_BYTES:
+                        raise ValueError("Project diff snapshot exceeds the size limit")
+                    before = self._git_bytes(project, "cat-file", "blob", object_name)
+                    destination = snapshot_root / "a" / path
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    mode = self._git(project, "ls-tree", "--format=%(objectmode)", baseline, "--", f":(literal){path}").strip()
+                    if mode == "120000":
+                        destination.symlink_to(os.fsdecode(before))
+                    else:
+                        destination.write_bytes(before)
+                        destination.chmod(0o755 if mode == "100755" else 0o644)
+                    total += len(before)
+                with self._pinned_target(relative, follow_final=False) as (pinned, _):
+                    if pinned.is_symlink():
+                        destination = snapshot_root / "b" / path
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.symlink_to(os.readlink(pinned))
+                        continue
+                try:
+                    _, after, info = self._read_checked(current, self._MAX_CHECKPOINT_BYTES - total)
+                except FileNotFoundError:
+                    continue
+                destination = snapshot_root / "b" / path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(after)
+                destination.chmod(stat.S_IMODE(info.st_mode))
+                total += len(after)
+            completed = subprocess.run(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+                "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--binary", "--src-prefix=", "--dst-prefix=", "a", "b"],
+                cwd=snapshot_root, capture_output=True, timeout=20, check=False)
+            if completed.returncode not in {0, 1}:
+                raise ValueError("Could not render the permitted project snapshots")
+            return completed.stdout.decode('utf-8'), excluded
+
+    @staticmethod
+    def _rename_noreplace(source: Path, target: Path) -> None:
+        # Linux is the deployed platform. Fail closed if the atomic primitive
+        # is unavailable; check-then-replace is not a safe fallback.
+        libc = ctypes.CDLL(None, use_errno=True)
+        rename = getattr(libc, 'renameat2', None)
+        if rename is None:
+            raise OSError("Atomic no-replace rename is unavailable")
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        rename.restype = ctypes.c_int
+        if rename(-100, os.fsencode(source), -100, os.fsencode(target), 1) != 0:
+            code = ctypes.get_errno()
+            if code == errno.EEXIST:
+                raise ValueError("Move target already exists; refusing to overwrite newer work")
+            raise OSError(code, os.strerror(code))
 
     def _checkpoint(self, target: Path, relative_path: str) -> dict:
         root = self.root.resolve(strict=True)
@@ -287,7 +461,7 @@ class ProjectFolderService(LocalStorageService):
 
     def _write_dirty_checkpoint(self, git_root: Path, head: str | None, status: str, relative_path: str) -> dict:
         checkpoint = self._new_checkpoint_dir(git_root.name)
-        patch = self._git(git_root, "diff", "--binary", "HEAD", check=False)
+        patch, excluded = self._safe_git_diff(git_root)
         patch_bytes = patch.encode("utf-8")
         if len(patch_bytes) > self._MAX_CHECKPOINT_BYTES:
             raise ValueError("Dirty Git checkpoint exceeds the 100 MB safety limit")
@@ -298,26 +472,35 @@ class ProjectFolderService(LocalStorageService):
             raise ValueError("Dirty Git checkpoint contains too many untracked files")
         total = len(patch_bytes)
         for relative in untracked:
-            source = (git_root / relative).resolve(strict=True)
-            if not source.is_relative_to(git_root) or not source.is_file() or source.is_symlink():
+            raw_source = git_root / relative
+            if raw_source.is_symlink() or not self._allowed_for_export(raw_source.relative_to(self.root.resolve()).as_posix()):
+                excluded += 1
                 continue
-            total += source.stat().st_size
+            source = raw_source.resolve(strict=True)
+            if not source.is_relative_to(git_root) or not source.is_file():
+                excluded += 1
+                continue
+            _, snapshot, info = self._read_checked(source, self._MAX_CHECKPOINT_BYTES - total)
+            total += len(snapshot)
             if total > self._MAX_CHECKPOINT_BYTES:
                 raise ValueError("Dirty Git checkpoint exceeds the 100 MB safety limit")
             destination = checkpoint / "untracked" / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
-        metadata = {"kind": "dirty_git_checkpoint", "project": git_root.name, "head": head, "status": status, "trigger_path": relative_path, "created_at": datetime.now(UTC).isoformat()}
+            destination.write_bytes(snapshot)
+            destination.chmod(stat.S_IMODE(info.st_mode))
+        metadata = {"kind": "dirty_git_checkpoint", "project": git_root.name, "head": head, "protected_paths_excluded": excluded, "scope": "permitted project files only", "trigger_path": relative_path, "created_at": datetime.now(UTC).isoformat()}
         (checkpoint / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        return {"kind": "dirty_git_checkpoint", "id": checkpoint.name, "head": head, "project": git_root.name}
+        return {"kind": "dirty_git_checkpoint", "id": checkpoint.name, "head": head, "project": git_root.name, "protected_paths_excluded": excluded}
 
     def _write_file_checkpoint(self, target: Path, relative_path: str) -> dict:
         checkpoint = self._new_checkpoint_dir(Path(relative_path).parts[0])
         metadata = {"kind": "filesystem_checkpoint", "trigger_path": relative_path, "existed": target.exists(), "created_at": datetime.now(UTC).isoformat()}
         if target.exists() and target.is_file():
             backup = checkpoint / "file"
-            shutil.copy2(target, backup)
-            metadata["sha256"] = self._sha256(target)
+            _, snapshot, info = self._read_checked(target, self._MAX_CHECKPOINT_BYTES)
+            backup.write_bytes(snapshot)
+            backup.chmod(stat.S_IMODE(info.st_mode))
+            metadata["sha256"] = hashlib.sha256(snapshot).hexdigest()
         (checkpoint / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return {"kind": "filesystem_checkpoint", "id": checkpoint.name, "project": Path(relative_path).parts[0]}
 
@@ -330,13 +513,9 @@ class ProjectFolderService(LocalStorageService):
         path.mkdir(mode=0o700)
         return path
 
-    @staticmethod
-    def _sha256(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+    def _sha256(self, path: Path) -> str:
+        _, snapshot, _ = self._read_checked(path, self._MAX_CHECKPOINT_BYTES)
+        return hashlib.sha256(snapshot).hexdigest()
 
     @staticmethod
     def _change_token(relative_path: str, before_sha: str, after_sha: str) -> str:
@@ -359,14 +538,14 @@ class ProjectFolderService(LocalStorageService):
 
     @staticmethod
     def _git(cwd: Path, *arguments: str, check: bool = True) -> str:
-        completed = subprocess.run(["git", "-c", f"safe.directory={cwd}", "-C", str(cwd), *arguments], capture_output=True, text=True, timeout=20, check=False)
+        completed = subprocess.run(["git", "-c", f"safe.directory={cwd}", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(cwd), *arguments], capture_output=True, text=True, timeout=20, check=False)
         if check and completed.returncode != 0:
             raise ValueError(completed.stderr.strip() or "Git command failed")
         return completed.stdout
 
     @staticmethod
     def _git_bytes(cwd: Path, *arguments: str) -> bytes:
-        completed = subprocess.run(["git", "-c", f"safe.directory={cwd}", "-C", str(cwd), *arguments], capture_output=True, timeout=20, check=False)
+        completed = subprocess.run(["git", "-c", f"safe.directory={cwd}", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-C", str(cwd), *arguments], capture_output=True, timeout=20, check=False)
         if completed.returncode != 0:
             raise ValueError(completed.stderr.decode(errors="replace").strip() or "Git command failed")
         return completed.stdout

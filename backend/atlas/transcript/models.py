@@ -21,6 +21,8 @@ class TextBlock(BaseModel):
 class ArtifactRefBlock(BaseModel):
     type: Literal["artifact_ref"] = "artifact_ref"
     artifact_id: UUID
+    filename: str | None = None
+    provenance: dict[str, object] = Field(default_factory=dict)
 
 
 class ToolObservationBlock(BaseModel):
@@ -31,6 +33,7 @@ class ToolObservationBlock(BaseModel):
     phase: str | None = None
     summary: str | None = None
     detail: dict[str, object] = Field(default_factory=dict)
+    provenance: dict[str, object] = Field(default_factory=dict)
 
 ContentBlock = Annotated[
     TextBlock | ArtifactRefBlock | ToolObservationBlock,
@@ -51,6 +54,7 @@ class Transcript(BaseModel):
 class Turn(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     transcript_id: UUID
+    sequence: int | None = None
     actor: Actor
     blocks: list[ContentBlock]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

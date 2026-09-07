@@ -1,3 +1,5 @@
+import asyncio
+
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,7 +24,7 @@ class ArtifactService:
         filename: str | None = None,
         provenance: dict | None = None,
     ) -> Artifact:
-        artifact = self.store.put(
+        artifact = await asyncio.to_thread(self.store.put,
             data,
             media_type=media_type,
             source=source,
@@ -34,6 +36,6 @@ class ArtifactService:
             await self.session.commit()
         except SQLAlchemyError:
             await self.session.rollback()
-            self.store.delete(artifact.storage_key)
+            await asyncio.to_thread(self.store.delete, artifact.storage_key)
             raise
         return artifact

@@ -192,3 +192,41 @@ def test_large_utf8_resource_is_capped_and_points_to_line_range_reacquisition() 
     text = item["content"][0]["text"]
     assert len(text) < 50000
     assert "start_line/max_lines" in text
+
+
+def test_exact_evidence_result_does_not_normalize_markup():
+    result = {'operation_id': 'evidence.read', 'output': {'text': '<script>  literal source </script>\n', 'exact': True}}
+    assert _public_tool_result(result)[0] == result
+
+
+def test_provider_captures_web_citations_and_delta_without_extra_inference():
+    import asyncio
+    from types import SimpleNamespace
+
+    from atlas.providers.openai import OpenAIProvider
+    class Item:
+        def __init__(self, payload):
+            self.payload, self.type = payload, payload['type']
+        def model_dump(self, **kwargs): return self.payload
+    web = {'type': 'web_search_call', 'id': 'web1', 'status': 'completed', 'action': {'type': 'search', 'query': 'fixture'}}
+    message = {'type': 'message', 'content': [{'type': 'output_text', 'text': 'Answer',
+        'annotations': [{'type': 'url_citation', 'url': 'https://example.test/source', 'title': 'Source', 'start_index': 0, 'end_index': 6}]}]}
+    calls, observations, deltas = [], [], []
+    async def create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(id='response1', status='completed', output=[Item(web), Item(message)],
+            output_text='Answer<atlas_task_state_delta>{"status":"complete"}</atlas_task_state_delta>')
+    async def observe(payload): observations.append(payload)
+    async def delta(payload): deltas.append(payload)
+    async def tool(*args): raise AssertionError('No capability call expected')
+    provider = object.__new__(OpenAIProvider)
+    provider.model, provider.capability_call_limit, provider.capability_completion_reserve = 'fixture', 16, 2
+    provider.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    async def run():
+        return [chunk async for chunk in provider.stream_text(instructions='Fixture', messages=[],
+            tool_handler=tool, observation_handler=observe, task_state_handler=delta)]
+    assert asyncio.run(run()) == ['Answer']
+    assert len(calls) == 1
+    assert observations[0]['output'] == [web, message]
+    assert observations[0]['response_id'] == 'response1'
+    assert deltas == [{'status': 'complete'}]

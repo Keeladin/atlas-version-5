@@ -4,6 +4,7 @@ import os
 import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -17,12 +18,16 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openai import APIError, OpenAIError
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas import __version__
-from atlas.actions.authority import AuthorityStore, ProposalIntegrityError
+from atlas.actions.authority import (
+    AuthorityStore,
+    ForegroundBusy,
+    ProposalIntegrityError,
+)
 from atlas.actions.models import ActionStatus
 from atlas.actions.reconciliation import reconcile_once, reconciliation_loop
 from atlas.artifacts.models import ArtifactKind
@@ -30,12 +35,12 @@ from atlas.artifacts.service import ArtifactService
 from atlas.artifacts.store import ArtifactStore
 from atlas.auth import SESSION_COOKIE_NAME, AuthService
 from atlas.auth.api import router as auth_router
-from atlas.capabilities import AuthorityMode, EffectKind
 from atlas.capabilities.factory import build_capability_runtime
+from atlas.capabilities.models import CapabilityCallResult
 from atlas.config import get_settings
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GoogleWorkspaceService
-from atlas.persistence.models import RunRow
+from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
 from atlas.registry.service import build_phase0_registry
 from atlas.runtime.bootstrap import build_seat_bootstrap
@@ -50,18 +55,24 @@ from atlas.runtime.conversation import (
 from atlas.runtime.conversation import (
     recent_exchange_turns as _recent_exchange_turns,
 )
+from atlas.runtime.execution import (
+    RunExecutor,
+    action_status_for_result,
+    external_effect_id,
+)
+from atlas.runtime.observations import EvidenceStore
+from atlas.runtime.recovery import interrupt_run, maintain_heartbeat, require_live_run
 from atlas.runtime.startup import initialize_phase0
 from atlas.runtime.task_state import (
     TaskStateDelta,
     active_task_provider_message,
     begin_owner_turn,
     merge_semantic_delta,
-    record_runtime_event,
 )
 from atlas.schedules import ScheduleService
 from atlas.schedules.runner import scheduler_loop
 from atlas.storage import LocalStorageService, ProjectFolderService
-from atlas.transcript.models import Actor, TextBlock, ToolObservationBlock
+from atlas.transcript.models import Actor, ArtifactRefBlock, TextBlock
 from atlas.transcript.repository import TranscriptRepository
 
 from .deps import get_session
@@ -255,7 +266,7 @@ async def control_configuration():
     return {
         "credentials": [
             _credential_projection("OpenAI API key", settings.openai_api_key_file),
-            _google_oauth_projection(),
+            await asyncio.to_thread(_google_oauth_projection),
             _credential_projection("GitHub MCP token", settings.github_token_file),
         ],
         "mcps": [
@@ -323,12 +334,16 @@ async def decide_action(
     if not decision.approve:
         run = await session.get(RunRow, action.run_id)
         transcript_id = run.transcript_id if run is not None else None
-        await store.cancel(action)
-        await session.commit()
-        if transcript_id is not None:
-            await _persist_tool_observation(
-                transcript_id, action.operation, "cancelled", {"status": "cancelled"}, action.id
-            )
+        try:
+            await store.cancel(action)
+            if transcript_id is not None:
+                await EvidenceStore(session, artifact_store).record(transcript_id, operation=action.operation,
+                    phase="cancelled", detail={"status": "cancelled"}, run_id=action.run_id,
+                    action_id=action.id, checkpoint=run.kind == "foreground", trust="internal")
+            await session.commit()
+        except ProposalIntegrityError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": "cancelled", "action_id": str(action.id)}
 
     try:
@@ -347,6 +362,10 @@ async def decide_action(
     transcript_id = run.transcript_id if run is not None else None
     try:
         await store.begin_execution(action)
+        if transcript_id is not None:
+            await EvidenceStore(session, artifact_store).record(transcript_id, operation=action.operation,
+                phase="executing", detail={"status": "executing"}, run_id=action.run_id,
+                action_id=action.id, checkpoint=run.kind == "foreground", trust="internal")
         await session.commit()  # durable executing state exists before external dispatch
     except ProposalIntegrityError as exc:
         await session.rollback()
@@ -355,54 +374,25 @@ async def decide_action(
     try:
         result = await capability_runtime.call(action.operation, arguments, approval_granted=True)
     except Exception as exc:  # noqa: BLE001 - dispatch boundary is intentionally conservative
-        result_payload = {"status": "uncertain", "operation_id": action.operation, "message": f"{type(exc).__name__}: {exc}"}
-        async with get_session_factory()() as finish_session:
-            await AuthorityStore(finish_session).complete(action_id, status=ActionStatus.UNCERTAIN, result=result_payload)
-            await finish_session.commit()
-        if transcript_id is not None:
-            await _persist_tool_observation(
-                transcript_id, action.operation, "uncertain", result_payload, action_id, arguments=arguments
-            )
-        return {"status": "uncertain", "action_id": str(action_id), "result": result_payload}
+        result = CapabilityCallResult(status="failed", operation_id=action.operation,
+            output={"failure_phase": "ambiguous_dispatch"}, message=f"Dispatch interrupted ({type(exc).__name__})")
 
-    result_payload = result.model_dump(mode="json")
-    final_status = _action_status_for_result(result)
-    external_id = _external_effect_id(result.output)
-    async with get_session_factory()() as finish_session:
-        await AuthorityStore(finish_session).complete(action_id, status=final_status, result=result_payload, external_id=external_id)
-        await finish_session.commit()
     if transcript_id is not None:
-        await _persist_tool_observation(
-            transcript_id, action.operation, final_status.value, result_payload, action_id, arguments=arguments
-        )
-    return {"status": final_status.value, "action_id": str(action_id), "result": result}
+        executor = RunExecutor(get_session_factory(), capability_runtime, artifact_store,
+            run_id=action.run_id, transcript_id=transcript_id, checkpoint=run.kind == "foreground")
+        _, finalized = await executor.finish_action(action_id, result, arguments)
+        final_status = finalized["action_status"]
+    else:
+        async with get_session_factory()() as finish_session:
+            await AuthorityStore(finish_session).complete(action_id, status=_action_status_for_result(result),
+                result={"status": result.status})
+            await finish_session.commit()
+        final_status = _action_status_for_result(result).value
+    return {"status": final_status, "action_id": str(action_id)}
 
 
-def _action_status_for_result(result) -> ActionStatus:
-    failure_phase = result.output.get("failure_phase") if isinstance(result.output, dict) else None
-    if result.status == "succeeded":
-        return ActionStatus.SUCCEEDED
-    if result.status in {"unavailable", "forbidden"} or failure_phase == "before_dispatch":
-        return ActionStatus.FAILED
-    return ActionStatus.UNCERTAIN
-
-
-def _external_effect_id(output: Any) -> str | None:
-    if isinstance(output, dict):
-        for key in ("id", "messageId", "message_id", "eventId", "event_id"):
-            value = output.get(key)
-            if isinstance(value, (str, int)) and str(value):
-                return str(value)
-        for value in output.values():
-            found = _external_effect_id(value)
-            if found:
-                return found
-    if isinstance(output, list):
-        for value in output:
-            found = _external_effect_id(value)
-            if found:
-                return found
-    return None
+_action_status_for_result = action_status_for_result
+_external_effect_id = external_effect_id
 
 
 async def _persist_tool_observation(
@@ -415,28 +405,12 @@ async def _persist_tool_observation(
     arguments: dict[str, Any] | None = None,
     checkpoint_runtime: bool = True,
 ) -> UUID:
-    factory = get_session_factory()
-    async with factory() as observation_session:
-        repository = TranscriptRepository(observation_session)
-        turn = await repository.append_turn(
-            transcript_id,
-            Actor.TOOL,
-            [ToolObservationBlock(action_id=action_id, operation=operation, phase=phase, summary=f"{operation} · {phase}", detail=detail)],
-        )
-        if checkpoint_runtime:
-            state = await repository.get_active_task_state(transcript_id)
-            state = record_runtime_event(
-                state,
-                operation=operation,
-                phase=phase,
-                evidence_id=str(turn.id),
-                arguments=arguments,
-                detail=detail,
-                action_id=str(action_id) if action_id is not None else None,
-            )
-            await repository.update_active_task_state(transcript_id, state)
-        await observation_session.commit()
-        return turn.id
+    async with get_session_factory()() as session:
+        evidence_id, _ = await EvidenceStore(session, artifact_store).record(
+            transcript_id, operation=operation, phase=phase, detail=detail,
+            action_id=action_id, arguments=arguments, checkpoint=checkpoint_runtime)
+        await session.commit()
+        return evidence_id
 
 
 async def _assemble_working_context(provider: OpenAIProvider, transcript, turns):
@@ -755,6 +729,12 @@ async def conversation(session: Annotated[AsyncSession, Depends(get_session)]):
     return {"transcript": transcript, "turns": turns}
 
 
+def _begin_owner_checkpoint(state, request, owner_turn_id):
+    updated = begin_owner_turn(state, request)
+    updated["runtime"]["owner_turn_id"] = str(owner_turn_id)
+    return updated
+
+
 @app.post("/api/conversation/stream")
 async def stream_conversation(request: ChatRequest):
     text = request.text.strip()
@@ -770,168 +750,102 @@ async def stream_conversation(request: ChatRequest):
     async with factory() as session:
         repository = TranscriptRepository(session)
         transcript = await repository.get_or_create_active()
-        await repository.append_turn(transcript.id, Actor.OWNER, [TextBlock(text=text)])
         run_intent = text or f"Attached {len(attachment_paths)} local workspace file(s)"
-        task_state = begin_owner_turn(transcript.active_task_state, run_intent)
-        await repository.update_active_task_state(transcript.id, task_state)
+        try:
+            run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=run_intent)
+        except ForegroundBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        blocks = [TextBlock(text=text)]
+        for path in attachment_paths:
+            resource = await asyncio.to_thread(
+                LocalStorageService(settings.workspace_root, settings.workspace_display_root).acquire_file, path)
+            frozen = await EvidenceStore(session, artifact_store).freeze(resource, provenance={
+                "source": "owner_attachment", "run_id": str(run_id), "transcript_id": str(transcript.id), "path": path})
+            snapshot = frozen["resource"]
+            blocks.append(ArtifactRefBlock(artifact_id=UUID(snapshot["artifact_id"]), filename=snapshot["name"],
+                provenance={"source": "owner_attachment", "path": path, "sha256": snapshot["snapshot_sha256"]}))
+        await session.execute(update(OwnerAttentionRow).where(
+            OwnerAttentionRow.run_id.in_(select(RunRow.id).where(RunRow.transcript_id == transcript.id)),
+            OwnerAttentionRow.state == "interrupted", OwnerAttentionRow.resolved.is_(False)
+        ).values(resolved=True, resolved_at=datetime.now(UTC)))
+        owner_turn = await repository.append_turn(transcript.id, Actor.OWNER, blocks)
+        task_state = await repository.mutate_active_task_state(
+            transcript.id, lambda state: _begin_owner_checkpoint(state, run_intent, owner_turn.id)
+        )
         transcript.active_task_state = task_state
-        run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=run_intent)
         await session.commit()
         turns = await repository.list_turns(transcript.id)
 
-    provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve)
-    messages = await _prepare_provider_messages(provider, transcript, turns)
-    if attachment_paths:
-        attachment_note = (
-            "Atlas runtime attached local workspace resource path(s) to the owner's current turn: "
-            + ", ".join(attachment_paths)
-            + ". Use storage.local.acquire to inspect them when relevant. "
-            "This is runtime metadata, not owner-authored text."
-        )
-        messages.append({"role": "user", "content": attachment_note})
+    try:
+        provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve)
+        async with maintain_heartbeat(factory, run_id):
+            messages = await _prepare_provider_messages(provider, transcript, turns)
+    except BaseException:
+        await asyncio.shield(interrupt_run(factory, artifact_store, run_id, reason="Context preparation was interrupted; task state was retained."))
+        raise
+    executor = RunExecutor(factory, capability_runtime, artifact_store, run_id=run_id, transcript_id=transcript.id)
+    tool_handler = executor.tool_handler
 
-    async def tool_handler(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if name == "atlas_capability_search":
-            query = str(arguments.get("query") or "")
-            limit = int(arguments.get("limit") or 8)
-            search_result = {"operations": capability_runtime.search_cards(query, limit)}
-            await _persist_tool_observation(
-                transcript.id,
-                "atlas_capability_search",
-                "searched",
-                {"query": query, "result": search_result},
-                checkpoint_runtime=False,
-            )
-            return search_result
-        if name == "atlas_capability_call":
-            operation_id = str(arguments.get("operation_id") or "")
-            operation_arguments = arguments.get("arguments")
-            if not isinstance(operation_arguments, dict):
-                operation_arguments = {}
+    provider_evidence_id = None
 
-            async def proposal_sink(descriptor, proposed_arguments):
-                async with factory() as proposal_session:
-                    store = AuthorityStore(proposal_session)
-                    proposal_id = await store.prepare_proposal(
-                        run_id=run_id,
-                        operation=descriptor.id,
-                        arguments=proposed_arguments,
-                        title=f"Atlas proposes: {descriptor.description}",
-                        capability_id=descriptor.capability_id,
-                    )
-                    await proposal_session.commit()
-                    return proposal_id
-
-            descriptor = capability_runtime.descriptor(operation_id)
-            automatic_effect = (
-                descriptor is not None
-                and descriptor.authority == AuthorityMode.AUTO
-                and descriptor.effect != EffectKind.READ
-            )
-            action_id = None
-            if automatic_effect and descriptor is not None:
-                async with factory() as activity_session:
-                    action_id = await AuthorityStore(activity_session).begin_automatic_execution(
-                        run_id=run_id, operation=operation_id, arguments=operation_arguments,
-                        summary=descriptor.description, capability_id=descriptor.capability_id,
-                    )
-                    await activity_session.commit()
-
-            result = await capability_runtime.call(
-                operation_id,
-                operation_arguments,
-                proposal_sink=proposal_sink,
-            )
-            if result.status == "approval_required":
-                proposal_uuid = UUID(result.proposal_id) if result.proposal_id else None
-                await _persist_tool_observation(
-                    transcript.id, operation_id, "prepared",
-                    {"arguments": operation_arguments, "proposal_id": result.proposal_id, "status": result.status},
-                    proposal_uuid,
-                    arguments=operation_arguments,
-                )
-            elif automatic_effect and action_id is not None:
-                final_status = _action_status_for_result(result)
-                async with factory() as activity_session:
-                    await AuthorityStore(activity_session).complete(
-                        action_id, status=final_status, result=result.model_dump(mode="json"),
-                        external_id=_external_effect_id(result.output), resolve_run=False,
-                    )
-                    await activity_session.commit()
-                await _persist_tool_observation(
-                    transcript.id, operation_id, final_status.value, result.model_dump(mode="json"), action_id,
-                    arguments=operation_arguments,
-                )
-            else:
-                async with factory() as activity_session:
-                    action_id = await AuthorityStore(activity_session).record_execution(
-                        run_id=run_id,
-                        operation=operation_id,
-                        arguments=operation_arguments,
-                        status=result.status,
-                        summary=descriptor.description if descriptor is not None else operation_id,
-                        output=result.model_dump(mode="json"),
-                    )
-                    await activity_session.commit()
-                await _persist_tool_observation(
-                    transcript.id, operation_id, result.status, result.model_dump(mode="json"), action_id,
-                    arguments=operation_arguments,
-                )
-            return result.model_dump(mode="json")
-        return {"status": "unavailable", "message": "Unknown Atlas capability control tool."}
-
-    task_keep_active = False
+    async def observation_handler(payload: dict[str, Any]) -> None:
+        nonlocal provider_evidence_id
+        async with factory() as session:
+            provider_evidence_id, _ = await EvidenceStore(session, artifact_store).record(transcript.id,
+                operation="provider.openai", phase="observed", detail=payload, run_id=run_id,
+                checkpoint=False, trust="external")
+            await session.commit()
 
     async def task_state_handler(payload: dict[str, Any]) -> None:
-        nonlocal task_keep_active
         try:
             delta = TaskStateDelta.model_validate(payload)
         except ValidationError:
-            return
+            delta = None
         async with factory() as task_session:
+            await require_live_run(task_session, run_id)
             repository = TranscriptRepository(task_session)
-            current_state = await repository.get_active_task_state(transcript.id)
-            updated_state = merge_semantic_delta(current_state, delta)
-            await repository.update_active_task_state(transcript.id, updated_state)
+            if delta is not None:
+                state = await repository.mutate_active_task_state(
+                    transcript.id, lambda state: merge_semantic_delta(state, delta),
+                    expected_task_id=task_state["task_id"],
+                )
+            else:
+                state = await repository.get_active_task_state(transcript.id)
+            await EvidenceStore(task_session, artifact_store).record(transcript.id,
+                operation="task_state_delta", phase="accepted" if delta else "rejected",
+                detail={"delta": payload, "task_id": state.get("task_id"), "revision": state.get("revision"),
+                    "provider_evidence_id": str(provider_evidence_id) if provider_evidence_id else None},
+                run_id=run_id, checkpoint=False, trust="model")
             await task_session.commit()
-        task_keep_active = delta.status == "active"
 
     async def generate() -> AsyncIterator[str]:
         chunks: list[str] = []
+        completed = False
         try:
-            async for delta in provider.stream_text(
-                instructions=build_model_instructions(capability_runtime.compact_index()),
-                messages=messages,
-                tool_handler=tool_handler,
-                task_state_handler=task_state_handler,
-            ):
-                chunks.append(delta)
-                yield json.dumps({"type": "delta", "text": delta}) + "\n"
-        except APIError as exc:
-            yield json.dumps({
-                "type": "error",
-                "message": f"OpenAI {type(exc).__name__}: {exc}",
-            }) + "\n"
-            return
-        except OpenAIError as exc:
-            yield json.dumps({
-                "type": "error",
-                "message": f"OpenAI {type(exc).__name__}: {exc}",
-            }) + "\n"
-            return
-
-        answer = "".join(chunks).strip()
-        async with factory() as session:
-            repository = TranscriptRepository(session)
-            if answer:
-                await repository.append_turn(transcript.id, Actor.ATLAS, [TextBlock(text=answer)])
-            if not task_keep_active:
-                current_state = await repository.get_active_task_state(transcript.id)
-                completed_state = merge_semantic_delta(current_state, TaskStateDelta(status="complete"))
-                await repository.update_active_task_state(transcript.id, completed_state)
-            await AuthorityStore(session).finish_run(run_id)
-            await session.commit()
-        yield json.dumps({"type": "done", "transcript_id": str(transcript.id)}) + "\n"
+            async with maintain_heartbeat(factory, run_id):
+                async for delta in provider.stream_text(
+                    instructions=build_model_instructions(capability_runtime.compact_index()),
+                    messages=messages, tool_handler=tool_handler,
+                    task_state_handler=task_state_handler, observation_handler=observation_handler,
+                ):
+                    chunks.append(delta)
+                    yield json.dumps({"type": "delta", "text": delta}) + "\n"
+            answer = "".join(chunks).strip()
+            async with factory() as session:
+                await require_live_run(session, run_id)
+                repository = TranscriptRepository(session)
+                if answer:
+                    await repository.append_turn(transcript.id, Actor.ATLAS, [TextBlock(text=answer)])
+                await AuthorityStore(session).finish_run(run_id)
+                await session.commit()
+            completed = True
+            yield json.dumps({"type": "done", "transcript_id": str(transcript.id)}) + "\n"
+        except Exception as exc:  # noqa: BLE001 - persist all foreground interruptions
+            yield json.dumps({"type": "error", "message": f"Atlas inference interrupted ({type(exc).__name__}); task state was retained."}) + "\n"
+        finally:
+            if not completed:
+                await asyncio.shield(interrupt_run(factory, artifact_store, run_id,
+                    reason="Foreground inference was interrupted. Continue with a new message; prior effects will not be replayed."))
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
@@ -940,7 +854,7 @@ async def stream_conversation(request: ChatRequest):
 async def local_storage(path: str = ""):
     service = LocalStorageService(settings.workspace_root, settings.workspace_display_root)
     try:
-        return service.list_directory(path)
+        return await asyncio.to_thread(service.list_directory, path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail="Local workspace is not available") from exc
     except NotADirectoryError as exc:
@@ -959,7 +873,7 @@ async def drive_storage(folder_id: str = "root"):
         settings.gws_workspace_dir,
     )
     try:
-        return service.list_drive_folder(folder_id)
+        return await asyncio.to_thread(service.list_drive_folder, folder_id)
     except (RuntimeError, TypeError) as exc:
         raise HTTPException(status_code=502, detail=f"Google Drive read failed: {exc}") from exc
 
@@ -968,7 +882,7 @@ async def drive_storage(folder_id: str = "root"):
 async def project_folders(path: str = ""):
     service = ProjectFolderService(settings.projects_root, settings.projects_display_root)
     try:
-        return service.list_directory(path)
+        return await asyncio.to_thread(service.list_directory, path)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail="Project folders are not available") from exc
     except NotADirectoryError as exc:
@@ -1029,7 +943,7 @@ async def upload_local_storage(file: UploadFile, path: str = ""):
         raise HTTPException(status_code=413, detail="File exceeds the 100 MB workspace upload limit")
     service = LocalStorageService(settings.workspace_root, settings.workspace_display_root)
     try:
-        return service.store_file(path, file.filename or "upload", data)
+        return await asyncio.to_thread(service.store_file, path, file.filename or "upload", data)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=503, detail="Local workspace is not available") from exc
     except NotADirectoryError as exc:

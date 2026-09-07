@@ -169,6 +169,11 @@ find "${VENV_DIR}/bin" -type f -exec chmod u=rwx,g=rx,o= {} +
 
 bash "${ROOT_DIR}/deployment/grant-maintenance-access.sh"
 
+# Schema migrations may introduce constraints the currently running code does
+# not understand. Stop the old runtime before migration and fail closed: if
+# Alembic fails, set -e exits here and Atlas remains stopped for inspection.
+systemctl stop atlas-v5.service
+
 runuser -u atlas-v5 -- /bin/bash -c '
   set -a
   source /etc/atlas-v5/config/runtime.env
@@ -182,7 +187,7 @@ install -o root -g root -m 0644 \
   /etc/systemd/system/atlas-v5.service
 systemctl daemon-reload
 systemctl enable atlas-v5.service
-systemctl restart atlas-v5.service
+systemctl start atlas-v5.service
 
 health_url="http://127.0.0.1:8086/api/auth/status"
 for attempt in {1..30}; do
@@ -190,7 +195,7 @@ for attempt in {1..30}; do
     break
   fi
   if [[ ${attempt} -eq 30 ]]; then
-    echo "Atlas V5 did not become healthy after restart." >&2
+    echo "Atlas V5 did not become healthy after start." >&2
     systemctl --no-pager --full status atlas-v5.service || true
     journalctl -u atlas-v5.service -n 50 --no-pager || true
     exit 1

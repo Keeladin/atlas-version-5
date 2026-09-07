@@ -42,3 +42,55 @@ def test_latest_migration_contains_active_task_state() -> None:
     head = next(revision for revision in metadata if revision not in parents)
     text = metadata[head][1].read_text()
     assert "active_task_state" in text
+
+
+import asyncio
+import os
+import subprocess
+import sys
+from uuid import uuid4
+
+import pytest
+from atlas.persistence.models import Base, RunRow, TranscriptRow, TurnRow
+from sqlalchemy import select, text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('upgrade_existing', [False, True])
+async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_existing):
+    engine = pg_factory.kw['bind']
+    async with engine.begin() as connection:
+        schema = (await connection.execute(text('SELECT current_schema()'))).scalar_one()
+        await connection.run_sync(Base.metadata.drop_all)
+    env = {**os.environ, 'ATLAS_DATABASE_URL': os.environ['ATLAS_TEST_DATABASE_URL'],
+        'PGOPTIONS': f'-csearch_path={schema}'}
+    env.pop('ATLAS_DATABASE_URL_FILE', None)
+    async def migrate(target):
+        result = await asyncio.to_thread(subprocess.run,
+            [sys.executable, '-m', 'alembic', 'upgrade', target], env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+    if upgrade_existing:
+        await migrate('f4a7c91d2e30')
+        first, second, run_id = uuid4(), uuid4(), uuid4()
+        async with engine.begin() as connection:
+            await connection.execute(text("INSERT INTO transcripts (id, kind, active_task_state) VALUES (:id, 'owner', CAST(:state AS jsonb)), (:second, 'owner', '{}'::jsonb)"),
+                {'id': first, 'second': second, 'state': '{"status":"active","semantic":{"objective":"Keep this"}}'})
+            for index in range(3):
+                await connection.execute(text("INSERT INTO turns (id, transcript_id, actor, blocks) VALUES (:id, :transcript, 'owner', '[]'::jsonb)"),
+                    {'id': uuid4(), 'transcript': first})
+            await connection.execute(text("INSERT INTO runs (id, kind, status, transcript_id, intent) VALUES (:id, 'foreground', 'succeeded', :transcript, 'Old completed run')"),
+                {'id': run_id, 'transcript': first})
+    await migrate('head')
+    checked = await asyncio.to_thread(subprocess.run, [sys.executable, '-m', 'alembic', 'check'],
+        env=env, capture_output=True, text=True, check=False)
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    async with pg_factory() as session:
+        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a03'
+        if upgrade_existing:
+            rows = (await session.execute(select(TranscriptRow))).scalars().all()
+            assert len(rows) == 2 and sum(row.closed_at is None for row in rows) == 1
+            checkpoint = (await session.get(TranscriptRow, first)).active_task_state
+            assert checkpoint['semantic']['objective'] == 'Keep this'
+            assert checkpoint['task_id'] and checkpoint['revision'] == 0
+            assert list((await session.execute(select(TurnRow.sequence).order_by(TurnRow.sequence))).scalars()) == [1, 2, 3]
+            assert (await session.get(RunRow, run_id)).inference_status == 'succeeded'

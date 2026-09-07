@@ -3,7 +3,7 @@
 Status: **Accepted implementation plan — Phase 0 complete; Phase 1 centre operational**
 Date: 2026-09-05
 
-Implementation checkpoint (2026-09-06): the model-led conversation path, progressive capability runtime, generic resource acquisition, local workspace, Google Drive/Gmail, read-only GitHub MCP, provider-native web search, approval widgets, and provider-token context-pressure telemetry are implemented. Later workspace, memory/rollover, schedules, and broader consequential execution remain staged work.
+Implementation checkpoint (2026-09-06): the model-led conversation path, progressive capability runtime, generic resource acquisition, local workspace, Google Drive/Gmail, read-only GitHub MCP, provider-native web search, approval widgets, and provider-token context-pressure telemetry are implemented. Workspace/project operations, schedules and action reconciliation have since been implemented; see `20-implementation-notes.md` for the 2026-09-07 ordering, evidence and recovery remediation. Durable memory remains staged work.
 
 ## 1. Purpose
 

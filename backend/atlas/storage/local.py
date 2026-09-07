@@ -1,5 +1,7 @@
 import base64
+import hashlib
 import mimetypes
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -52,16 +54,9 @@ class LocalStorageService:
         max_lines: int | None = None,
     ) -> dict:
         root = self.root.resolve(strict=True)
-        requested = (root / relative_path).resolve(strict=True)
-        if not requested.is_relative_to(root):
-            raise ValueError("Path is outside the approved workspace root")
-        if not requested.is_file():
-            raise FileNotFoundError(relative_path)
-        stat = requested.stat()
-        if stat.st_size > max_bytes:
-            raise ValueError(f"File exceeds the {max_bytes // (1024 * 1024)} MB model-acquisition limit")
+        requested, raw, stat = self._acquisition_snapshot(relative_path, max_bytes)
         media_type = mimetypes.guess_type(requested.name)[0] or "application/octet-stream"
-        raw = requested.read_bytes()
+        snapshot_hash = hashlib.sha256(raw).hexdigest()
         range_meta = None
         if start_line is not None or max_lines is not None:
             try:
@@ -78,7 +73,7 @@ class LocalStorageService:
                 "start_line": first,
                 "end_line": end_line,
                 "total_lines": len(lines),
-                "complete": end_line >= len(lines),
+                "complete": first == 1 and end_line >= len(lines),
             }
         resource = {
             "name": requested.name,
@@ -87,11 +82,29 @@ class LocalStorageService:
             "size_bytes": stat.st_size,
             "projected_size_bytes": len(raw),
             "source": "local_workspace",
+            "sha256": snapshot_hash,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
             "data_base64": base64.b64encode(raw).decode("ascii"),
         }
         if range_meta is not None:
             resource["range"] = range_meta
         return {"resource": resource}
+
+    def _acquisition_snapshot(self, relative_path: str, max_bytes: int):
+        root = self.root.resolve(strict=True)
+        requested = (root / relative_path).resolve(strict=True)
+        if not requested.is_relative_to(root):
+            raise ValueError("Path is outside the approved workspace root")
+        if not requested.is_file():
+            raise FileNotFoundError(relative_path)
+        with requested.open("rb") as handle:
+            stat = os.fstat(handle.fileno())
+            if stat.st_size > max_bytes:
+                raise ValueError("File exceeds the model-acquisition limit")
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            raise ValueError("File exceeds the model-acquisition limit")
+        return requested, raw, stat
 
     def store_file(self, relative_directory: str, filename: str, data: bytes) -> dict:
         root = self.root.resolve(strict=True)
@@ -108,11 +121,15 @@ class LocalStorageService:
         target = directory / safe_name
         stem, suffix = target.stem, target.suffix
         counter = 2
-        while target.exists():
-            target = directory / f"{stem} ({counter}){suffix}"
-            counter += 1
+        while True:
+            try:
+                with target.open("xb") as handle:
+                    handle.write(data)
+                break
+            except FileExistsError:
+                target = directory / f"{stem} ({counter}){suffix}"
+                counter += 1
 
-        target.write_bytes(data)
         resolved = target.resolve(strict=True)
         if not resolved.is_relative_to(root):
             target.unlink(missing_ok=True)

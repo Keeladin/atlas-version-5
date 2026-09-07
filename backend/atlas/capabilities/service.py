@@ -1,5 +1,9 @@
+import asyncio
 from collections.abc import Callable
 from typing import Any
+
+from jsonschema import FormatChecker
+from jsonschema.validators import validator_for
 
 from .models import AuthorityMode, CapabilityCallResult, OperationDescriptor
 
@@ -37,6 +41,8 @@ class CapabilityRuntime:
         descriptor = self._operations.get(operation_id)
         if descriptor is None:
             return "Operation is not registered or enabled."
+        if not isinstance(arguments, dict):
+            return "Capability arguments must be an object"
         schema = descriptor.input_schema or {}
         required = schema.get("required")
         if isinstance(required, list):
@@ -58,6 +64,12 @@ class CapabilityRuntime:
             extras = sorted(set(arguments) - set(properties))
             if extras:
                 return f"Unexpected argument(s): {', '.join(extras)}"
+        validator_type = validator_for(schema)
+        validator_type.check_schema(schema)
+        error = next(validator_type(schema, format_checker=FormatChecker()).iter_errors(arguments), None)
+        if error is not None:
+            path = ".".join(str(item) for item in error.absolute_path) or "arguments"
+            return f"Invalid {path}: schema rule {error.validator} failed"
         return None
 
     def search_cards(self, query: str, limit: int = 8) -> list[dict[str, object]]:
@@ -105,20 +117,19 @@ class CapabilityRuntime:
             return CapabilityCallResult(status="unavailable", operation_id=operation_id, message="Operation is not registered or enabled.")
         if descriptor.authority == AuthorityMode.FORBIDDEN:
             return CapabilityCallResult(status="forbidden", operation_id=operation_id, message="Operation is outside current Atlas authority.")
+        validation_error = self.validate_arguments(operation_id, arguments)
+        if validation_error:
+            return CapabilityCallResult(status="failed", operation_id=operation_id,
+                output={"failure_phase": "before_dispatch"}, message=validation_error)
         if descriptor.authority == AuthorityMode.APPROVAL_REQUIRED and not approval_granted:
             if proposal_sink is None:
                 return CapabilityCallResult(status="approval_required", operation_id=operation_id, message="Owner approval is required before execution.")
             proposal_id = await proposal_sink(descriptor, arguments)
             return CapabilityCallResult(status="approval_required", operation_id=operation_id, proposal_id=str(proposal_id), message="Action prepared and waiting for owner approval.")
         try:
-            output = executor(arguments)
+            output = await asyncio.to_thread(executor, arguments)
             if hasattr(output, "__await__"):
                 output = await output
-        except ValueError as exc:
-            return CapabilityCallResult(
-                status="failed", operation_id=operation_id,
-                output={"failure_phase": "before_dispatch"}, message=str(exc),
-            )
         except Exception as exc:  # noqa: BLE001 - capability boundary must return tool failures
             return CapabilityCallResult(
                 status="failed", operation_id=operation_id,

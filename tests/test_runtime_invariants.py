@@ -13,7 +13,7 @@ from atlas.transcript.models import Actor, TextBlock, ToolObservationBlock, Turn
 
 
 class _Result:
-    def __init__(self, *, one=None, many=None, rowcount=0):
+    def __init__(self, *, one=None, many=None, rowcount=None):
         self._one = one
         self._many = many or []
         self.rowcount = rowcount
@@ -36,7 +36,7 @@ class _Session:
         self.added = []
         self.deleted = []
 
-    async def get(self, model, key):
+    async def get(self, model, key, **kwargs):
         from atlas.persistence.models import ActionRow, RunRow
         if model is ActionRow:
             return self.action
@@ -45,6 +45,24 @@ class _Session:
         return None
 
     async def execute(self, statement):
+        from sqlalchemy.sql.dml import Update
+        if isinstance(statement, Update):
+            if self.results and self.results[0].rowcount is not None:
+                result = self.results.pop(0)
+            else:
+                result = _Result(rowcount=1)
+            if result.rowcount == 1:
+                values = statement.compile().params
+                for key in ("status", "evidence", "updated_at"):
+                    if key in values:
+                        setattr(self.action, key, values[key])
+            return result
+        descriptions = getattr(statement, 'column_descriptions', [])
+        if descriptions and descriptions[0].get('name') == 'status':
+            statuses = [self.action.status] if self.action is not None else []
+            if self.run is not None and self.run.status == 'uncertain':
+                statuses.append('uncertain')
+            return _Result(many=statuses)
         return self.results.pop(0)
 
     async def flush(self):
@@ -127,7 +145,7 @@ async def test_reconciliation_cas_loss_does_not_raise_attention() -> None:
 
 @pytest.mark.asyncio
 async def test_finish_run_cannot_overwrite_uncertain_run() -> None:
-    run = RunRow(id=uuid4(), kind="foreground", status=RunStatus.UNCERTAIN.value)
+    run = RunRow(id=uuid4(), kind="foreground", status=RunStatus.UNCERTAIN.value, inference_active=True, inference_status="running")
     session = _Session(run=run)
     await AuthorityStore(session).finish_run(run.id, succeeded=True)
     assert run.status == RunStatus.UNCERTAIN.value

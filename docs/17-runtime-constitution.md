@@ -82,6 +82,10 @@ Deterministic runtime facts such as tool operation/status, evidence references, 
 
 Task-state semantic updates must be a by-product of the existing foreground inference response. Atlas may not add a checkpoint-only model call. The active checkpoint is bounded, survives restart through Atlas persistence, and is protected from ordinary working-context eviction while the task remains active.
 
+A dedicated projector retains every admitted semantic field: objective, constraints, decisions, findings, open questions and next step. `replace` replaces semantic fields only. Missing or invalid deltas leave task meaning unchanged; only an explicit valid `status=complete` completes it. Task identity and database revision fence stale responses, and state transforms serialize against the current revision so runtime events cannot overwrite semantic updates or each other.
+
+Unresolved action references remain durable across task replacement and completion. The protected projection includes the unresolved count and up to 16 references; overflow has explicit exact, revision-pinned pagination through `evidence.task.read`. Semantic unresolved work is always projected in full.
+
 Completed tool/resource detail may be compacted or reacquired by reference without erasing the checkpoint needed to state the current objective, what changed, unresolved work and the next intended step.
 
 ## 10. Memory commands have precedence and completion state
@@ -160,3 +164,13 @@ It also does not restore V4's obligation planner, mandatory Work objects, confir
 This constitution and `15-pre-implementation-baseline.md` were accepted by the owner on 2026-09-05.
 
 During implementation, any proposed shortcut that weakens one of these guarantees must be surfaced as an explicit design change rather than introduced silently in code.
+
+## Implemented conversation and recovery contracts
+
+Canonical turns receive a transactionally allocated per-transcript sequence. PostgreSQL allows one open owner transcript and one active foreground inference on it. A second foreground request returns HTTP 409 before appending an owner turn; a waiting action does not keep a finished inference's conversation slot occupied.
+
+Run outcome aggregates all action outcomes independently of inference completion. Conditional action transitions prevent cancellation or a late result from rewriting executing/uncertain truth. A successful sibling cannot clear uncertainty. Complete argument-schema validation precedes proposal and dispatch. An executor exception, including `ValueError`, cannot by itself prove that no effect occurred.
+
+Schedule advancement and durable queued occurrence creation commit atomically. Each occurrence keeps immutable owner intent and a unique schedule/time identity. Queued work resumes after restart; interrupted dispatched work is never automatically replayed. Heartbeats fence abandoned inference runs, preserve task/effect evidence, and release their foreground slot with owner attention. Synchronous integrations run outside the main event loop.
+
+Canonical resource bytes live in immutable local artifacts, with metadata and provenance in PostgreSQL. Owner attachments, public provider web/citation events, and accepted/rejected model task deltas retain their source relationship. Bounded exact evidence reads preserve original markup and whitespace. Public provider events do not include hidden provider search passages or internal reasoning that the provider never returns.

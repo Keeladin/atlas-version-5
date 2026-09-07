@@ -1,8 +1,10 @@
+from atlas.artifacts.store import ArtifactStore
 from atlas.capabilities import AuthorityMode, EffectKind, OperationDescriptor
 from atlas.config import Settings
 from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.registry.service import EnvironmentRegistry
+from atlas.runtime.observations import EvidenceStore
 from atlas.schedules import ScheduleService
 from atlas.storage import LocalStorageService, ProjectFolderService
 
@@ -25,6 +27,14 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         ),
     )
     factory = get_session_factory()
+
+    async def evidence_call(method, arguments):
+        async with factory() as session:
+            return await getattr(EvidenceStore(session, ArtifactStore(settings.artifact_dir)), method)(**arguments)
+
+    runtime.register_executor("evidence.task.read", lambda arguments: evidence_call("task_read", arguments))
+    runtime.register_executor("evidence.read", lambda arguments: evidence_call("read", arguments))
+    runtime.register_executor("evidence.resource.acquire", lambda arguments: evidence_call("acquire", arguments))
 
     async def schedule_call(method: str, arguments):
         async with factory() as session:

@@ -173,6 +173,8 @@ export async function getConversationContextStats(): Promise<ConversationContext
   return body as ConversationContextStats
 }
 
+export class ForegroundConflictError extends Error {}
+
 export async function streamMessage(
   text: string,
   attachments: string[],
@@ -185,7 +187,9 @@ export async function streamMessage(
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.detail ?? `Atlas request failed (${response.status})`)
+    const message = body?.detail ?? `Atlas request failed (${response.status})`
+    if (response.status === 409) throw new ForegroundConflictError(message)
+    throw new Error(message)
   }
   if (!response.body) throw new Error('Atlas returned no response stream')
 

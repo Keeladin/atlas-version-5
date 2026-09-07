@@ -12,6 +12,8 @@ class RunKind(StrEnum):
 
 
 class RunStatus(StrEnum):
+    QUEUED = "queued"
+    INTERRUPTED = "interrupted"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"

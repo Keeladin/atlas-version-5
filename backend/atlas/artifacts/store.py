@@ -1,4 +1,5 @@
 import hashlib
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -22,7 +23,16 @@ class ArtifactStore:
         storage_key = f"{artifact_id.hex[:2]}/{artifact_id}"
         destination = self.root / storage_key
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(data)
+        with destination.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for directory in (destination.parent, self.root):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
         return Artifact(
             id=artifact_id,
             kind=kind,

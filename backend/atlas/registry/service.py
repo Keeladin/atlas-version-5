@@ -41,6 +41,9 @@ class EnvironmentRegistry:
 def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegistry:
     gws_ready = bool(settings and settings.gws_configured)
     entries = [
+        CapabilityEntry(id="atlas.evidence", family="Evidence",
+            description="Read exact historical observations and resource snapshots by evidence identity.",
+            source=CapabilitySource.ATLAS, enabled=True, availability=CapabilityAvailability.AVAILABLE),
         CapabilityEntry(
             id="atlas.artifacts",
             family="Artifacts",
@@ -121,6 +124,27 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         ),
     ]
     registry = EnvironmentRegistry(entries)
+    registry.register_operation(OperationDescriptor(
+        id="evidence.task.read", capability_id="atlas.evidence", family="Evidence",
+        description="Page the exact current task checkpoint, including all unresolved action references. Pin expected_revision across pages; restart if it changes.",
+        input_schema={"type": "object", "properties": {
+            "task_id": {"type": "string", "format": "uuid"}, "expected_revision": {"type": "integer", "minimum": 0},
+            "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 8000}},
+            "required": ["task_id", "expected_revision"], "additionalProperties": False}, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="evidence.read", capability_id="atlas.evidence", family="Evidence",
+        description="Read exact canonical evidence by evidence_id; use JSON pointer and character offset/limit for bounded reads. For a referenced text artifact supply artifact_id.",
+        input_schema={"type": "object", "properties": {
+            "evidence_id": {"type": "string", "format": "uuid"},
+            "artifact_id": {"type": "string", "format": "uuid"}, "pointer": {"type": "string"},
+            "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 8000}},
+            "required": ["evidence_id"], "additionalProperties": False}, trust="external"))
+    registry.register_operation(OperationDescriptor(
+        id="evidence.resource.acquire", capability_id="atlas.evidence", family="Evidence",
+        description="Reacquire the exact previously observed resource snapshot, including images/documents, using its evidence_id and artifact_id.",
+        input_schema={"type": "object", "properties": {"evidence_id": {"type": "string", "format": "uuid"},
+            "artifact_id": {"type": "string", "format": "uuid"}},
+            "required": ["evidence_id", "artifact_id"], "additionalProperties": False}, trust="external"))
     registry.register_operation(OperationDescriptor(
         id="storage.local.list",
         capability_id="atlas.local_storage",

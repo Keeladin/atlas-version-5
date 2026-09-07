@@ -23,3 +23,11 @@ def test_project_reconcile_uses_explicit_acl_masks() -> None:
     assert "m::rwx" in script
     assert "d:m::rwx" in script
     assert "m::rw-" in script
+
+def test_deploy_stops_runtime_before_migration_and_starts_after() -> None:
+    script = (DEPLOYMENT / "deploy-host.sh").read_text()
+    stop = script.index("systemctl stop atlas-v5.service")
+    migrate = script.index("/opt/atlas-v5/venv/bin/alembic upgrade head")
+    start = script.index("systemctl start atlas-v5.service")
+    assert stop < migrate < start
+    assert "systemctl restart atlas-v5.service" not in script

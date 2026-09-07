@@ -33,6 +33,7 @@ jobs:
           --health-retries 5
     env:
       ATLAS_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/atlas_ci
+      ATLAS_TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@127.0.0.1:5432/atlas_ci
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -81,6 +82,9 @@ jobs:
 
       - name: Lint frontend
         run: npm run lint
+
+      - name: Test frontend conversation transport
+        run: npm run test
 
       - name: Build frontend
         run: npm run build

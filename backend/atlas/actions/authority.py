@@ -8,7 +8,13 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow
+from atlas.persistence.models import (
+    ActionRow,
+    OwnerAttentionRow,
+    RunRow,
+    ScheduledTaskRow,
+    TranscriptRow,
+)
 
 from .models import ActionStatus, RunKind, RunStatus
 
@@ -17,6 +23,10 @@ DEFAULT_PROPOSAL_TTL = timedelta(hours=1)
 
 
 class ProposalIntegrityError(ValueError):
+    pass
+
+
+class ForegroundBusy(ValueError):
     pass
 
 
@@ -70,7 +80,15 @@ class AuthorityStore:
         self.session = session
 
     async def create_run(self, *, transcript_id: UUID | None, intent: str, kind: RunKind = RunKind.FOREGROUND) -> UUID:
-        run = RunRow(kind=kind.value, status=RunStatus.RUNNING.value, transcript_id=transcript_id, intent=intent)
+        if kind == RunKind.FOREGROUND and transcript_id is not None:
+            await self.session.execute(select(TranscriptRow.id).where(TranscriptRow.id == transcript_id).with_for_update())
+            active = (await self.session.execute(select(RunRow.id).where(
+                RunRow.transcript_id == transcript_id, RunRow.kind == kind.value, RunRow.inference_active.is_(True)
+            ))).scalar_one_or_none()
+            if active is not None:
+                raise ForegroundBusy("Atlas is still handling the previous message in this conversation")
+        run = RunRow(kind=kind.value, status=RunStatus.RUNNING.value, transcript_id=transcript_id, intent=intent,
+            inference_active=True, inference_status="running", heartbeat_at=datetime.now(UTC))
         self.session.add(run)
         await self.session.flush()
         return run.id
@@ -95,9 +113,7 @@ class AuthorityStore:
         return action.id
 
     async def prepare_proposal(self, *, run_id: UUID, operation: str, arguments: dict[str, Any], title: str, capability_id: str = "") -> UUID:
-        run = await self.session.get(RunRow, run_id)
-        if run is not None:
-            run.status = RunStatus.WAITING_FOR_OWNER.value
+        await self._lock_run(run_id)
         now = datetime.now(UTC)
         expires = now + DEFAULT_PROPOSAL_TTL
         proposal = {
@@ -126,6 +142,7 @@ class AuthorityStore:
             detail={"operation": operation, "arguments": arguments, "expires_at": proposal["expires_at"]},
         ))
         await self.session.flush()
+        await self._recompute_run(run_id)
         return action.id
 
     def verify_proposal(self, action: ActionRow) -> dict[str, Any]:
@@ -154,6 +171,8 @@ class AuthorityStore:
         return proposal
 
     async def begin_execution(self, action: ActionRow) -> dict[str, Any]:
+        await self._lock_run(action.run_id)
+        action = await self.session.get(ActionRow, action.id, populate_existing=True)
         proposal = self.verify_proposal(action)
         result = await self.session.execute(
             update(ActionRow)
@@ -163,11 +182,13 @@ class AuthorityStore:
         if result.rowcount != 1:
             raise ProposalIntegrityError("Action proposal is no longer executable")
         await self.session.flush()
+        await self._recompute_run(action.run_id)
         return proposal
 
     async def begin_automatic_execution(
         self, *, run_id: UUID, operation: str, arguments: dict[str, Any], summary: str, capability_id: str
     ) -> UUID:
+        await self._lock_run(run_id)
         now = datetime.now(UTC)
         created_at = now.isoformat()
         target_hash = _target_hash(
@@ -209,6 +230,8 @@ class AuthorityStore:
         action = await self.session.get(ActionRow, action_id)
         if action is None:
             raise LookupError("Action not found")
+        await self._lock_run(action.run_id)
+        action = await self.session.get(ActionRow, action.id, populate_existing=True)
         if action.status != ActionStatus.UNCERTAIN.value:
             raise ProposalIntegrityError("Only uncertain actions can be acknowledged")
         attention = (await self.session.execute(
@@ -231,17 +254,57 @@ class AuthorityStore:
     async def action_for_decision(self, action_id: UUID) -> ActionRow | None:
         return await self.session.get(ActionRow, action_id)
 
+    async def _lock_run(self, run_id: UUID) -> RunRow | None:
+        return await self.session.get(RunRow, run_id, with_for_update=True, populate_existing=True)
+
+    async def _recompute_run(self, run_id: UUID) -> None:
+        run = await self._lock_run(run_id)
+        if run is None:
+            return
+        await self.session.flush()
+        statuses = set((await self.session.execute(
+            select(ActionRow.status).where(ActionRow.run_id == run_id)
+        )).scalars().all())
+        if "uncertain" in statuses:
+            status = "uncertain"
+        elif "executing" in statuses:
+            status = "running"
+        elif "prepared" in statuses:
+            status = "waiting_for_owner"
+        elif run.inference_active:
+            status = "running"
+        elif "failed" in statuses or run.inference_status in {"failed", "interrupted"}:
+            status = "failed" if run.inference_status != "interrupted" else "interrupted"
+        elif "cancelled" in statuses:
+            status = "cancelled"
+        else:
+            status = "succeeded"
+        run.status = status
+        run.finished_at = datetime.now(UTC) if status in {"succeeded", "failed", "cancelled", "interrupted"} else None
+        if run.schedule_id is not None:
+            await self.session.execute(update(ScheduledTaskRow).where(ScheduledTaskRow.id == run.schedule_id).values(last_status=status))
+
     async def finish_run(self, run_id: UUID, *, succeeded: bool = True) -> None:
-        run = await self.session.get(RunRow, run_id)
-        if run is not None and run.status == RunStatus.RUNNING.value:
-            run.status = RunStatus.SUCCEEDED.value if succeeded else RunStatus.FAILED.value
-            run.finished_at = datetime.now(UTC)
+        run = await self._lock_run(run_id)
+        if run is not None:
+            if not run.inference_active or run.inference_status != "running":
+                raise ProposalIntegrityError("Inference no longer owns this run")
+            run.inference_active = False
+            run.inference_status = "succeeded" if succeeded else "failed"
+            await self.session.flush()
+            await self._recompute_run(run_id)
 
     async def cancel(self, action: ActionRow) -> None:
-        action.status = ActionStatus.CANCELLED.value
-        action.updated_at = datetime.now(UTC)
-        action.evidence = {**(action.evidence or {}), "decision": "cancelled"}
-        await self._resolve_attention_and_run(action, RunStatus.CANCELLED.value)
+        await self._lock_run(action.run_id)
+        action = await self.session.get(ActionRow, action.id, populate_existing=True)
+        result = await self.session.execute(
+            update(ActionRow).where(ActionRow.id == action.id, ActionRow.status == ActionStatus.PREPARED.value)
+            .values(status=ActionStatus.CANCELLED.value, updated_at=datetime.now(UTC),
+                evidence={**(action.evidence or {}), "decision": "cancelled"})
+        )
+        if result.rowcount != 1:
+            raise ProposalIntegrityError("Only a prepared action can be cancelled")
+        await self._resolve_attention_and_run(action)
 
     async def complete(
         self, action_id: UUID, *, status: ActionStatus, result: dict[str, Any] | None = None,
@@ -250,23 +313,27 @@ class AuthorityStore:
         if status not in {ActionStatus.SUCCEEDED, ActionStatus.FAILED, ActionStatus.UNCERTAIN}:
             raise ValueError("Execution must end as succeeded, failed, or uncertain")
         action = await self.session.get(ActionRow, action_id)
-        if action is None or action.status != ActionStatus.EXECUTING.value:
+        if action is None:
             raise ProposalIntegrityError("Executing action state was lost")
-        action.status = status.value
-        action.updated_at = datetime.now(UTC)
+        await self._lock_run(action.run_id)
+        action = await self.session.get(ActionRow, action_id, populate_existing=True)
         decision = "automatic" if (action.evidence or {}).get("automatic") else "approved"
         evidence = {**(action.evidence or {}), "decision": decision, "result": result or {}}
         if external_id:
             evidence["external_id"] = external_id
-        action.evidence = evidence
+        changed = await self.session.execute(
+            update(ActionRow).where(ActionRow.id == action_id, ActionRow.status == ActionStatus.EXECUTING.value)
+            .values(status=status.value, updated_at=datetime.now(UTC), evidence=evidence)
+        )
+        if changed.rowcount != 1:
+            raise ProposalIntegrityError("Executing action state was lost")
         if status == ActionStatus.UNCERTAIN:
             await self._mark_uncertain(action)
-        elif resolve_run:
-            run_status = RunStatus.SUCCEEDED.value if status == ActionStatus.SUCCEEDED else RunStatus.FAILED.value
-            await self._resolve_attention_and_run(action, run_status)
+        else:
+            await self._resolve_attention_and_run(action)
 
 
-    async def reconcile_stale_executions(self, *, stale_before: datetime) -> int:
+    async def reconcile_stale_executions(self, *, stale_before: datetime, observation_sink=None) -> int:
         rows = (await self.session.execute(
             select(ActionRow).where(
                 ActionRow.status == ActionStatus.EXECUTING.value,
@@ -276,6 +343,9 @@ class AuthorityStore:
         )).scalars().all()
         reconciled = 0
         for action in rows:
+            run = await self._lock_run(action.run_id)
+            if run is not None and run.inference_active and run.heartbeat_at and run.heartbeat_at >= stale_before:
+                continue
             result = await self.session.execute(
                 update(ActionRow)
                 .where(ActionRow.id == action.id, ActionRow.status == ActionStatus.EXECUTING.value)
@@ -285,6 +355,8 @@ class AuthorityStore:
                 continue
             action.status = ActionStatus.UNCERTAIN.value
             await self._mark_uncertain(action, reason="Execution was abandoned before Atlas could confirm the external outcome.")
+            if observation_sink is not None:
+                await observation_sink(action, run)
             reconciled += 1
         return reconciled
 
@@ -316,15 +388,14 @@ class AuthorityStore:
         if run is not None:
             run.status = RunStatus.UNCERTAIN.value
             run.finished_at = None
+            if run.schedule_id is not None:
+                await self.session.execute(update(ScheduledTaskRow).where(ScheduledTaskRow.id == run.schedule_id).values(last_status="uncertain"))
 
-    async def _resolve_attention_and_run(self, action: ActionRow, run_status: str) -> None:
+    async def _resolve_attention_and_run(self, action: ActionRow) -> None:
         attention = (await self.session.execute(
             select(OwnerAttentionRow).where(OwnerAttentionRow.action_id == action.id, OwnerAttentionRow.resolved.is_(False))
         )).scalar_one_or_none()
         if attention is not None:
             attention.resolved = True
             attention.resolved_at = datetime.now(UTC)
-        run = await self.session.get(RunRow, action.run_id)
-        if run is not None:
-            run.status = run_status
-            run.finished_at = datetime.now(UTC)
+        await self._recompute_run(action.run_id)

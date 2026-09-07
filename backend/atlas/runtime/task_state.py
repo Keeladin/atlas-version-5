@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from atlas.runtime.evidence import attach_projection_metadata, bound_model_evidence
+TaskText = Annotated[str, Field(min_length=1, max_length=300)]
 
 
 class TaskDecision(BaseModel):
@@ -22,10 +23,10 @@ class TaskStateDelta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     objective: str | None = Field(default=None, max_length=800)
-    constraints: list[str] | None = None
-    decisions: list[TaskDecision] | None = None
-    findings: list[str] | None = None
-    open_questions: list[str] | None = None
+    constraints: list[TaskText] | None = Field(default=None, max_length=5)
+    decisions: list[TaskDecision] | None = Field(default=None, max_length=5)
+    findings: list[TaskText] | None = Field(default=None, max_length=5)
+    open_questions: list[TaskText] | None = Field(default=None, max_length=5)
     next_step: str | None = Field(default=None, max_length=500)
     status: Literal["active", "complete"] | None = None
     replace: bool = False
@@ -40,7 +41,6 @@ _MAX_OWNER_REQUEST = 1000
 _MAX_LIST = 5
 _MAX_EVENTS = 8
 _MAX_WORKING_SET = 8
-_MAX_PENDING = 8
 _MAX_ERRORS = 5
 _SAFE_KEYS = (
     "project",
@@ -78,7 +78,9 @@ def _bounded_strings(values: list[str] | None, *, limit: int = _MAX_LIST) -> lis
 
 def new_task_state(owner_request: str = "") -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
+        "task_id": str(uuid4()),
+        "revision": 0,
         "status": "active",
         "runtime": {
             "owner_request": _clip(owner_request, _MAX_OWNER_REQUEST),
@@ -101,7 +103,10 @@ def new_task_state(owner_request: str = "") -> dict[str, Any]:
 
 def begin_owner_turn(state: dict[str, Any] | None, owner_request: str) -> dict[str, Any]:
     if not state or state.get("status") == "complete":
-        return new_task_state(owner_request)
+        result = new_task_state(owner_request)
+        if state:
+            result["runtime"]["pending_actions"] = deepcopy((state.get("runtime") or {}).get("pending_actions", []))
+        return result
     result = deepcopy(state)
     runtime = result.setdefault("runtime", {})
     runtime["owner_request"] = _clip(owner_request, _MAX_OWNER_REQUEST)
@@ -174,9 +179,12 @@ def record_runtime_event(
             "evidence_id": evidence_id,
             "targets": targets,
         })
-    elif action_id and phase in {"succeeded", "failed", "cancelled", "rejected", "uncertain"}:
+    elif action_id and phase == "uncertain":
         pending = [item for item in pending if item.get("action_id") != action_id]
-    runtime["pending_actions"] = pending[-_MAX_PENDING:]
+        pending.append({"action_id": action_id, "operation": operation, "phase": phase, "evidence_id": evidence_id})
+    elif action_id and phase in {"succeeded", "failed", "cancelled", "rejected"}:
+        pending = [item for item in pending if item.get("action_id") != action_id]
+    runtime["pending_actions"] = pending
 
     if phase in {"failed", "uncertain", "unavailable", "forbidden"}:
         message = ""
@@ -197,8 +205,7 @@ def record_runtime_event(
 def merge_semantic_delta(state: dict[str, Any] | None, delta: TaskStateDelta) -> dict[str, Any]:
     result = deepcopy(state) if state else new_task_state()
     if delta.replace:
-        owner_request = str(result.get("runtime", {}).get("owner_request") or "")
-        result = new_task_state(owner_request)
+        result["semantic"] = new_task_state()["semantic"]
     semantic = result.setdefault("semantic", {})
 
     if delta.objective is not None:
@@ -227,8 +234,30 @@ def merge_semantic_delta(state: dict[str, Any] | None, delta: TaskStateDelta) ->
 def active_task_provider_message(state: dict[str, Any] | None) -> dict[str, str] | None:
     if not state or state.get("status") != "active":
         return None
-    projected, metadata = bound_model_evidence(state, char_limit=9_000)
-    projected = attach_projection_metadata(projected, metadata)
+    # Semantic fields are bounded on admission, never by a lossy evidence
+    # compactor. Even a fully populated valid checkpoint retains every field.
+    runtime = state.get("runtime") or {}
+    projected = {
+        "task_id": state.get("task_id"),
+        "revision": state.get("revision", 0),
+        "status": state["status"],
+        "semantic": deepcopy(state.get("semantic") or {}),
+        "runtime": {
+            "owner_request": runtime.get("owner_request"),
+            "owner_turn_id": runtime.get("owner_turn_id"),
+            "pending_actions": [
+                {key: item[key] for key in ("action_id", "operation", "phase", "evidence_id") if key in item}
+                for item in runtime.get("pending_actions", [])[:16]
+            ],
+            "pending_actions_count": len(runtime.get("pending_actions", [])),
+            "pending_actions_overflow": ({"operation_id": "evidence.task.read", "task_id": state.get("task_id"),
+                "expected_revision": state.get("revision", 0), "message": "Additional unresolved action references remain in the exact task checkpoint; page it before planning effects."}
+                if len(runtime.get("pending_actions", [])) > 16 else None),
+            "errors": deepcopy(runtime.get("errors", [])),
+            "recent_events": deepcopy(runtime.get("recent_events", [])[-4:]),
+            "working_set": deepcopy(runtime.get("working_set", [])[-4:]),
+        },
+    }
     encoded = json.dumps(projected, ensure_ascii=False, separators=(",", ":"), default=str)
     return {
         "role": "developer",
