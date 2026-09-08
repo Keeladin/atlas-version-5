@@ -6,6 +6,7 @@ from atlas.config import Settings
 from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.memory import MemoryService
+from atlas.memory.embeddings import OpenAIEmbeddingClient
 from atlas.registry.repository import RegistryRepository
 from atlas.registry.service import EnvironmentRegistry
 from atlas.runtime.observations import EvidenceStore
@@ -32,7 +33,22 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         ),
     )
     factory = get_session_factory()
-    memory = MemoryService(factory, chunk_chars=settings.memory_chunk_chars)
+    memory_embedder = (
+        OpenAIEmbeddingClient(
+            api_key=settings.openai_api_key,
+            model=settings.memory_embedding_model,
+            dimensions=settings.memory_embedding_dimensions,
+        )
+        if settings.openai_api_key is not None
+        else None
+    )
+    memory = MemoryService(
+        factory,
+        chunk_chars=settings.memory_chunk_chars,
+        embedder=memory_embedder,
+        embedding_batch_size=settings.memory_embedding_batch_size,
+        embedding_max_chunks_per_run=settings.memory_embedding_max_chunks_per_run,
+    )
     runtime.register_executor("memory.search", memory.search)
 
     async def policy_reader():

@@ -94,3 +94,124 @@ async def test_indexer_and_lexical_search_are_incremental_and_exclude_live_tail(
         count_after = (await session.execute(select(func.count()).select_from(TranscriptIndexChunkRow))).scalar_one()
         assert again.turns_processed == 0
         assert count_after == count_before
+
+
+class _FakeEmbeddingClient:
+    model = "test-embedding-v1"
+    dimensions = 1_536
+
+    async def embed(self, texts):
+        vectors = []
+        for text in texts:
+            lowered = text.lower()
+            if "future" in lowered or "picture" in lowered or "portrait" in lowered:
+                vectors.append([1.0, 0.0] + [0.0] * 1_534)
+            else:
+                vectors.append([0.0, 1.0] + [0.0] * 1_534)
+        return vectors
+
+
+@pytest.mark.asyncio
+async def test_semantic_search_recovers_related_wording_without_lexical_match(pg_factory) -> None:
+    from atlas.memory.embeddings import TranscriptEmbeddingIndexer
+
+    async with pg_factory() as session:
+        transcript = TranscriptRow(kind="owner", next_turn_sequence=4)
+        session.add(transcript)
+        await session.flush()
+        session.add_all([
+            TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=1, actor="owner",
+                blocks=[{"type": "text", "text": "I showed you Jaco_Future.jpg."}],
+            ),
+            TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=2, actor="atlas",
+                blocks=[{"type": "text", "text": "It was a stylized sci-fi portrait with dark hair and futuristic armour. " + "futuristic armour detail " * 8}],
+            ),
+            TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=3, actor="owner",
+                blocks=[{"type": "text", "text": "Caddy stays outside the Atlas runtime. " + "host infrastructure boundary " * 14}],
+            ),
+            TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=4, actor="atlas",
+                blocks=[{"type": "text", "text": "The reverse proxy remains host infrastructure."}],
+            ),
+        ])
+        await session.commit()
+
+    async with pg_factory() as session:
+        indexed = await TranscriptIndexer(session, max_chars=500).run_once(active_tail_exchanges=0)
+        await session.commit()
+        assert indexed.chunks_created >= 2
+
+    semantic = await TranscriptEmbeddingIndexer(pg_factory, _FakeEmbeddingClient()).run_once(
+        batch_size=2, max_chunks=10
+    )
+    assert semantic["chunks_embedded"] == indexed.chunks_created
+    second_semantic = await TranscriptEmbeddingIndexer(
+        pg_factory, _FakeEmbeddingClient()
+    ).run_once(batch_size=2, max_chunks=10)
+    assert second_semantic["chunks_embedded"] == 0
+
+    async with pg_factory() as session:
+        repository = MemorySearchRepository(session)
+        query_vector = [1.0, 0.0] + [0.0] * 1_534
+        matches = await repository.search(
+            "picture",
+            limit=5,
+            query_embedding=query_vector,
+            embedding_model=_FakeEmbeddingClient.model,
+        )
+        assert matches
+        assert "Jaco_Future.jpg" in str(matches[0]["content"])
+        assert matches[0]["lexical_rank"] is None
+        assert "semantic" in matches[0]["retrieval_sources"]
+        assert float(matches[0]["semantic_similarity"]) > 0.99
+        coverage = await repository.coverage(
+            embedding_model=_FakeEmbeddingClient.model,
+            embedding_dimensions=_FakeEmbeddingClient.dimensions,
+        )
+        assert coverage["embedded_chunks"] == indexed.chunks_created
+
+
+class _FailingEmbeddingClient:
+    model = "test-embedding-v1"
+    dimensions = 1_536
+
+    async def embed(self, texts):
+        from atlas.memory.embeddings import EmbeddingError
+
+        raise EmbeddingError("fixture provider unavailable")
+
+
+@pytest.mark.asyncio
+async def test_memory_search_falls_back_to_lexical_when_embedding_provider_fails(pg_factory) -> None:
+    from atlas.memory.service import MemoryService
+
+    async with pg_factory() as session:
+        transcript = TranscriptRow(kind="owner", next_turn_sequence=2)
+        session.add(transcript)
+        await session.flush()
+        session.add_all([
+            TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=1, actor="owner",
+                blocks=[{"type": "text", "text": "Remember that Caddy is our reverse proxy."}],
+            ),
+            TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=2, actor="atlas",
+                blocks=[{"type": "text", "text": "Caddy stays outside the Atlas runtime."}],
+            ),
+        ])
+        await session.commit()
+
+    async with pg_factory() as session:
+        await TranscriptIndexer(session).run_once(active_tail_exchanges=0)
+        await session.commit()
+
+    result = await MemoryService(pg_factory, embedder=_FailingEmbeddingClient()).search(
+        {"query": "Caddy", "limit": 5}
+    )
+    assert result["retrieval"]["mode"] == "lexical_fallback"
+    assert result["results"]
+    assert "Caddy" in str(result["results"][0]["content"])
+    assert "lexical" in result["results"][0]["retrieval_sources"]

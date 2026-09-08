@@ -115,7 +115,9 @@ fi
 if ! grep -q '^ATLAS_AUTH_RP_ID=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_AUTH_RP_ID=atlas-agentic.co.za' >> /etc/atlas-v5/config/runtime.env
 fi
-if ! grep -q '^ATLAS_AUTH_RP_NAME=' /etc/atlas-v5/config/runtime.env; then
+if grep -qx 'ATLAS_AUTH_RP_NAME=Atlas V5' /etc/atlas-v5/config/runtime.env; then
+  sed -i 's/^ATLAS_AUTH_RP_NAME=Atlas V5$/ATLAS_AUTH_RP_NAME="Atlas V5"/' /etc/atlas-v5/config/runtime.env
+elif ! grep -q '^ATLAS_AUTH_RP_NAME=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_AUTH_RP_NAME="Atlas V5"' >> /etc/atlas-v5/config/runtime.env
 fi
 if ! grep -q '^ATLAS_AUTH_ORIGIN=' /etc/atlas-v5/config/runtime.env; then

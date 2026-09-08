@@ -25,6 +25,8 @@ def test_offline_backup_restore_preserves_database_and_exact_artifacts(tmp_path)
     source_engine = create_engine(source_url)
     target_engine = create_engine(target_url)
     try:
+        with source_engine.begin() as connection:
+            connection.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
         Base.metadata.create_all(source_engine)
         source = Settings(database_url=source_url.render_as_string(hide_password=False), database_url_file=None,
             artifact_dir=tmp_path / 'source-artifacts', project_checkpoint_root=tmp_path / 'source-checkpoints',

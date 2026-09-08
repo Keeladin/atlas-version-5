@@ -63,7 +63,7 @@ async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_exi
         schema = (await connection.execute(text('SELECT current_schema()'))).scalar_one()
         await connection.run_sync(Base.metadata.drop_all)
     env = {**os.environ, 'ATLAS_DATABASE_URL': os.environ['ATLAS_TEST_DATABASE_URL'],
-        'PGOPTIONS': f'-csearch_path={schema}'}
+        'PGOPTIONS': f'-csearch_path={schema},public'}
     env.pop('ATLAS_DATABASE_URL_FILE', None)
     async def migrate(target):
         result = await asyncio.to_thread(subprocess.run,
@@ -85,7 +85,7 @@ async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_exi
         env=env, capture_output=True, text=True, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     async with pg_factory() as session:
-        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a04'
+        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a05'
         if upgrade_existing:
             rows = (await session.execute(select(TranscriptRow))).scalars().all()
             assert len(rows) == 2 and sum(row.closed_at is None for row in rows) == 1

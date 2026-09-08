@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     working_context_raw_tool_exchanges: int = 2
     memory_chunk_chars: int = 4_000
     memory_active_tail_exchanges: int = 10
+    memory_embedding_model: str = "text-embedding-3-large"
+    memory_embedding_dimensions: int = 1_536
+    memory_embedding_batch_size: int = 16
+    memory_embedding_max_chunks_per_run: int = 256
     capability_call_limit: int = 16
     capability_completion_reserve: int = 2
     gws_command: Path = Path("/opt/atlas-v5/bin/gws")

@@ -17,8 +17,9 @@ async def pg_factory():
     admin = create_async_engine(url)
     schema = 'test_' + uuid4().hex
     async with admin.begin() as connection:
+        await connection.execute(text('CREATE EXTENSION IF NOT EXISTS vector'))
         await connection.execute(text(f'CREATE SCHEMA {schema}'))
-    engine = create_async_engine(url, connect_args={'options': f'-csearch_path={schema}'})
+    engine = create_async_engine(url, connect_args={'options': f'-csearch_path={schema},public'})
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     try:

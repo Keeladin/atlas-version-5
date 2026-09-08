@@ -13,6 +13,7 @@ dependencies = [
   "fastapi>=0.116",
   "jsonschema>=4.25",
   "openai>=1.100",
+  "pgvector>=0.4",
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.10",
   "python-multipart>=0.0.20",

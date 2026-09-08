@@ -3,7 +3,7 @@
 Status: **Accepted implementation plan — Phase 0 complete; Phase 1 centre operational**
 Date: 2026-09-05
 
-Implementation checkpoint (2026-09-08): the model-led conversation path, progressive capability runtime, generic resource acquisition, local workspace, Google Drive/Gmail, read-only GitHub MCP, provider-native web search, approval widgets, provider-token context-pressure telemetry, workspace/project operations, schedules and action reconciliation are implemented. The first memory-orbit slice now adds deterministic transcript chunking/checkpointing and bounded PostgreSQL lexical recall; semantic embeddings/pgvector ranking, context capsules and durable memory reasoning remain staged. See `20-implementation-notes.md` for implementation evidence and recovery remediation.
+Implementation checkpoint (2026-09-08): the model-led conversation path, progressive capability runtime, generic resource acquisition, local workspace, Google Drive/Gmail, read-only GitHub MCP, provider-native web search, approval widgets, provider-token context-pressure telemetry, workspace/project operations, schedules and action reconciliation are implemented. Memory retrieval now adds deterministic transcript chunking/checkpointing plus bounded hybrid PostgreSQL full-text/pgvector recall with lexical fallback. Context capsules, durable memory reasoning/commands, visual attachment indexing and OEM-manual ingestion remain staged. See `20-implementation-notes.md` for implementation evidence and recovery remediation.
 
 ## 1. Purpose
 

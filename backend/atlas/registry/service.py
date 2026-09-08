@@ -47,7 +47,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         CapabilityEntry(
             id="atlas.memory",
             family="Memory",
-            description="Search Atlas-owned indexed canonical transcript history with bounded provenance-backed results.",
+            description="Search Atlas-owned indexed canonical transcript history with bounded hybrid lexical and semantic retrieval.",
             source=CapabilitySource.ATLAS,
             enabled=True,
             availability=CapabilityAvailability.AVAILABLE,
@@ -156,7 +156,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             "required": ["evidence_id", "artifact_id"], "additionalProperties": False}, trust="external"))
     registry.register_operation(OperationDescriptor(
         id="memory.search", capability_id="atlas.memory", family="Memory",
-        description="Search indexed canonical transcript history using bounded lexical retrieval. Refine terms or exclude prior chunks when a first lookup is incomplete or wrong.",
+        description="Search indexed canonical transcript history using bounded hybrid lexical and semantic retrieval. Exact wording and technical identifiers remain lexical signals; related wording can be recovered semantically. Refine terms or exclude prior chunks when a first lookup is incomplete or wrong.",
         input_schema={"type": "object", "properties": {
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 10},
