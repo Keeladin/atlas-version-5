@@ -15,6 +15,9 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Capability discovery is bounded separately from dispatched operations | `test_provider_resources.py` | Covered |
 | Scheduled recurrence advancement and queued occurrence creation are atomic | `test_schedules.py`, `test_runtime_invariants.py` | Covered |
 | Scheduled transcripts cannot become the foreground owner transcript | `test_transcript_repository.py` | Covered |
+| Owner chats retain separate canonical transcripts and can be switched without mixing turns | `test_owner_chats.py` | Real PostgreSQL |
+| Deleting a chat cascades transcript history/index state but preserves independent durable memory | `test_owner_chats.py` | Real PostgreSQL |
+| Memory mutation provenance follows the executing transcript rather than mutable UI selection | `test_durable_memory.py`, `test_owner_chats.py` | Real PostgreSQL |
 | Rollover removes only the summarized prefix from provider projection | `test_conversation_context.py`, `test_runtime_invariants.py` | Covered |
 | Missing rollover marker fails open to canonical history rather than dropping turns | `test_runtime_invariants.py` | Covered |
 | Tool evidence projects as bounded, explicitly untrusted source evidence | `test_conversation_context.py`, `test_runtime_invariants.py` | Covered |

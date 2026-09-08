@@ -74,7 +74,7 @@ export type Turn = {
 
 export type Conversation = {
   next_before_sequence: number | null
-  transcript: { id: string; created_at: string; closed_at: string | null }
+  transcript: { id: string; title: string | null; created_at: string; updated_at: string; closed_at: string | null }
   turns: Turn[]
 }
 
@@ -84,8 +84,62 @@ export async function getHealth(): Promise<Health> {
   return payload
 }
 
-export async function getConversation(beforeSequence?: number): Promise<Conversation> {
-  const response = await fetch(`/api/conversation${beforeSequence ? `?before_sequence=${beforeSequence}` : ''}`)
+export type Chat = {
+  id: string
+  title: string
+  created_at: string
+  updated_at: string
+  active: boolean
+}
+
+export type ChatList = { active_chat_id: string; items: Chat[] }
+
+export async function getChats(): Promise<ChatList> {
+  const response = await fetch('/api/chats')
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Chat list failed (${response.status})`)
+  return body as ChatList
+}
+
+export async function createChat(title?: string): Promise<Chat> {
+  const response = await fetch('/api/chats', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: title || null }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Chat creation failed (${response.status})`)
+  return body as Chat
+}
+
+export async function activateChat(chatId: string): Promise<Chat> {
+  const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}/activate`, { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Chat activation failed (${response.status})`)
+  return body as Chat
+}
+
+export async function renameChat(chatId: string, title: string): Promise<Chat> {
+  const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Chat rename failed (${response.status})`)
+  return body as Chat
+}
+
+export async function deleteChat(chatId: string): Promise<{ deleted_chat_id: string; active_chat: Chat }> {
+  const response = await fetch(`/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Chat deletion failed (${response.status})`)
+  return body
+}
+
+export async function getConversation(chatId?: string, beforeSequence?: number): Promise<Conversation> {
+  const params = new URLSearchParams()
+  if (chatId) params.set('chat_id', chatId)
+  if (beforeSequence) params.set('before_sequence', String(beforeSequence))
+  const query = params.size ? `?${params.toString()}` : ''
+  const response = await fetch(`/api/conversation${query}`)
   if (!response.ok) throw new Error(`Conversation load failed (${response.status})`)
   return (await response.json()) as Conversation
 }
@@ -110,8 +164,9 @@ export type ConversationContext = {
   policy: WorkingContextPolicy
 }
 
-export async function getConversationContext(): Promise<ConversationContext> {
-  const response = await fetch('/api/conversation/context')
+export async function getConversationContext(chatId?: string): Promise<ConversationContext> {
+  const query = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : ''
+  const response = await fetch(`/api/conversation/context${query}`)
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Context load failed (${response.status})`)
   return body as ConversationContext
@@ -169,8 +224,9 @@ export type ConversationContextStats = {
   }
 }
 
-export async function getConversationContextStats(): Promise<ConversationContextStats> {
-  const response = await fetch('/api/conversation/context/stats')
+export async function getConversationContextStats(chatId?: string): Promise<ConversationContextStats> {
+  const query = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : ''
+  const response = await fetch(`/api/conversation/context/stats${query}`)
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Context statistics load failed (${response.status})`)
   return body as ConversationContextStats
@@ -182,11 +238,12 @@ export async function streamMessage(
   text: string,
   attachments: string[],
   onDelta: (delta: string) => void,
+  chatId: string | null = null,
 ): Promise<void> {
   const response = await fetch('/api/conversation/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, attachments }),
+    body: JSON.stringify({ text, attachments, chat_id: chatId }),
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)

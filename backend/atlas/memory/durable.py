@@ -13,6 +13,7 @@ from atlas.persistence.models import (
     TranscriptRow,
     TurnRow,
 )
+from atlas.runtime.invocation import current_transcript_id
 
 ACTIVE = "active"
 SUPERSEDED = "superseded"
@@ -50,18 +51,19 @@ class DurableMemoryRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def latest_owner_source(self) -> tuple[UUID | None, UUID | None]:
+    async def latest_owner_source(
+        self, transcript_id: UUID | None = None
+    ) -> tuple[UUID | None, UUID | None]:
         statement = (
             select(TranscriptRow.id, TurnRow.id)
             .join(TurnRow, TurnRow.transcript_id == TranscriptRow.id)
-            .where(
-                TranscriptRow.kind == "owner",
-                TranscriptRow.closed_at.is_(None),
-                TurnRow.actor == "owner",
-            )
-            .order_by(TurnRow.sequence.desc())
-            .limit(1)
+            .where(TranscriptRow.kind == "owner", TurnRow.actor == "owner")
         )
+        if transcript_id is not None:
+            statement = statement.where(TranscriptRow.id == transcript_id)
+        else:
+            statement = statement.where(TranscriptRow.closed_at.is_(None))
+        statement = statement.order_by(TurnRow.sequence.desc()).limit(1)
         row = (await self.session.execute(statement)).first()
         return (row[0], row[1]) if row is not None else (None, None)
 
@@ -534,7 +536,7 @@ class DurableMemoryCommands:
     ) -> tuple[UUID, tuple[UUID | None, UUID | None]]:
         async with self.factory() as session:
             repository = DurableMemoryRepository(session)
-            source = await repository.latest_owner_source()
+            source = await repository.latest_owner_source(current_transcript_id.get())
             command = MemoryCommandRow(
                 operation=operation,
                 status=PENDING,

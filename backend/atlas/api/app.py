@@ -99,6 +99,15 @@ capability_runtime = build_capability_runtime(settings, registry)
 class ChatRequest(BaseModel):
     text: str = ""
     attachments: list[str] = []
+    chat_id: UUID | None = None
+
+
+class ChatCreate(BaseModel):
+    title: str | None = None
+
+
+class ChatRename(BaseModel):
+    title: str
 
 
 class ActionDecision(BaseModel):
@@ -838,13 +847,89 @@ def _tool_band(exchange_age: int) -> str:
     return "exchanges_16_20"
 
 
+def _chat_payload(chat) -> dict[str, object]:
+    return {
+        "id": str(chat.id),
+        "title": chat.title or "New chat",
+        "created_at": chat.created_at,
+        "updated_at": chat.updated_at,
+        "active": chat.closed_at is None,
+    }
+
+
+async def _owner_chat(repository: TranscriptRepository, chat_id: UUID | None):
+    if chat_id is None:
+        return await repository.get_or_create_active()
+    try:
+        return await repository.get_owner_chat(chat_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Chat not found") from exc
+
+
+@app.get("/api/chats")
+async def list_chats(session: Annotated[AsyncSession, Depends(get_session)]):
+    repository = TranscriptRepository(session)
+    active = await repository.get_or_create_active()
+    chats = await repository.list_owner_chats()
+    await session.commit()
+    return {"active_chat_id": str(active.id), "items": [_chat_payload(chat) for chat in chats]}
+
+
+@app.post("/api/chats")
+async def create_chat(request: ChatCreate, session: Annotated[AsyncSession, Depends(get_session)]):
+    repository = TranscriptRepository(session)
+    chat = await repository.create_owner_chat(title=request.title)
+    await session.commit()
+    return _chat_payload(chat)
+
+
+@app.post("/api/chats/{chat_id}/activate")
+async def activate_chat(chat_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
+    repository = TranscriptRepository(session)
+    try:
+        chat = await repository.activate_owner_chat(chat_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Chat not found") from exc
+    await session.commit()
+    return _chat_payload(chat)
+
+
+@app.patch("/api/chats/{chat_id}")
+async def rename_chat(chat_id: UUID, request: ChatRename, session: Annotated[AsyncSession, Depends(get_session)]):
+    repository = TranscriptRepository(session)
+    try:
+        chat = await repository.rename_owner_chat(chat_id, request.title)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Chat not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await session.commit()
+    return _chat_payload(chat)
+
+
+@app.delete("/api/chats/{chat_id}")
+async def delete_chat(chat_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
+    active_run = (await session.execute(select(RunRow.id).where(
+        RunRow.transcript_id == chat_id, RunRow.kind == "foreground", RunRow.inference_active.is_(True)
+    ).limit(1))).scalar_one_or_none()
+    if active_run is not None:
+        raise HTTPException(status_code=409, detail="Chat has an active Atlas response; wait for it to finish")
+    repository = TranscriptRepository(session)
+    try:
+        active = await repository.delete_owner_chat(chat_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Chat not found") from exc
+    await session.commit()
+    return {"deleted_chat_id": str(chat_id), "active_chat": _chat_payload(active)}
+
+
 @app.get("/api/conversation/context")
-async def conversation_context(session: Annotated[AsyncSession, Depends(get_session)]):
+async def conversation_context(session: Annotated[AsyncSession, Depends(get_session)], chat_id: Annotated[UUID | None, Query()] = None):
     api_key = settings.openai_api_key
     if api_key is None:
         raise HTTPException(status_code=503, detail="OpenAI provider is not configured")
     repository = TranscriptRepository(session)
-    transcript = await repository.get_or_create_active()
+    transcript = await _owner_chat(repository, chat_id)
     turns = await repository.list_recent_turns(transcript.id)
     provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
     suppressed_contents = await _active_memory_suppression_contents(session)
@@ -864,12 +949,12 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
 
 
 @app.get("/api/conversation/context/stats")
-async def conversation_context_stats(session: Annotated[AsyncSession, Depends(get_session)]):
+async def conversation_context_stats(session: Annotated[AsyncSession, Depends(get_session)], chat_id: Annotated[UUID | None, Query()] = None):
     api_key = settings.openai_api_key
     if api_key is None:
         raise HTTPException(status_code=503, detail="OpenAI provider is not configured")
     repository = TranscriptRepository(session)
-    transcript = await repository.get_or_create_active()
+    transcript = await _owner_chat(repository, chat_id)
     turns = await repository.list_recent_turns(transcript.id)
     provider = OpenAIProvider(
         api_key=api_key, model=settings.openai_model,
@@ -992,9 +1077,10 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
 
 @app.get("/api/conversation")
 async def conversation(session: Annotated[AsyncSession, Depends(get_session)],
-        before_sequence: int | None = Query(default=None, ge=1), limit: int = Query(default=200, ge=1, le=200)):
+        chat_id: Annotated[UUID | None, Query()] = None, before_sequence: int | None = Query(default=None, ge=1),
+        limit: int = Query(default=200, ge=1, le=200)):
     repository = TranscriptRepository(session)
-    transcript = await repository.get_or_create_active()
+    transcript = await _owner_chat(repository, chat_id)
     turns = await repository.list_turns(transcript.id, before_sequence=before_sequence, limit=limit)
     await session.commit()
     return {"transcript": transcript, "turns": turns, "next_before_sequence": turns[0].sequence if len(turns) == limit and turns[0].sequence > 1 else None}
@@ -1022,7 +1108,14 @@ async def stream_conversation(request: ChatRequest):
     factory = get_session_factory()
     async with factory() as session:
         repository = TranscriptRepository(session)
-        transcript = await repository.get_or_create_active()
+        try:
+            transcript = (
+                await repository.activate_owner_chat(request.chat_id)
+                if request.chat_id is not None
+                else await repository.get_or_create_active()
+            )
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="Chat not found") from exc
         run_intent = text or f"Attached {len(attachment_paths)} local workspace file(s)"
         try:
             run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=run_intent)

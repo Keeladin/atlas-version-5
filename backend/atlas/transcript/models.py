@@ -45,6 +45,8 @@ class Transcript(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     kind: str = "owner"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    title: str | None = None
     closed_at: datetime | None = None
     context_summary: str | None = None
     summarized_through_turn_id: UUID | None = None

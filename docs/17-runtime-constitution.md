@@ -167,7 +167,7 @@ During implementation, any proposed shortcut that weakens one of these guarantee
 
 ## Implemented conversation and recovery contracts
 
-Canonical turns receive a transactionally allocated per-transcript sequence. PostgreSQL allows one open owner transcript and one active foreground inference on it. A second foreground request returns HTTP 409 before appending an owner turn; a waiting action does not keep a finished inference's conversation slot occupied.
+Canonical turns receive a transactionally allocated per-transcript sequence. PostgreSQL may retain multiple owner-chat transcripts while exactly one is marked as the currently selected owner chat. Foreground inference is fenced per transcript: a second foreground request for the same chat returns HTTP 409 before appending an owner turn, while different chat transcripts retain separate task and evidence state. A waiting action does not keep a finished inference slot occupied. Memory mutations take their provenance from the inference run's transcript rather than whichever chat the UI happens to select later.
 
 Run outcome aggregates all action outcomes independently of inference completion. Conditional action transitions prevent cancellation or a late result from rewriting executing/uncertain truth. A successful sibling cannot clear uncertainty. Complete argument-schema validation precedes proposal and dispatch. An executor exception, including `ValueError`, cannot by itself prove that no effect occurred.
 

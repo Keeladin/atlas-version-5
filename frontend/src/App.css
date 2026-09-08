@@ -16,6 +16,7 @@
   --attention: #d29922;
   --topbar-height: 44px;
   --left-rail-width: 258px;
+  --chat-rail-width: 238px;
   --right-rail-width: 316px;
   --shadow-floating: 0 0 0 1px #3d444d, 0 8px 16px -4px #01040966, 0 4px 32px -4px #01040966, 0 24px 48px -12px #01040966;
 }
@@ -230,6 +231,123 @@ a { color: inherit; }
   overflow: hidden;
   background: linear-gradient(135deg, #010409 0%, #05090e 46%, #0d1117 100%);
 }
+
+.main-stage.with-chat-rail {
+  display: grid;
+  grid-template-columns: var(--chat-rail-width) minmax(0, 1fr);
+}
+
+.chat-rail {
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid #3d444d66;
+  background: #080c12c7;
+}
+
+.chat-rail-head {
+  flex: 0 0 auto;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 10px 10px 14px;
+  border-bottom: 1px solid #3d444d55;
+}
+
+.chat-rail-head strong { font-size: 12px; font-weight: 600; color: var(--fg-muted); }
+
+.chat-rail-head button {
+  min-height: 30px;
+  padding: 0 9px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: var(--bg-muted);
+  color: var(--fg-default);
+  font: 600 11px/1 var(--font-sans);
+}
+
+.chat-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.chat-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 2px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+}
+
+.chat-entry:hover,
+.chat-entry.active { background: #ffffff08; }
+.chat-entry.active { border-color: var(--border-muted); }
+
+.chat-select,
+.chat-more {
+  min-width: 0;
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font: 500 12px/1.3 var(--font-sans);
+}
+
+.chat-select {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px 6px 8px;
+  text-align: left;
+}
+
+.chat-select > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-bullet { color: var(--fg-disabled); text-align: center; }
+.chat-entry.active .chat-select { color: var(--fg-default); }
+.chat-more { padding: 0; border-radius: 5px; font-size: 16px; opacity: .2; }
+.chat-entry:hover .chat-more, .chat-entry.active .chat-more, .chat-more:focus-visible { opacity: 1; }
+.chat-more:hover { background: var(--bg-emphasis); color: var(--fg-default); }
+
+.chat-menu {
+  position: absolute;
+  top: 31px;
+  right: 4px;
+  z-index: 30;
+  width: 112px;
+  padding: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--bg-muted);
+  box-shadow: var(--shadow-floating);
+}
+
+.chat-menu button {
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-default);
+  text-align: left;
+  font: 500 12px/1.2 var(--font-sans);
+}
+.chat-menu button:hover { background: var(--bg-emphasis); }
+.chat-menu button.danger { color: #ff7b72; }
+.chat-list-empty { margin: 16px 8px; color: var(--fg-disabled); font-size: 11px; }
+.mobile-chat-section { padding: 8px; }
+.mobile-chat-section .chat-rail-head { min-height: 48px; padding: 8px; }
+.mobile-chat-section .chat-list { max-height: min(56vh, 440px); }
 
 .chat-canvas {
   position: relative;
@@ -565,6 +683,7 @@ textarea:disabled {
 @media (max-width: 1120px) {
   :root {
     --left-rail-width: 224px;
+    --chat-rail-width: 190px;
     --right-rail-width: 280px;
   }
 
@@ -608,7 +727,8 @@ textarea:disabled {
   }
   .atlas-body { display: block; height: auto; min-height: calc(100dvh - var(--topbar-height)); }
   .left-rail { display: none; }
-  .main-stage { min-height: calc(100dvh - var(--topbar-height)); overflow: visible; }
+  .main-stage, .main-stage.with-chat-rail { display: block; min-height: calc(100dvh - var(--topbar-height)); overflow: visible; }
+  .chat-rail { display: none; }
   .chat-canvas { min-height: calc(100dvh - var(--topbar-height)); }
   .canvas-head { min-height: 50px; padding: 10px 14px; }
   .canvas-kicker, .canvas-state { display: none; }

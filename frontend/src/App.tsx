@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
 import { approvalFields } from './approval'
-import { configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -63,6 +63,10 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const runtimeOk = Boolean(health)
   const databaseOk = Boolean(health?.database.ok)
   const providerOk = Boolean(health?.provider.configured)
+  const [chats, setChats] = useState<Chat[]>([])
+  const [activeChatId, setActiveChatId] = useState<string | null>(null)
+  const [chatBusy, setChatBusy] = useState(false)
+  const [chatMenuId, setChatMenuId] = useState<string | null>(null)
   const [turns, setTurns] = useState<Turn[]>([])
   const [historyCursor, setHistoryCursor] = useState<number | null>(null)
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -74,7 +78,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     if (!historyCursor || historyLoading) return
     setHistoryLoading(true)
     try {
-      const older = await getConversation(historyCursor)
+      const older = await getConversation(activeChatId ?? undefined, historyCursor)
       setTurns((current) => [...older.turns, ...current.filter((turn) => !older.turns.some((old) => old.id === turn.id))])
       setHistoryCursor(older.next_before_sequence)
     } catch (cause) { setError(String(cause)) }
@@ -105,7 +109,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([])
-  const [mobileActivity, setMobileActivity] = useState<'needs' | 'latest' | null>(null)
+  const [mobileActivity, setMobileActivity] = useState<'chats' | 'needs' | 'latest' | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const composerFileInputRef = useRef<HTMLInputElement | null>(null)
   const [composerAttachments, setComposerAttachments] = useState<LocalStorageEntry[]>([])
@@ -113,19 +117,148 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
-    getConversation().then(installConversation).catch((cause) => setError(String(cause)))
-    getConversationContext().then(setConversationContext).catch(() => setConversationContext(null))
+    getChats().then(async (payload) => {
+      setChats(payload.items)
+      setActiveChatId(payload.active_chat_id)
+      const [conversation, context] = await Promise.all([
+        getConversation(payload.active_chat_id),
+        getConversationContext(payload.active_chat_id).catch(() => null),
+      ])
+      installConversation(conversation)
+      setConversationContext(context)
+    }).catch((cause) => setError(String(cause)))
     getPendingActions().then(setPendingActions).catch(() => setPendingActions([]))
     getRecentActions(4).then(setRecentActions).catch(() => setRecentActions([]))
     getScheduledTasks(true).then(setScheduledTasks).catch(() => setScheduledTasks([]))
   }, [])
 
+  const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [chats, activeChatId])
   const latestTurnId = turns.at(-1)?.id
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [latestTurnId, streamingText])
 
   const visibleTurns = useMemo(() => turns.filter((turn) => turn.actor === 'owner' || turn.actor === 'atlas'), [turns])
+
+  async function refreshChats(): Promise<void> {
+    const payload = await getChats()
+    setChats(payload.items)
+    setActiveChatId(payload.active_chat_id)
+  }
+
+  async function selectChat(chatId: string): Promise<void> {
+    if (chatBusy || sending || composerUploading) return
+    if (chatId === activeChatId) { setView('home'); setMobileActivity(null); return }
+    if ((draft.trim() || composerAttachments.length) && !window.confirm('Switch chats and discard the unsent draft?')) return
+    setChatBusy(true)
+    setChatMenuId(null)
+    setError(null)
+    try {
+      await activateChat(chatId)
+      setActiveChatId(chatId)
+      setDraft('')
+      setComposerAttachments([])
+      setStreamingText('')
+      setView('home')
+      setMobileActivity(null)
+      const [conversation, context] = await Promise.all([
+        getConversation(chatId),
+        getConversationContext(chatId).catch(() => null),
+      ])
+      installConversation(conversation)
+      setConversationContext(context)
+      await refreshChats()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setChatBusy(false)
+    }
+  }
+
+  async function startNewChat(): Promise<void> {
+    if (chatBusy || sending || composerUploading) return
+    if ((draft.trim() || composerAttachments.length) && !window.confirm('Start a new chat and discard the unsent draft?')) return
+    setChatBusy(true)
+    setChatMenuId(null)
+    setError(null)
+    try {
+      const chat = await createChat()
+      setActiveChatId(chat.id)
+      setDraft('')
+      setComposerAttachments([])
+      setTurns([])
+      setHistoryCursor(null)
+      setConversationContext(await getConversationContext(chat.id).catch(() => null))
+      setView('home')
+      setMobileActivity(null)
+      await refreshChats()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setChatBusy(false)
+    }
+  }
+
+  async function handleRenameChat(chat: Chat): Promise<void> {
+    if (chatBusy || sending) return
+    const title = window.prompt('Rename chat', chat.title)?.trim()
+    if (!title || title === chat.title) { setChatMenuId(null); return }
+    setChatBusy(true)
+    try {
+      await renameChat(chat.id, title)
+      await refreshChats()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setChatBusy(false)
+      setChatMenuId(null)
+    }
+  }
+
+  async function handleDeleteChat(chat: Chat): Promise<void> {
+    if (chatBusy || sending) return
+    const confirmed = window.confirm(`Delete “${chat.title}”?\n\nIts conversation transcript and derived transcript index will be removed. Durable memories already created from it are kept.`)
+    if (!confirmed) { setChatMenuId(null); return }
+    setChatBusy(true)
+    setError(null)
+    try {
+      const result = await deleteChat(chat.id)
+      const selectedId = result.active_chat.id
+      setActiveChatId(selectedId)
+      setDraft('')
+      setComposerAttachments([])
+      setStreamingText('')
+      const [conversation, context] = await Promise.all([
+        getConversation(selectedId),
+        getConversationContext(selectedId).catch(() => null),
+      ])
+      installConversation(conversation)
+      setConversationContext(context)
+      setView('home')
+      await refreshChats()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setChatBusy(false)
+      setChatMenuId(null)
+    }
+  }
+
+  function renderChatEntries() {
+    return <div className="chat-list">
+      {chats.map((chat) => <div className={`chat-entry${chat.id === activeChatId ? ' active' : ''}`} key={chat.id}>
+        <button className="chat-select" type="button" disabled={chatBusy || sending} title={chat.title} onClick={() => { void selectChat(chat.id) }}>
+          <span className="chat-bullet" aria-hidden="true">›</span><span>{chat.title}</span>
+        </button>
+        <button className="chat-more" type="button" aria-label={`Options for ${chat.title}`} title="Chat options" disabled={chatBusy || sending} onClick={() => setChatMenuId((current) => current === chat.id ? null : chat.id)}>⋯</button>
+        {chatMenuId === chat.id ? <div className="chat-menu">
+          <button type="button" onClick={() => { void handleRenameChat(chat) }}>Rename</button>
+          <button type="button" className="danger" onClick={() => { void handleDeleteChat(chat) }}>Delete</button>
+        </div> : null}
+      </div>)}
+      {!chats.length ? <p className="chat-list-empty">No chats yet.</p> : null}
+    </div>
+  }
 
   async function openLocalStorage(path = '') {
     setView('local')
@@ -245,27 +378,29 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   }
 
   async function submitOwnerMessage(requestText: string, attachments: LocalStorageEntry[], restoreOnConflict: boolean) {
-    if ((!requestText && attachments.length === 0) || sending || composerUploading) return
+    if ((!requestText && attachments.length === 0) || sending || composerUploading || !activeChatId) return
     const attachmentPaths = attachments.map((file) => file.path)
     setError(null)
     setSending(true)
     setStreamingText('')
     const optimistic: Turn = {
       id: `local-${Date.now()}`,
-      transcript_id: 'local',
+      transcript_id: activeChatId ?? 'local',
       actor: 'owner',
       blocks: [{ type: 'text', text: requestText }],
       created_at: new Date().toISOString(),
     }
     setTurns((current) => [...current, optimistic])
     try {
-      await streamMessage(requestText, attachmentPaths, (delta) => setStreamingText((current) => current + delta))
-      const conversation = await getConversation()
+      await streamMessage(requestText, attachmentPaths, (delta) => setStreamingText((current) => current + delta), activeChatId)
+      const conversation = await getConversation(activeChatId ?? undefined)
       installConversation(conversation)
-      setConversationContext(await getConversationContext().catch(() => null))
+      setConversationContext(await getConversationContext(activeChatId ?? undefined).catch(() => null))
       setPendingActions(await getPendingActions())
       setRecentActions(await getRecentActions(4))
       setScheduledTasks(await getScheduledTasks(true))
+      const chatList = await getChats().catch(() => null)
+      if (chatList) { setChats(chatList.items); setActiveChatId(chatList.active_chat_id) }
       setStreamingText('')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -276,7 +411,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         }
         setTurns((current) => current.filter((turn) => turn.id !== optimistic.id))
       }
-      const conversation = await getConversation().catch(() => null)
+      const conversation = await getConversation(activeChatId ?? undefined).catch(() => null)
       if (conversation) installConversation(conversation)
       const attention = await getPendingActions().catch(() => null)
       if (attention) setPendingActions(attention)
@@ -288,7 +423,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
   async function sendMessage() {
     const text = draft.trim()
-    if ((!text && composerAttachments.length === 0) || sending || composerUploading) return
+    if ((!text && composerAttachments.length === 0) || sending || composerUploading || !activeChatId) return
     const attachments = [...composerAttachments]
     setDraft('')
     setComposerAttachments([])
@@ -316,7 +451,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
           <p>{action.detail.message ?? 'Atlas work was interrupted.'}</p>
           <span>Continue creates a new owner turn. Prior actions will not be replayed automatically.</span>
           <div className="approval-actions">
-            <button type="button" disabled={!providerOk || sending || composerUploading} onClick={() => { void handleInterruptionContinue() }}>Continue</button>
+            <button type="button" disabled={!providerOk || !activeChatId || sending || composerUploading} onClick={() => { void handleInterruptionContinue() }}>Continue</button>
             <button type="button" onClick={() => { void handleInterruptionDismiss(action) }}>Dismiss</button>
           </div>
         </div>
@@ -353,6 +488,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
           <span className="status-label transcript-status" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of Atlas working-context budget` : 'Working-context token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />Context {conversationContext ? `${formatTokens(conversationContext.input_tokens)} / ${formatTokens(conversationContext.limit_tokens)}` : '— / 64k'}</span>
         </div>
         <div className="mobile-activity-controls" aria-label="Activity shortcuts">
+          <button type="button" className={mobileActivity === 'chats' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'chats' ? null : 'chats')}>Chats</button>
           <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'needs' ? null : 'needs')}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
           <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'latest' ? null : 'latest')}>Latest</button>
           <span className="mobile-token-count" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of Atlas working-context budget` : 'Working-context token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />{conversationContext ? `${formatTokens(conversationContext.input_tokens)}/${formatTokens(conversationContext.limit_tokens)}` : '—/64k'}</span>
@@ -362,8 +498,11 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
       {mobileActivity ? <>
         <button className="mobile-activity-backdrop" type="button" aria-label="Close activity" onClick={() => setMobileActivity(null)} />
-        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'needs' ? 'Needs You' : 'Latest activity'}>
-          {mobileActivity === 'needs' ? <section className="activity-section attention-section">
+        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'chats' ? 'Chats' : mobileActivity === 'needs' ? 'Needs You' : 'Latest activity'}>
+          {mobileActivity === 'chats' ? <section className="mobile-chat-section">
+            <div className="chat-rail-head"><strong>Chats</strong><button type="button" disabled={chatBusy || sending} onClick={() => { void startNewChat() }}>+ New chat</button></div>
+            {renderChatEntries()}
+          </section> : mobileActivity === 'needs' ? <section className="activity-section attention-section">
             <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
             {error ? <p className="activity-empty">{error}</p> : null}
             {pendingActions.map(renderPendingAction)}
@@ -392,10 +531,14 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
           <div className="rail-footer"><span className="rail-footer-label">Environment</span><span><StatusDot ok={runtimeOk} />{health ? health.environment : 'checking'}</span></div>
         </aside>
 
-        <main className="main-stage">
+        <main className={`main-stage${view === 'home' ? ' with-chat-rail' : ''}`}>
+          {view === 'home' ? <aside className="chat-rail" aria-label="Chats">
+            <div className="chat-rail-head"><strong>Chats</strong><button type="button" disabled={chatBusy || sending} onClick={() => { void startNewChat() }}>+ New chat</button></div>
+            {renderChatEntries()}
+          </aside> : null}
           <section className="chat-canvas" aria-label={view === 'home' ? 'Atlas chat canvas' : view === 'local' ? 'Local storage' : view === 'drive' ? 'Drive storage' : view === 'projects' ? 'Project folders' : 'Repositories'}>
             <div className="canvas-head">
-              <div><div className="canvas-kicker">{view === 'home' ? 'Home' : view === 'local' ? 'Find / Local storage' : view === 'drive' ? 'Find / Drive storage' : view === 'projects' ? 'Find / Project folders' : 'Find / Repositories'}</div><h1>{view === 'home' ? 'Atlas' : view === 'local' ? storageTitle(storage?.path ?? '') : view === 'drive' ? (driveStack.at(-1)?.name ?? 'My Drive') : view === 'projects' ? storageTitle(projectStorage?.path ?? '') : 'GitHub repositories'}</h1></div>
+              <div><div className="canvas-kicker">{view === 'home' ? 'Chat' : view === 'local' ? 'Find / Local storage' : view === 'drive' ? 'Find / Drive storage' : view === 'projects' ? 'Find / Project folders' : 'Find / Repositories'}</div><h1>{view === 'home' ? (activeChat?.title ?? 'Atlas') : view === 'local' ? storageTitle(storage?.path ?? '') : view === 'drive' ? (driveStack.at(-1)?.name ?? 'My Drive') : view === 'projects' ? storageTitle(projectStorage?.path ?? '') : 'GitHub repositories'}</h1></div>
               <span className="canvas-state">{view === 'home' ? (health ? `v${health.version}` : 'checking') : view === 'local' ? (storage?.display_root ?? '~/Workspace') : view === 'drive' ? 'Google Drive' : view === 'projects' ? (projectStorage?.display_root ?? '/home/jaco/Projects') : (repositories ? `github.com/${repositories.owner}` : 'GitHub')}</span>
             </div>
 
@@ -519,9 +662,9 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                   <button className="attach-button" type="button" aria-label="Add files" title="Add files" disabled={!providerOk || sending || composerUploading} onClick={() => composerFileInputRef.current?.click()}>+</button>
                   <div className="composer-entry">
                     {composerAttachments.length ? <div className="composer-attachments">{composerAttachments.map((file) => <span className="attachment-chip" key={file.path}><span>{file.name}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => setComposerAttachments((current) => current.filter((item) => item.path !== file.path))}>×</button></span>)}</div> : null}
-                    <textarea placeholder={composerUploading ? 'Adding file…' : providerOk ? 'Talk to Atlas…' : 'Model is not configured…'} rows={1} value={draft} disabled={!providerOk || sending} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void addComposerFiles(event.clipboardData.files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} />
+                    <textarea placeholder={composerUploading ? 'Adding file…' : !activeChatId ? 'Loading chat…' : providerOk ? 'Talk to Atlas…' : 'Model is not configured…'} rows={1} value={draft} disabled={!providerOk || !activeChatId || sending} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void addComposerFiles(event.clipboardData.files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} />
                   </div>
-                  <button className="send-button" type="submit" disabled={!providerOk || sending || composerUploading || (!draft.trim() && composerAttachments.length === 0)}>{sending ? 'Thinking…' : composerUploading ? 'Adding…' : 'Send'}</button>
+                  <button className="send-button" type="submit" disabled={!providerOk || !activeChatId || sending || composerUploading || (!draft.trim() && composerAttachments.length === 0)}>{sending ? 'Thinking…' : composerUploading ? 'Adding…' : 'Send'}</button>
                 </form>
               </>
             )}
@@ -542,7 +685,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             <div className="activity-divider" />
             <section className="activity-section scheduled-section">
               <div className="activity-heading-row"><span className="activity-heading">Scheduled tasks</span><span className="activity-count">{scheduledTasks.filter((task) => task.enabled).length}</span></div>
-              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{task.enabled ? `Next ${new Date(task.next_run_at).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Paused'} · {task.schedule_kind}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
+              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{task.enabled ? new Date(task.next_run_at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Paused'} · {task.schedule_kind}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
             </section>
           </aside>
         </main>

@@ -36,12 +36,19 @@ def test_migration_history_contains_execution_reconciliation_state() -> None:
     assert any("execution_started_at" in text for text in texts)
 
 
-def test_latest_migration_contains_active_task_state() -> None:
+def test_migration_history_contains_active_task_state() -> None:
+    texts = [path.read_text() for path in Path("migrations/versions").glob("*.py")]
+    assert any("active_task_state" in text for text in texts)
+
+
+def test_latest_migration_adds_owner_chat_metadata() -> None:
     metadata = {revision: (parent, path) for path in Path("migrations/versions").glob("*.py") for revision, parent in [_metadata(path)]}
     parents = {parent for parent, _ in metadata.values() if parent is not None}
     head = next(revision for revision in metadata if revision not in parents)
     text = metadata[head][1].read_text()
-    assert "active_task_state" in text
+    assert head == "25a07"
+    assert 'op.add_column("transcripts", sa.Column("title"' in text
+    assert '"updated_at"' in text
 
 
 import asyncio
@@ -85,10 +92,13 @@ async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_exi
         env=env, capture_output=True, text=True, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     async with pg_factory() as session:
-        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a06'
+        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a07'
         if upgrade_existing:
             rows = (await session.execute(select(TranscriptRow))).scalars().all()
             assert len(rows) == 2 and sum(row.closed_at is None for row in rows) == 1
+            active = next(row for row in rows if row.closed_at is None)
+            assert active.title == 'Atlas'
+            assert all(row.title and row.updated_at for row in rows)
             checkpoint = (await session.get(TranscriptRow, first)).active_task_state
             assert checkpoint['semantic']['objective'] == 'Keep this'
             assert checkpoint['task_id'] and checkpoint['revision'] == 0

@@ -14,7 +14,7 @@ The computer analogy remains useful:
 
 ## 2. Live transcript
 
-Atlas maintains a temporary append-only transcript for the current coherent conversation/session. It records owner turns, Atlas responses, tool requests, all tool observations, and references to artifacts.
+Atlas maintains one append-only canonical transcript per owner chat. Each transcript records owner turns, Atlas responses, tool requests, all tool observations, and references to artifacts. Creating or switching chats changes which owner transcript is selected; it does not merge conversational context between chats.
 
 The transcript is descriptive, not interpretive. It does not decide what is important or write durable owner memory while the conversation is active.
 
@@ -33,9 +33,9 @@ The initial operating policy keeps up to the latest 10 owner/Atlas exchanges ins
 A context capsule may still provide orientation across transcript eras, and future retrieval can inject older exact transcript, memory, or indexed knowledge selectively. Bounded working context therefore controls model cost and focus without becoming a retention policy for canonical history.
 ## 4. Short-term memory
 
-When a transcript closes, Atlas associates a context capsule with it and retains the closed transcript in short-term memory for a configurable TTL.
+Owner chat transcripts remain durable until the owner deletes the chat. A chat that is not currently selected is eligible for complete transcript indexing; selecting it again does not require replaying other chats into its foreground context.
 
-Short-term memory is indexed so Atlas does not have to read many daily/session transcripts sequentially. Retrieval should combine metadata, lexical/full-text search, and semantic/vector search.
+Short-term retrieval is indexed so Atlas does not have to read many chat transcripts sequentially. Retrieval combines transcript identity/provenance with lexical/full-text and semantic/vector search. Deleting a chat removes that canonical transcript and its derived transcript indexes; separately promoted durable memories remain independent records unless the owner explicitly forgets or later erases them.
 
 The capsule can act as a cheap first-stage locator. Atlas drills into exact transcript chunks only when precision is needed.
 
