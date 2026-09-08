@@ -1207,3 +1207,22 @@ button.storage-row:disabled { opacity: 1; cursor: default; }
   .capability-grid { grid-template-columns: 1fr; }
   .control-section-inline { align-items: start; }
 }
+
+/* Keep conversation geometry full-width after the desktop conversation rules below. */
+@media (max-width: 860px) {
+  .chat-space.has-conversation {
+    align-items: stretch;
+    padding: 18px 12px 12px;
+  }
+  .conversation-thread {
+    width: 100%;
+    max-width: none;
+    gap: 20px;
+    padding: 8px 0 20px;
+  }
+  .chat-turn.owner {
+    width: min(92%, 620px);
+    padding: 10px 12px;
+  }
+  .chat-turn.atlas .turn-body { font-size: 14px; }
+}
