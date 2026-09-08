@@ -256,3 +256,14 @@ After successful discovery, the model field becomes a dropdown populated from th
 Regression coverage checks provider-sourced (not hard-coded) catalog projection, submitted-key discovery without persistence, stored-key refresh, selected-model save without secret disclosure, and the frontend request contracts for both new-key and protected-key discovery.
 
 Validation for this pass: **191 backend tests** against disposable PostgreSQL 18 with zero warnings; frontend lint **0 warnings / 0 errors**, **14 frontend tests**, and a successful Vite production build. Ruff, Python compilation, deployment shell syntax and `git diff --check` also passed. The disposable PostgreSQL instance was removed after validation.
+
+
+## 2026-09-08 — First memory-orbit slice: indexed transcript recall
+
+Atlas now has a deterministic transcript-indexing boundary before any semantic memory worker is introduced. `TranscriptIndexer` reads canonical turns incrementally, never mutates transcript history, preserves exact source turn identities, and checkpoints the highest processed turn per transcript/index version so restart or rerun does not duplicate chunks. The active owner transcript keeps the latest configured owner exchanges out of the background index; closed transcripts may be indexed completely.
+
+The first retrieval layer is deliberately lexical rather than semantic. PostgreSQL stores derived transcript chunks with a generated `tsvector` and GIN index using the `simple` dictionary so technical identifiers are not stemmed away. `memory.search` returns bounded provenance-backed chunks and accepts transcript, sequence and exclusion constraints so the conversational model can refine a failed lookup without repeatedly receiving the same wrong results. Tool observations contribute only their bounded operation/phase/summary, not raw detail payloads.
+
+Indexing is not on the owner-facing inference path. `python -m atlas.memory` provides one deterministic maintenance pass; scheduling, embeddings/pgvector, context-capsule generation and the separate semantic memory-reasoning worker remain subsequent work. The memory capability follows the existing authority model: it is provisioned by the runtime but a newly discovered capability starts disabled until the owner enables it in Control.
+
+Validation used a disposable PostgreSQL 17 container and exercised empty/historical Alembic upgrades, generated full-text indexes, incremental checkpoints, active-tail exclusion and lexical recall. The full backend suite passed **196 tests** with PostgreSQL integration enabled. Ruff also passed; the disposable database was removed after validation. No production state, service or provider call was touched.

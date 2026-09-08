@@ -73,3 +73,9 @@ Re-embedding is needed only when the representation contract changes or an index
 Retention TTL, chunk sizes, overlap, ranking weights, summary lengths, embedding choice, and similar values are configurable operational parameters rather than architecture constants.
 
 For the detailed lifecycle see `13-memory-lifecycle.md`.
+
+## 9. Implementation checkpoint — 2026-09-08
+
+The first memory-orbit implementation is now present: canonical transcript turns can be incrementally transformed into provenance-backed derived text chunks, checkpointed per transcript/index version, and searched with PostgreSQL full-text search through the bounded `memory.search` capability. The active foreground tail is excluded from maintenance indexing, and indexing never runs on the foreground inference path.
+
+This is intentionally only the retrieval substrate. Semantic embeddings/pgvector ranking, context-capsule generation, durable remember/correct/forget commands, and the separate memory-reasoning worker that decides create/merge/supersede/discard remain staged. Derived indexes remain rebuildable from canonical transcript history.

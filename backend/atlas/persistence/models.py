@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
     DateTime,
     ForeignKey,
     Index,
@@ -14,7 +15,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -49,6 +50,41 @@ class TurnRow(Base):
     sequence: Mapped[int] = mapped_column(BigInteger)
     blocks: Mapped[list[dict]] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class TranscriptIndexChunkRow(Base):
+    __tablename__ = "transcript_index_chunks"
+    __table_args__ = (
+        UniqueConstraint("transcript_id", "index_version", "start_sequence", "end_sequence",
+            name="uq_transcript_index_chunk_source_range"),
+        Index("ix_transcript_index_chunks_search_vector", "search_vector", postgresql_using="gin"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    transcript_id: Mapped[UUID] = mapped_column(ForeignKey("transcripts.id", ondelete="CASCADE"), index=True)
+    index_version: Mapped[str] = mapped_column(String(32), default="text-v1")
+    start_sequence: Mapped[int] = mapped_column(BigInteger)
+    end_sequence: Mapped[int] = mapped_column(BigInteger)
+    source_turn_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    content: Mapped[str] = mapped_column(Text)
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', coalesce(content, ''))", persisted=True),
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TranscriptIndexStateRow(Base):
+    __tablename__ = "transcript_index_state"
+
+    transcript_id: Mapped[UUID] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="CASCADE"), primary_key=True
+    )
+    index_version: Mapped[str] = mapped_column(String(32), primary_key=True, default="text-v1")
+    last_indexed_sequence: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class ArtifactRow(Base):

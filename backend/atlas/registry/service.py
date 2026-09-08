@@ -45,6 +45,15 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             description="Read exact historical observations and resource snapshots by evidence identity.",
             source=CapabilitySource.ATLAS, enabled=True, availability=CapabilityAvailability.AVAILABLE),
         CapabilityEntry(
+            id="atlas.memory",
+            family="Memory",
+            description="Search Atlas-owned indexed canonical transcript history with bounded provenance-backed results.",
+            source=CapabilitySource.ATLAS,
+            enabled=True,
+            availability=CapabilityAvailability.AVAILABLE,
+            executable_operations=["memory.search"],
+        ),
+        CapabilityEntry(
             id="atlas.artifacts",
             family="Artifacts",
             description="Store and reference first-class conversation artifacts.",
@@ -145,6 +154,19 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         input_schema={"type": "object", "properties": {"evidence_id": {"type": "string", "format": "uuid"},
             "artifact_id": {"type": "string", "format": "uuid"}},
             "required": ["evidence_id", "artifact_id"], "additionalProperties": False}, trust="external"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.search", capability_id="atlas.memory", family="Memory",
+        description="Search indexed canonical transcript history using bounded lexical retrieval. Refine terms or exclude prior chunks when a first lookup is incomplete or wrong.",
+        input_schema={"type": "object", "properties": {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10},
+            "transcript_id": {"type": "string", "format": "uuid"},
+            "before_sequence": {"type": "integer", "minimum": 1},
+            "exclude_chunk_ids": {"type": "array", "items": {"type": "string", "format": "uuid"}, "maxItems": 50}},
+            "required": ["query"],
+            "dependentRequired": {"before_sequence": ["transcript_id"]},
+            "additionalProperties": False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(
         id="storage.local.list",
         capability_id="atlas.local_storage",

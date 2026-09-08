@@ -44,3 +44,13 @@ def test_project_write_authority_keeps_targeted_edits_auto_and_delete_gated() ->
     assert operations["storage.projects.apply"].authority == AuthorityMode.AUTO
     assert operations["storage.projects.move"].authority == AuthorityMode.AUTO
     assert operations["storage.projects.delete"].authority == AuthorityMode.APPROVAL_REQUIRED
+
+
+def test_memory_search_is_bounded_read_capability() -> None:
+    from atlas.capabilities import AuthorityMode, EffectKind
+    from atlas.registry.service import build_phase0_registry
+
+    operation = {item.id: item for item in build_phase0_registry().operations()}["memory.search"]
+    assert operation.effect == EffectKind.READ
+    assert operation.authority == AuthorityMode.AUTO
+    assert operation.input_schema["properties"]["limit"]["maximum"] == 10

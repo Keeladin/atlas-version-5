@@ -5,6 +5,7 @@ from atlas.capabilities import AuthorityMode, EffectKind, OperationDescriptor
 from atlas.config import Settings
 from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.memory import MemoryService
 from atlas.registry.repository import RegistryRepository
 from atlas.registry.service import EnvironmentRegistry
 from atlas.runtime.observations import EvidenceStore
@@ -31,6 +32,8 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         ),
     )
     factory = get_session_factory()
+    memory = MemoryService(factory, chunk_chars=settings.memory_chunk_chars)
+    runtime.register_executor("memory.search", memory.search)
 
     async def policy_reader():
         try:
