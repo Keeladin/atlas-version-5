@@ -50,6 +50,10 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         embedding_max_chunks_per_run=settings.memory_embedding_max_chunks_per_run,
     )
     runtime.register_executor("memory.search", memory.search)
+    runtime.register_executor("memory.remember", memory.remember)
+    runtime.register_executor("memory.correct", memory.correct)
+    runtime.register_executor("memory.forget", memory.forget)
+    runtime.register_executor("memory.commands.list", memory.commands)
 
     async def policy_reader():
         try:

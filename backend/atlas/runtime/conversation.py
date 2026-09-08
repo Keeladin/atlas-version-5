@@ -1,6 +1,7 @@
 import json
 from uuid import UUID
 
+from atlas.memory.guards import redact_guarded_text
 from atlas.runtime.bootstrap import build_seat_bootstrap
 from atlas.runtime.evidence import attach_projection_metadata, bound_model_evidence
 from atlas.transcript.models import Actor, Turn
@@ -25,6 +26,9 @@ def build_model_instructions(
         "Distinguish owner statements, prior Atlas/model statements, and runtime/tool observations. A prior Atlas statement proves what Atlas said, not by itself that an external action occurred; when claiming that a tool was used or an external action occurred, verify the exact tool observation when practical. "
         "Treat chronology qualifiers such as first, last, earliest, latest, before, and after as separate claims requiring structural historical coverage. Structural coverage is necessary but does not prove semantic search found every matching event; unless canonical evidence establishes the chronology, say the earliest or latest matching exchange found rather than claiming a global first or last. "
         "Preserve useful supported parts of an answer while qualifying unsupported parts, and if canonical evidence does not support a memory, say so rather than inventing continuity. "
+        "Owner-directed durable memory is explicit, not inferred: ordinary conversation must not be promoted automatically. Treat an imperative request to remember/store something as a memory.remember command; treat an explicit correction as memory.correct and an explicit request to forget as memory.forget. Questions such as 'do you remember' or 'remember when' are recall requests, not durable writes. "
+        "For remember, persist a concise self-contained statement faithful to the owner's instruction. For correct or forget, use memory.search first when the target is unclear; if the owner is correcting or forgetting legacy transcript-only information, use the operation's old_content/content form so the runtime can create precedence guards without rewriting history. "
+        "Successful owner corrections and forgetting override stale transcript recall. Do not resurrect guarded content as current memory merely because canonical history still records that it was once said; the transcript remains audit evidence, not active owner memory. After a successful forget, acknowledge the operation without repeating the forgotten content. Use memory.commands.list when the command lifecycle itself needs inspection. "
         "Do not claim to have tools or capabilities that Atlas has not exposed to you. "
         f"Enabled capability families currently visible through Atlas are: {capability_text}. "
         "When a task needs environment access, search the capability registry rather than guessing operation names. "
@@ -138,19 +142,23 @@ def turns_to_provider_messages(
     context_summary: str | None = None,
     summarized_through_turn_id: UUID | None = None,
     compact_tool_turn_ids: set[UUID] | None = None,
+    suppressed_contents: list[str] | None = None,
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     compact_ids = compact_tool_turn_ids or set()
+    guards = suppressed_contents or []
     if context_summary:
         messages.append({
             "role": "developer",
-            "content": "Atlas durable context capsule from earlier canonical history:\n" + context_summary,
+            "content": "Atlas durable context capsule from earlier canonical history:\n"
+            + redact_guarded_text(context_summary, guards),
         })
     for turn in context_turns(turns, summarized_through_turn_id):
         if turn.actor in (Actor.OWNER, Actor.ATLAS):
             text = "\n".join(
                 block.text for block in turn.blocks if getattr(block, "type", None) == "text"
             ).strip()
+            text = redact_guarded_text(text, guards)
             if text:
                 messages.append({
                     "role": "user" if turn.actor == Actor.OWNER else "assistant",
@@ -169,5 +177,6 @@ def turns_to_provider_messages(
                     continue
                 message = tool_observation_to_provider_message(block, compact=turn.id in compact_ids)
                 message["content"] += f" · evidence_id={turn.id} (exact read: evidence.read)"
+                message["content"] = redact_guarded_text(message["content"], guards)
                 messages.append(message)
     return messages

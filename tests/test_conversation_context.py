@@ -91,3 +91,26 @@ def test_model_instructions_ground_historical_recall_in_evidence() -> None:
     assert "chronology qualifiers" in instructions
     assert "earliest or latest matching exchange found" in instructions
     assert "rather than inventing continuity" in instructions
+
+
+def test_owner_forgetting_redacts_guarded_content_from_working_projection() -> None:
+    phrase = "Roses are red, violets are blue."
+    owner = _turn(Actor.OWNER, TextBlock(text=f"Remember this phrase: {phrase}"))
+    atlas = _turn(Actor.ATLAS, TextBlock(text=f"Got it: {phrase}"))
+    tool = _turn(
+        Actor.TOOL,
+        ToolObservationBlock(
+            operation="memory.search", phase="succeeded",
+            detail={"results": [{"content": phrase}]},
+        ),
+    )
+
+    messages = turns_to_provider_messages(
+        [owner, atlas, tool],
+        context_summary=f"The old phrase was {phrase}",
+        suppressed_contents=[phrase],
+    )
+    projected = "\n".join(str(item["content"]) for item in messages)
+
+    assert phrase not in projected
+    assert projected.count("[suppressed by owner memory directive]") >= 4

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas.persistence.models import (
+    DurableMemoryRow,
     TranscriptIndexChunkRow,
     TranscriptIndexStateRow,
     TranscriptRow,
@@ -119,7 +120,13 @@ class MemorySearchRepository:
         return ordered[:bounded_limit]
 
     @staticmethod
-    def _constraints(statement, *, transcript_id, before_sequence, exclude_chunk_ids):
+    def _constraints(
+        statement,
+        *,
+        transcript_id,
+        before_sequence,
+        exclude_chunk_ids,
+    ):
         if transcript_id is not None:
             statement = statement.where(TranscriptIndexChunkRow.transcript_id == transcript_id)
         if before_sequence is not None:
@@ -129,7 +136,29 @@ class MemorySearchRepository:
             statement = statement.where(TranscriptIndexChunkRow.end_sequence < before_sequence)
         if exclude_chunk_ids:
             statement = statement.where(TranscriptIndexChunkRow.id.not_in(exclude_chunk_ids))
-        return statement
+
+        # Owner correction/forgetting precedence is a database-side anti-join, so
+        # search query size stays constant as the number of memory guards grows.
+        guard = DurableMemoryRow.__table__.alias("memory_recall_guard")
+        source_turn_guard = func.jsonb_build_array(cast(guard.c.source_turn_id, String))
+        guarded_chunk = exists(
+            select(1)
+            .select_from(guard)
+            .where(
+                guard.c.suppresses_recall.is_(True),
+                or_(
+                    guard.c.source_turn_id.is_not(None)
+                    & TranscriptIndexChunkRow.source_turn_ids.op("@>")(source_turn_guard),
+                    func.strpos(
+                        func.lower(TranscriptIndexChunkRow.content),
+                        func.lower(guard.c.content),
+                    )
+                    > 0,
+                ),
+            )
+            .correlate(TranscriptIndexChunkRow)
+        )
+        return statement.where(~guarded_chunk)
 
     async def coverage(
         self,

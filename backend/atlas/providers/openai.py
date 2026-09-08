@@ -6,6 +6,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from atlas.memory.guards import guarded_contents, redact_guarded_value
 from atlas.runtime.evidence import attach_projection_metadata, bound_model_evidence
 
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -139,15 +140,27 @@ def _resource_input(resource: dict[str, Any]) -> dict[str, Any] | None:
     return {"role": "user", "content": content}
 
 
+def _context_suppression_contents(result: dict[str, Any]) -> list[str]:
+    output = result.get("output")
+    if not isinstance(output, dict):
+        return []
+    policy = output.get("_context_suppression")
+    if not isinstance(policy, dict) or not isinstance(policy.get("contents"), list):
+        return []
+    return guarded_contents(policy["contents"])
+
+
 def _public_tool_result(result: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
     resource = None
     public = dict(result)
     output = result.get("output")
-    if isinstance(output, dict) and isinstance(output.get("resource"), dict):
-        resource = output["resource"]
+    if isinstance(output, dict):
         public_output = dict(output)
-        public_resource = {key: value for key, value in resource.items() if key != "data_base64"}
-        public_output["resource"] = public_resource
+        public_output.pop("_context_suppression", None)
+        if isinstance(output.get("resource"), dict):
+            resource = output["resource"]
+            public_resource = {key: value for key, value in resource.items() if key != "data_base64"}
+            public_output["resource"] = public_resource
         public["output"] = public_output
     if public.get("operation_id") in {"evidence.read", "evidence.task.read"}:
         # This capability already enforces a strict character bound. Preserve
@@ -308,6 +321,7 @@ class OpenAIProvider:
         base = list(messages)
         rounds = []
         input_items: list[Any] = list(messages)
+        suppressed_contents: list[str] = []
         budget = _CapabilityBudget(limit=self.capability_call_limit, reserve=self.capability_completion_reserve)
         # Discovery is intentionally outside the dispatched-operation budget. The separate
         # reasoning-round ceiling still prevents a model from searching forever.
@@ -367,6 +381,11 @@ class OpenAIProvider:
                 else:
                     # Discovery must recheck owner policy even for identical searches.
                     result = await tool_handler(call.name, arguments)
+                new_suppressions = _context_suppression_contents(result)
+                if new_suppressions:
+                    suppressed_contents = guarded_contents([*suppressed_contents, *new_suppressions])
+                    base = redact_guarded_value(base, suppressed_contents)
+                    rounds = redact_guarded_value(rounds, suppressed_contents)
                 if result.get("evidence_id"):
                     evidence_ids.append(str(result["evidence_id"]))
                 public_result, resource = _public_tool_result(result)
@@ -379,5 +398,8 @@ class OpenAIProvider:
                     resource_item = _resource_input(resource)
                     if resource_item is not None:
                         input_items.append(resource_item)
-            rounds.append({"items": input_items[round_start:], "evidence_ids": evidence_ids})
+            group = {"items": input_items[round_start:], "evidence_ids": evidence_ids}
+            if suppressed_contents:
+                group = redact_guarded_value(group, suppressed_contents)
+            rounds.append(group)
         yield "I reached the bounded tool-reasoning limit for this turn before finishing the task."

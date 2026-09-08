@@ -92,3 +92,14 @@ Within the set of still-valid sources, normal recall prefers the cheapest suffic
 5. external authoritative systems whenever the question requires their current state.
 
 This preserves continuity without making every conversation permanent or turning memory housekeeping into part of the active agent cycle. Memory mutation/recovery guarantees are further constrained by `17-runtime-constitution.md`.
+## 10. Explicit owner memory commands — implemented 2026-09-08
+
+Owner-directed memory now has a deterministic mutation path separate from automatic background curation. The conversational model may interpret an explicit instruction, but it does not write database rows itself. It calls `memory.remember`, `memory.correct`, or `memory.forget`; runtime records a durable command first and then applies or fails it transactionally.
+
+The command ledger exposes `pending`, `applied`, and `failed` lifecycle state. Applied commands retain source transcript/turn provenance and target/replacement memory identities. This makes memory mutation observable and recoverable instead of hiding it in model prose.
+
+Corrections and forgetting are precedence operations, not transcript edits. Superseded and forgotten content remains part of canonical history, but active guards prevent that stale content from being returned as ordinary transcript recall. Model-visible working-context projections also redact exact guarded content so recent tool/search evidence cannot immediately resurrect a value after it was forgotten.
+
+Re-remembering the same forgotten content is a new explicit owner instruction and clears that content's suppression guard while retaining the old forgotten record for audit. Exact duplicate active remembers are idempotent.
+
+This explicit command layer does not perform automatic CREATE/MERGE/SUPERSEDE decisions over ordinary conversation. That later background reasoning worker remains a separate milestone, as do context capsules and visual/attachment-aware memory.

@@ -230,3 +230,96 @@ def test_provider_captures_web_citations_and_delta_without_extra_inference():
     assert observations[0]['output'] == [web, message]
     assert observations[0]['response_id'] == 'response1'
     assert deltas == [{'status': 'complete'}]
+
+
+def test_memory_context_suppression_metadata_is_not_model_visible() -> None:
+    result = {
+        "operation_id": "memory.forget",
+        "status": "succeeded",
+        "output": {
+            "status": "applied",
+            "memory_id": "memory-1",
+            "_context_suppression": {"contents": ["Roses are red, violets are blue."]},
+        },
+    }
+
+    public, resource = _public_tool_result(result)
+
+    assert resource is None
+    assert "_context_suppression" not in public["output"]
+    assert "Roses are red" not in str(public)
+
+
+def test_successful_forget_redacts_prior_tool_round_before_completion() -> None:
+    import asyncio
+    import json
+    from types import SimpleNamespace
+
+    from atlas.providers.openai import OpenAIProvider
+
+    phrase = "Roses are red, violets are blue."
+
+    class Call:
+        type = "function_call"
+
+        def __init__(self, call_id, operation, arguments):
+            self.call_id = call_id
+            self.name = "atlas_capability_call"
+            self.arguments = json.dumps({"operation_id": operation, "arguments": arguments})
+
+        def model_dump(self, **kwargs):
+            return {
+                "type": self.type, "call_id": self.call_id, "name": self.name,
+                "arguments": self.arguments,
+            }
+
+    seen_inputs = []
+    responses = [
+        SimpleNamespace(id="r1", status="completed", output=[Call("c1", "memory.search", {"query": "phrase"})], output_text=""),
+        SimpleNamespace(id="r2", status="completed", output=[Call("c2", "memory.forget", {"content": phrase})], output_text=""),
+        SimpleNamespace(id="r3", status="completed", output=[], output_text="Forgotten."),
+    ]
+
+    async def create(**kwargs):
+        seen_inputs.append(kwargs["input"])
+        return responses.pop(0)
+
+    async def tool(name, arguments):
+        operation = arguments["operation_id"]
+        if operation == "memory.search":
+            return {
+                "status": "succeeded", "operation_id": operation,
+                "output": {"results": [{"content": phrase}]},
+            }
+        assert operation == "memory.forget"
+        return {
+            "status": "succeeded", "operation_id": operation,
+            "output": {
+                "status": "applied", "memory_id": "m1",
+                "_context_suppression": {"contents": [phrase]},
+            },
+        }
+
+    provider = object.__new__(OpenAIProvider)
+    provider.model = "fixture"
+    provider.capability_call_limit = 16
+    provider.capability_completion_reserve = 2
+    provider.input_token_budget = None
+    provider.capability_policy = None
+    provider.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+
+    async def run():
+        return [
+            chunk
+            async for chunk in provider.stream_text(
+                instructions="Fixture",
+                messages=[{"role": "user", "content": f"Forget {phrase}"}],
+                tool_handler=tool,
+            )
+        ]
+
+    assert asyncio.run(run()) == ["Forgotten."]
+    final_input = json.dumps(seen_inputs[-1], ensure_ascii=False)
+    assert phrase not in final_input
+    assert "[suppressed by owner memory directive]" in final_input
+    assert "_context_suppression" not in final_input

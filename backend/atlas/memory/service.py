@@ -4,7 +4,13 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from .embeddings import EmbeddingClient, EmbeddingError, TranscriptEmbeddingIndexer
+from .durable import DurableMemoryCommands, DurableMemoryRepository
+from .embeddings import (
+    DurableMemoryEmbeddingIndexer,
+    EmbeddingClient,
+    EmbeddingError,
+    TranscriptEmbeddingIndexer,
+)
 from .indexer import TranscriptIndexer
 from .repository import MemorySearchRepository
 
@@ -24,6 +30,7 @@ class MemoryService:
         self.embedder = embedder
         self.embedding_batch_size = embedding_batch_size
         self.embedding_max_chunks_per_run = embedding_max_chunks_per_run
+        self.durable_commands = DurableMemoryCommands(factory)
 
     async def search(self, arguments: dict) -> dict[str, object]:
         transcript_raw = arguments.get("transcript_id")
@@ -47,11 +54,20 @@ class MemoryService:
         )
         if before_sequence is not None and transcript_id is None:
             raise ValueError("before_sequence requires transcript_id")
+        limit = int(arguments.get("limit") or 5)
         async with self.factory() as session:
+            durable_repository = DurableMemoryRepository(session)
+            durable_memories = await durable_repository.search_active(
+                query,
+                limit=limit,
+                query_embedding=query_embedding,
+                embedding_model=self.embedder.model if self.embedder is not None else None,
+            )
+            memory_state = await durable_repository.state()
             repository = MemorySearchRepository(session)
             results = await repository.search(
                 query,
-                limit=int(arguments.get("limit") or 5),
+                limit=limit,
                 transcript_id=transcript_id,
                 before_sequence=before_sequence,
                 exclude_chunk_ids=[UUID(str(item)) for item in excludes],
@@ -76,9 +92,28 @@ class MemoryService:
                     else "unbounded"
                 ),
             },
+            "memory_policy": {
+                "authority": "owner_directed_durable_memory_precedes_transcript_recall",
+                "suppression": "active_forget_and_correction_guards_apply_before_transcript_ranking",
+                "suppression_guards": int(memory_state["suppression_guards"]),
+            },
+            "memory_state": memory_state,
+            "durable_memories": durable_memories,
             "coverage": coverage,
             "results": results,
         }
+
+    async def remember(self, arguments: dict) -> dict[str, object]:
+        return await self.durable_commands.remember(arguments)
+
+    async def correct(self, arguments: dict) -> dict[str, object]:
+        return await self.durable_commands.correct(arguments)
+
+    async def forget(self, arguments: dict) -> dict[str, object]:
+        return await self.durable_commands.forget(arguments)
+
+    async def commands(self, arguments: dict) -> dict[str, object]:
+        return await self.durable_commands.commands(arguments)
 
     async def index_once(self, *, active_tail_exchanges: int = 10) -> dict[str, object]:
         async with self.factory() as session:
@@ -97,6 +132,8 @@ class MemoryService:
                 embedding_status="unconfigured",
                 chunks_embedded=0,
                 embedding_batches=0,
+                durable_memories_embedded=0,
+                durable_embedding_batches=0,
             )
             return result
         try:
@@ -104,12 +141,20 @@ class MemoryService:
                 batch_size=self.embedding_batch_size,
                 max_chunks=self.embedding_max_chunks_per_run,
             )
+            durable_semantic = await DurableMemoryEmbeddingIndexer(
+                self.factory, self.embedder
+            ).run_once(
+                batch_size=self.embedding_batch_size,
+                max_memories=self.embedding_max_chunks_per_run,
+            )
         except EmbeddingError as exc:
             result.update(
                 embedding_status="failed",
                 embedding_error=f"{type(exc).__name__}: {exc}",
                 chunks_embedded=0,
                 embedding_batches=0,
+                durable_memories_embedded=0,
+                durable_embedding_batches=0,
             )
             return result
         result.update(
@@ -117,5 +162,6 @@ class MemoryService:
             embedding_model=self.embedder.model,
             embedding_dimensions=self.embedder.dimensions,
             **semantic,
+            **durable_semantic,
         )
         return result

@@ -99,6 +99,83 @@ class TranscriptIndexStateRow(Base):
     )
 
 
+class DurableMemoryRow(Base):
+    __tablename__ = "durable_memories"
+    __table_args__ = (
+        Index(
+            "uq_active_durable_memory_fingerprint",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+        Index("ix_durable_memories_search_vector", "search_vector", postgresql_using="gin"),
+        Index(
+            "ix_durable_memories_embedding_cosine",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_where=text("embedding IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    record_kind: Mapped[str] = mapped_column(String(32), default="owner_directed", index=True)
+    content: Mapped[str] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    suppresses_recall: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', coalesce(content, ''))", persisted=True),
+    )
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(1_536))
+    embedding_model: Mapped[str | None] = mapped_column(String(128), index=True)
+    embedding_dimensions: Mapped[int | None] = mapped_column(BigInteger)
+    embedded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_transcript_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="SET NULL"), index=True
+    )
+    source_turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), index=True
+    )
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
+    )
+    superseded_by_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
+    )
+    forgotten_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MemoryCommandRow(Base):
+    __tablename__ = "memory_commands"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    operation: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    arguments_json: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+    source_transcript_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="SET NULL"), index=True
+    )
+    source_turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), index=True
+    )
+    target_memory_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
+    )
+    replacement_memory_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class ArtifactRow(Base):
     __tablename__ = "artifacts"
 

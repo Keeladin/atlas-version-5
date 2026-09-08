@@ -47,11 +47,14 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         CapabilityEntry(
             id="atlas.memory",
             family="Memory",
-            description="Search Atlas-owned indexed canonical transcript history with bounded hybrid lexical and semantic retrieval.",
+            description="Search canonical history and manage explicit owner-directed durable memory with correction and forgetting precedence.",
             source=CapabilitySource.ATLAS,
             enabled=True,
             availability=CapabilityAvailability.AVAILABLE,
-            executable_operations=["memory.search"],
+            executable_operations=[
+                "memory.search", "memory.remember", "memory.correct",
+                "memory.forget", "memory.commands.list",
+            ],
         ),
         CapabilityEntry(
             id="atlas.artifacts",
@@ -156,7 +159,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             "required": ["evidence_id", "artifact_id"], "additionalProperties": False}, trust="external"))
     registry.register_operation(OperationDescriptor(
         id="memory.search", capability_id="atlas.memory", family="Memory",
-        description="Search indexed canonical transcript history using bounded hybrid lexical and semantic retrieval. Results are relevance candidates, not proof; coverage reports indexed ranges, active-tail gaps, embedding coverage, and any chunks safely excluded for crossing a before_sequence boundary. Refine terms or exclude prior chunks when a lookup is incomplete or wrong.",
+        description="Search active owner-directed durable memory plus indexed canonical transcript history. Active corrections and forgetting guards constrain transcript recall before ranking. Durable results are owner-authoritative state; transcript results remain relevance candidates requiring evidence sufficiency.",
         input_schema={"type": "object", "properties": {
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 10},
@@ -166,6 +169,40 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             "required": ["query"],
             "dependentRequired": {"before_sequence": ["transcript_id"]},
             "additionalProperties": False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.remember", capability_id="atlas.memory", family="Memory",
+        description="Persist one concise self-contained memory only when the owner explicitly asks Atlas to remember it. Repeating the same active memory is idempotent.",
+        input_schema={"type":"object","properties":{
+            "content":{"type":"string","minLength":1,"maxLength":4000}},
+            "required":["content"],"additionalProperties":False},
+        effect=EffectKind.CREATE, authority=AuthorityMode.AUTO, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.correct", capability_id="atlas.memory", family="Memory",
+        description="Apply an explicit owner correction. Target an active memory by memory_id, or supply old_content to supersede transcript-only legacy information; content is the corrected self-contained memory.",
+        input_schema={"type":"object","properties":{
+            "memory_id":{"type":"string","format":"uuid"},
+            "old_content":{"type":"string","minLength":1,"maxLength":4000},
+            "content":{"type":"string","minLength":1,"maxLength":4000}},
+            "required":["content"],"anyOf":[{"required":["memory_id"]},{"required":["old_content"]}],
+            "additionalProperties":False},
+        effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.forget", capability_id="atlas.memory", family="Memory",
+        description="Apply an explicit owner forgetting command. Target an active memory by memory_id, or supply the exact legacy content to create a recall tombstone without rewriting canonical transcript history.",
+        input_schema={"type":"object","properties":{
+            "memory_id":{"type":"string","format":"uuid"},
+            "content":{"type":"string","minLength":1,"maxLength":4000}},
+            "anyOf":[{"required":["memory_id"]},{"required":["content"]}],
+            "additionalProperties":False},
+        effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.commands.list", capability_id="atlas.memory", family="Memory",
+        description="Inspect the durable remember/correct/forget command ledger and pending/applied/failed lifecycle.",
+        input_schema={"type":"object","properties":{
+            "status":{"type":"string","enum":["pending","applied","failed"]},
+            "limit":{"type":"integer","minimum":1,"maximum":100}},
+            "additionalProperties":False},
         effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(
         id="storage.local.list",

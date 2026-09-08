@@ -50,6 +50,7 @@ from atlas.control import (
 )
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.memory.durable import DurableMemoryRepository
 from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
 from atlas.registry.repository import RegistryRepository
@@ -657,8 +658,16 @@ async def _persist_tool_observation(
         return evidence_id
 
 
-async def _assemble_working_context(provider: OpenAIProvider, transcript, turns):
+async def _active_memory_suppression_contents(session: AsyncSession) -> list[str]:
+    guards = await DurableMemoryRepository(session).recall_guards()
+    return [str(item["content"]) for item in guards]
+
+
+async def _assemble_working_context(
+    provider: OpenAIProvider, transcript, turns, *, suppressed_contents: list[str] | None = None
+):
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
+    suppressed_contents = suppressed_contents or []
     exchange_limit = max(1, settings.working_context_exchanges)
     token_budget = max(1, int(min(settings.working_context_tokens, settings.openai_context_window) * 0.75))
     raw_tool_exchanges = max(0, settings.working_context_raw_tool_exchanges)
@@ -671,6 +680,7 @@ async def _assemble_working_context(provider: OpenAIProvider, transcript, turns)
             candidate_turns,
             context_summary=summary if include_summary else None,
             compact_tool_turn_ids=compact_ids,
+            suppressed_contents=suppressed_contents,
         )
         task_message = active_task_provider_message(transcript.active_task_state)
         if task_message is not None:
@@ -736,13 +746,18 @@ async def _assemble_working_context(provider: OpenAIProvider, transcript, turns)
         "selected_exchanges": selected_exchanges,
         "compacted_tool_turns": len(compact_ids),
         "summary_included": summary_included,
+        "memory_suppression_guards": len(suppressed_contents),
         "budget_exceeded": input_tokens > token_budget,
         "stage": stage,
     }
 
 
 async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns):
-    messages, _ = await _assemble_working_context(provider, transcript, turns)
+    async with get_session_factory()() as memory_session:
+        suppressed_contents = await _active_memory_suppression_contents(memory_session)
+    messages, _ = await _assemble_working_context(
+        provider, transcript, turns, suppressed_contents=suppressed_contents
+    )
     return messages
 
 
@@ -832,7 +847,10 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
     transcript = await repository.get_or_create_active()
     turns = await repository.list_recent_turns(transcript.id)
     provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
-    _, policy = await _assemble_working_context(provider, transcript, turns)
+    suppressed_contents = await _active_memory_suppression_contents(session)
+    _, policy = await _assemble_working_context(
+        provider, transcript, turns, suppressed_contents=suppressed_contents
+    )
     input_tokens = int(policy["input_tokens"])
     limit_tokens = int(policy["token_budget"])
     return {
@@ -861,16 +879,21 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
     )
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
     static_tokens = await provider.count_input_tokens(instructions=instructions, messages=[])
-    _, working_policy = await _assemble_working_context(provider, transcript, turns)
+    suppressed_contents = await _active_memory_suppression_contents(session)
+    _, working_policy = await _assemble_working_context(
+        provider, transcript, turns, suppressed_contents=suppressed_contents
+    )
     current_tokens = int(working_policy["input_tokens"])
     canonical_tokens = await provider.count_input_tokens(
-        instructions=instructions, messages=turns_to_provider_messages(turns)
+        instructions=instructions,
+        messages=turns_to_provider_messages(turns, suppressed_contents=suppressed_contents),
     )
     windows = []
     for exchange_count in (5, 10, 15, 20):
         window_turns = _recent_exchange_turns(turns, exchange_count)
         window_messages = turns_to_provider_messages(
-            window_turns, context_summary=transcript.context_summary
+            window_turns, context_summary=transcript.context_summary,
+            suppressed_contents=suppressed_contents,
         )
         input_tokens = await provider.count_input_tokens(instructions=instructions, messages=window_messages)
         windows.append({

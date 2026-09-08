@@ -85,7 +85,7 @@ async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_exi
         env=env, capture_output=True, text=True, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     async with pg_factory() as session:
-        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a05'
+        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a06'
         if upgrade_existing:
             rows = (await session.execute(select(TranscriptRow))).scalars().all()
             assert len(rows) == 2 and sum(row.closed_at is None for row in rows) == 1
