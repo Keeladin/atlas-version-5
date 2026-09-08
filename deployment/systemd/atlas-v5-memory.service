@@ -1,0 +1,27 @@
+[Unit]
+Description=Atlas V5 memory index maintenance
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=atlas-v5
+Group=atlas-v5
+WorkingDirectory=/opt/atlas-v5/app
+EnvironmentFile=/etc/atlas-v5/config/runtime.env
+ExecStart=/opt/atlas-v5/venv/bin/python -m atlas.memory
+TimeoutStartSec=4min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/atlas-v5
+ReadOnlyPaths=/etc/atlas-v5

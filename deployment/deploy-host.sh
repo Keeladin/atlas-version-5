@@ -48,6 +48,12 @@ fi
 
 # Maintenance starts before changing any installed files or dependencies.
 # On failure leave the runtime stopped; do not restart mixed/partial code.
+if systemctl cat atlas-v5-memory.timer >/dev/null 2>&1; then
+  systemctl stop atlas-v5-memory.timer
+fi
+if systemctl cat atlas-v5-memory.service >/dev/null 2>&1; then
+  systemctl stop atlas-v5-memory.service
+fi
 if systemctl cat atlas-v5.service >/dev/null 2>&1; then
   systemctl stop atlas-v5.service
 fi
@@ -192,9 +198,17 @@ runuser -u atlas-v5 -- /bin/bash -c '
 install -o root -g root -m 0644 \
   "${ROOT_DIR}/deployment/systemd/atlas-v5.service" \
   /etc/systemd/system/atlas-v5.service
+install -o root -g root -m 0644 \
+  "${ROOT_DIR}/deployment/systemd/atlas-v5-memory.service" \
+  /etc/systemd/system/atlas-v5-memory.service
+install -o root -g root -m 0644 \
+  "${ROOT_DIR}/deployment/systemd/atlas-v5-memory.timer" \
+  /etc/systemd/system/atlas-v5-memory.timer
 systemctl daemon-reload
 systemctl enable atlas-v5.service
+systemctl enable atlas-v5-memory.timer
 systemctl start atlas-v5.service
+systemctl start atlas-v5-memory.timer
 
 health_url="http://127.0.0.1:8086/api/auth/status"
 for attempt in {1..30}; do

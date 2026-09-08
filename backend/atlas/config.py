@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     memory_embedding_dimensions: int = 1_536
     memory_embedding_batch_size: int = 16
     memory_embedding_max_chunks_per_run: int = 256
+    memory_continuity_chats: int = 3
+    memory_continuity_source_turns: int = 40
+    memory_continuity_summary_chars: int = 1_800
     capability_call_limit: int = 16
     capability_completion_reserve: int = 2
     gws_command: Path = Path("/opt/atlas-v5/bin/gws")

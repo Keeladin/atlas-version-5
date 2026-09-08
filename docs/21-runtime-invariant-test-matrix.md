@@ -53,6 +53,8 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Recent history is SQL-bounded and tool continuations stay within budget with task/evidence retained | `test_remaining_hardening.py` | PostgreSQL + provider double |
 | Queued occurrences pause while scheduling capability is disabled | `test_evidence_recovery.py` | PostgreSQL + provider double |
 | Offline state restores exactly into empty targets and rejects corrupt/populated targets | `test_backup_restore.py` | Two disposable PostgreSQL databases + artifact directories |
+| Closed owner chats become fully eligible for transcript indexing on the next maintenance pass, while the active chat tail remains protected | `test_owner_chats.py`, `test_memory.py`, `test_deployment_permissions.py` | Real PostgreSQL + systemd configuration |
+| Cross-chat continuity is revisioned derived orientation, excludes the active chat, is dropped before current-chat history under budget pressure, and remains subordinate to forget/correction guards | `test_continuity_capsules.py`, `test_api.py`, `test_durable_memory.py` | Real PostgreSQL + provider double |
 | Deployment stops runtime before installed code/dependency replacement | `test_deployment_permissions.py` | Script ordering |
 | Control-managed connection overrides persist privately across restart and never return submitted credentials | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Filesystem modes + backend/frontend transport |
 | Model setup verifies before save; GitHub/Google setup verify before restart-required activation | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Provider/MCP boundaries with test doubles |

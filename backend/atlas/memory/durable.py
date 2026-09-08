@@ -4,10 +4,11 @@ import hashlib
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas.persistence.models import (
+    ContinuityCapsuleRow,
     DurableMemoryRow,
     MemoryCommandRow,
     TranscriptRow,
@@ -77,8 +78,8 @@ class DurableMemoryRepository:
         )
         return (await self.session.execute(statement)).scalar_one_or_none()
 
-    async def clear_guards(self, fingerprint: str) -> None:
-        await self.session.execute(
+    async def clear_guards(self, fingerprint: str) -> bool:
+        result = await self.session.execute(
             update(DurableMemoryRow)
             .where(
                 DurableMemoryRow.fingerprint == fingerprint,
@@ -86,6 +87,12 @@ class DurableMemoryRepository:
             )
             .values(suppresses_recall=False, updated_at=utcnow())
         )
+        return bool(result.rowcount)
+
+    async def invalidate_continuity_capsules(self) -> None:
+        # Capsules are rebuildable derived orientation. Any new recall guard can
+        # invalidate a paraphrase that exact-string projection redaction would miss.
+        await self.session.execute(delete(ContinuityCapsuleRow))
 
     async def create_active(
         self,
@@ -96,7 +103,9 @@ class DurableMemoryRepository:
         supersedes_id: UUID | None = None,
     ) -> tuple[DurableMemoryRow, bool]:
         fingerprint = memory_fingerprint(content)
-        await self.clear_guards(fingerprint)
+        guards_cleared = await self.clear_guards(fingerprint)
+        if guards_cleared:
+            await self.invalidate_continuity_capsules()
         existing = await self.active_by_fingerprint(fingerprint)
         if existing is not None:
             return existing, False
@@ -429,6 +438,7 @@ class DurableMemoryCommands:
                         target.embedding_dimensions = None
                         target.embedded_at = None
                         target.updated_at = utcnow()
+                        await repository.invalidate_continuity_capsules()
 
                 command = await session.get(MemoryCommandRow, command_id)
                 assert command is not None
@@ -501,6 +511,7 @@ class DurableMemoryCommands:
                     target.updated_at = utcnow()
                     result = "forgotten"
 
+                await repository.invalidate_continuity_capsules()
                 command = await session.get(MemoryCommandRow, command_id)
                 assert command is not None
                 command.status = APPLIED

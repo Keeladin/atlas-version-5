@@ -1,5 +1,6 @@
 import pytest
 from atlas.memory.durable import clean_memory_content, memory_fingerprint
+from atlas.memory.indexer import TranscriptIndexer
 from atlas.persistence.models import (
     DurableMemoryRow,
     TranscriptIndexStateRow,
@@ -84,3 +85,30 @@ async def test_delete_chat_removes_chat_history_but_keeps_durable_memory(pg_fact
         assert memory is not None
         assert memory.source_transcript_id is None
         assert memory.source_turn_id is None
+
+@pytest.mark.asyncio
+async def test_closed_chat_becomes_fully_searchable_on_next_maintenance_pass(pg_factory):
+    async with pg_factory() as session:
+        repo = TranscriptRepository(session)
+        previous = await repo.get_or_create_active()
+        await repo.append_turn(previous.id, Actor.OWNER, [TextBlock(text="We were building the Normalizer project")])
+        await repo.append_turn(previous.id, Actor.ATLAS, [TextBlock(text="Normalizer is a separate browser application")])
+        current = await repo.create_owner_chat(title="Fresh topic")
+        await repo.append_turn(current.id, Actor.OWNER, [TextBlock(text="Start something else")])
+        await session.commit()
+
+    async with pg_factory() as session:
+        result = await TranscriptIndexer(session).run_once(active_tail_exchanges=10)
+        await session.commit()
+        assert result.turns_processed == 2
+        previous_state = await session.get(
+            TranscriptIndexStateRow,
+            {"transcript_id": previous.id, "index_version": "text-v1"},
+        )
+        current_state = await session.get(
+            TranscriptIndexStateRow,
+            {"transcript_id": current.id, "index_version": "text-v1"},
+        )
+        assert previous_state is not None
+        assert previous_state.last_indexed_sequence == 2
+        assert current_state is None

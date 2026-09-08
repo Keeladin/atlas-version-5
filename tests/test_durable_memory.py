@@ -5,6 +5,7 @@ from atlas.memory.durable import FAILED, FORGOTTEN, SUPERSEDED, MemoryMutationEr
 from atlas.memory.indexer import TranscriptIndexer
 from atlas.memory.service import MemoryService
 from atlas.persistence.models import (
+    ContinuityCapsuleRow,
     DurableMemoryRow,
     MemoryCommandRow,
     TranscriptRow,
@@ -272,3 +273,42 @@ async def test_repeated_legacy_forget_reuses_existing_tombstone(pg_factory) -> N
         assert len(rows) == 1
         assert rows[0].status == FORGOTTEN
         assert rows[0].suppresses_recall is True
+
+@pytest.mark.asyncio
+async def test_forget_invalidates_derived_continuity_capsules(pg_factory) -> None:
+    transcript_id, _ = await _seed_transcript(pg_factory, "Remember the temporary continuity detail.")
+    async with pg_factory() as session:
+        session.add(ContinuityCapsuleRow(
+            transcript_id=transcript_id, revision=1, start_sequence=1, end_sequence=1,
+            summary="A paraphrased continuity detail that must be rebuilt after forgetting.",
+        ))
+        await session.commit()
+
+    service = MemoryService(pg_factory)
+    await service.forget({"content": "the temporary continuity detail"})
+
+    async with pg_factory() as session:
+        assert (await session.execute(
+            select(func.count()).select_from(ContinuityCapsuleRow)
+        )).scalar_one() == 0
+
+@pytest.mark.asyncio
+async def test_re_remember_invalidates_capsules_after_clearing_forget_guard(pg_factory) -> None:
+    transcript_id, _ = await _seed_transcript(pg_factory, "Remember the temporary continuity detail.")
+    service = MemoryService(pg_factory)
+    remembered = await service.remember({"content": "The temporary continuity detail."})
+    await service.forget({"memory_id": remembered["memory"]["memory_id"]})
+
+    async with pg_factory() as session:
+        session.add(ContinuityCapsuleRow(
+            transcript_id=transcript_id, revision=1, start_sequence=1, end_sequence=1,
+            summary="The suppressed detail is absent from this derived handoff.",
+        ))
+        await session.commit()
+
+    await service.remember({"content": "The temporary continuity detail."})
+
+    async with pg_factory() as session:
+        assert (await session.execute(
+            select(func.count()).select_from(ContinuityCapsuleRow)
+        )).scalar_one() == 0

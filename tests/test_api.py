@@ -219,3 +219,41 @@ def test_working_context_never_evicts_active_task_checkpoint(monkeypatch) -> Non
     assert len(task_messages) == 1
     assert "Finish the active multi-step task" in task_messages[0]["content"]
     assert "Run verification" in task_messages[0]["content"]
+
+def test_cross_chat_continuity_is_dropped_before_current_chat_history(monkeypatch) -> None:
+    import asyncio
+    from uuid import uuid4
+
+    from atlas.api.app import _assemble_working_context
+    from atlas.transcript.models import Actor, TextBlock, Transcript, Turn
+
+    class FakeProvider:
+        async def count_input_tokens(self, *, instructions, messages):
+            return 100 + sum(len(str(message.get("content", ""))) for message in messages)
+
+    transcript_id = uuid4()
+    turns = []
+    for index in range(2):
+        turns.append(Turn(
+            transcript_id=transcript_id, actor=Actor.OWNER,
+            blocks=[TextBlock(text=f"owner {index} " + "o" * 440)],
+        ))
+        turns.append(Turn(
+            transcript_id=transcript_id, actor=Actor.ATLAS,
+            blocks=[TextBlock(text=f"atlas {index} " + "a" * 440)],
+        ))
+
+    monkeypatch.setattr("atlas.api.app.settings.working_context_exchanges", 2)
+    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 3000)
+
+    messages, policy = asyncio.run(_assemble_working_context(
+        FakeProvider(), Transcript(id=transcript_id), turns,
+        continuity_context="prior chat orientation " + "c" * 1500, continuity_count=3,
+    ))
+
+    assert policy["stage"] == "continuity_omitted"
+    assert policy["continuity_included"] is False
+    assert policy["continuity_chats"] == 0
+    assert policy["selected_exchanges"] == 2
+    assert policy["budget_exceeded"] is False
+    assert all("cross-chat continuity orientation" not in str(message.get("content", "")) for message in messages)

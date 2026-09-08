@@ -50,6 +50,7 @@ from atlas.control import (
 )
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
 from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
@@ -673,7 +674,8 @@ async def _active_memory_suppression_contents(session: AsyncSession) -> list[str
 
 
 async def _assemble_working_context(
-    provider: OpenAIProvider, transcript, turns, *, suppressed_contents: list[str] | None = None
+    provider: OpenAIProvider, transcript, turns, *, suppressed_contents: list[str] | None = None,
+    continuity_context: str | None = None, continuity_count: int = 0
 ):
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
     suppressed_contents = suppressed_contents or []
@@ -684,10 +686,14 @@ async def _assemble_working_context(
     selected_turns = _recent_exchange_turns(active_turns, exchange_limit)
     summary = transcript.context_summary
 
-    async def measure(candidate_turns, compact_ids: set[UUID], *, include_summary: bool = True):
+    async def measure(
+        candidate_turns, compact_ids: set[UUID], *, include_summary: bool = True,
+        include_continuity: bool = True,
+    ):
         messages = turns_to_provider_messages(
             candidate_turns,
             context_summary=summary if include_summary else None,
+            continuity_context=continuity_context if include_continuity else None,
             compact_tool_turn_ids=compact_ids,
             suppressed_contents=suppressed_contents,
         )
@@ -728,12 +734,22 @@ async def _assemble_working_context(
         messages, input_tokens = await measure(selected_turns, compact_ids)
         stage = "successful_tools_compacted"
 
+    continuity_included = bool(continuity_context)
+    if input_tokens > token_budget and continuity_context:
+        messages, input_tokens = await measure(
+            selected_turns, compact_ids, include_continuity=False
+        )
+        continuity_included = False
+        stage = "continuity_omitted"
+
     owner_count = sum(1 for turn in selected_turns if turn.actor == Actor.OWNER)
     if input_tokens > token_budget and owner_count > 1:
         for exchange_count in range(owner_count - 1, 0, -1):
             trimmed = _recent_exchange_turns(selected_turns, exchange_count)
             trimmed_ids = compactable_ids(trimmed)
-            candidate_messages, candidate_tokens = await measure(trimmed, trimmed_ids)
+            candidate_messages, candidate_tokens = await measure(
+                trimmed, trimmed_ids, include_continuity=continuity_included
+            )
             selected_turns, compact_ids = trimmed, trimmed_ids
             messages, input_tokens = candidate_messages, candidate_tokens
             stage = "history_trimmed"
@@ -742,7 +758,10 @@ async def _assemble_working_context(
 
     summary_included = bool(summary)
     if input_tokens > token_budget and summary:
-        messages, input_tokens = await measure(selected_turns, compact_ids, include_summary=False)
+        messages, input_tokens = await measure(
+            selected_turns, compact_ids, include_summary=False,
+            include_continuity=continuity_included,
+        )
         summary_included = False
         stage = "capsule_omitted"
 
@@ -755,6 +774,8 @@ async def _assemble_working_context(
         "selected_exchanges": selected_exchanges,
         "compacted_tool_turns": len(compact_ids),
         "summary_included": summary_included,
+        "continuity_included": continuity_included,
+        "continuity_chats": continuity_count if continuity_included else 0,
         "memory_suppression_guards": len(suppressed_contents),
         "budget_exceeded": input_tokens > token_budget,
         "stage": stage,
@@ -764,8 +785,12 @@ async def _assemble_working_context(
 async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns):
     async with get_session_factory()() as memory_session:
         suppressed_contents = await _active_memory_suppression_contents(memory_session)
+        continuity_context, continuity_count = await recent_continuity_context(
+            memory_session, transcript.id, limit=settings.memory_continuity_chats
+        )
     messages, _ = await _assemble_working_context(
-        provider, transcript, turns, suppressed_contents=suppressed_contents
+        provider, transcript, turns, suppressed_contents=suppressed_contents,
+        continuity_context=continuity_context, continuity_count=continuity_count,
     )
     return messages
 
@@ -933,8 +958,12 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
     turns = await repository.list_recent_turns(transcript.id)
     provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
     suppressed_contents = await _active_memory_suppression_contents(session)
+    continuity_context, continuity_count = await recent_continuity_context(
+        session, transcript.id, limit=settings.memory_continuity_chats
+    )
     _, policy = await _assemble_working_context(
-        provider, transcript, turns, suppressed_contents=suppressed_contents
+        provider, transcript, turns, suppressed_contents=suppressed_contents,
+        continuity_context=continuity_context, continuity_count=continuity_count,
     )
     input_tokens = int(policy["input_tokens"])
     limit_tokens = int(policy["token_budget"])
@@ -965,8 +994,12 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
     static_tokens = await provider.count_input_tokens(instructions=instructions, messages=[])
     suppressed_contents = await _active_memory_suppression_contents(session)
+    continuity_context, continuity_count = await recent_continuity_context(
+        session, transcript.id, limit=settings.memory_continuity_chats
+    )
     _, working_policy = await _assemble_working_context(
-        provider, transcript, turns, suppressed_contents=suppressed_contents
+        provider, transcript, turns, suppressed_contents=suppressed_contents,
+        continuity_context=continuity_context, continuity_count=continuity_count,
     )
     current_tokens = int(working_policy["input_tokens"])
     canonical_tokens = await provider.count_input_tokens(
@@ -978,6 +1011,7 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
         window_turns = _recent_exchange_turns(turns, exchange_count)
         window_messages = turns_to_provider_messages(
             window_turns, context_summary=transcript.context_summary,
+            continuity_context=continuity_context,
             suppressed_contents=suppressed_contents,
         )
         input_tokens = await provider.count_input_tokens(instructions=instructions, messages=window_messages)

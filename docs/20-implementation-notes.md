@@ -312,3 +312,19 @@ Each owner chat is its own canonical transcript and therefore has its own turn s
 Memory mutation provenance is run-scoped rather than UI-selection-scoped. `RunExecutor` installs the current inference transcript in a context-local value only while capability execution is in progress; `memory.remember`, `memory.correct`, and `memory.forget` use that transcript when binding their command/source provenance. This prevents a concurrent chat switch or another browser tab from causing a memory command to be attributed to the wrong owner transcript.
 
 The scheduled-task activity label also now shows an explicit weekday/date/month/time instead of prefixing every future occurrence with the ambiguous hard-coded word `Next`.
+
+## 2026-09-08 — Scheduled memory maintenance for cross-chat freshness
+
+The deterministic memory maintenance pass is now a production background service instead of a manual-only command. `atlas-v5-memory.service` runs `python -m atlas.memory` as the unprivileged `atlas-v5` user with the same runtime configuration boundary as Atlas, while `atlas-v5-memory.timer` triggers the oneshot worker about 30 seconds after activation and every five minutes thereafter. The worker has a four-minute timeout and systemd will not create overlapping instances of the same oneshot unit.
+
+Deployment explicitly stops both the memory timer and an in-flight memory worker before replacing application files or the virtual environment, then reinstalls and starts the timer only after migrations and the main runtime are ready. A failed deployment therefore does not leave an old background process running against partially replaced code.
+
+The existing indexing policy is unchanged: the active owner chat keeps its latest ten owner exchanges outside the derived transcript index, while closed chats can be indexed completely. With multiple owner chats this means that switching away from a conversation makes its full canonical history eligible for lexical chunking and embedding on the next maintenance pass, improving cross-chat continuity without adding memory inference to the foreground path. Automatic semantic memory curation remains a separate, not-yet-implemented worker.
+
+## 2026-09-08 — Revisioned cross-chat continuity handoffs
+
+The same five-minute background memory pass now derives small cross-chat continuity handoffs for closed owner chats. The summarizer receives only bounded canonical transcript excerpts plus the prior handoff revision, never database credentials or the active foreground prompt. Initial revisions summarize at most the configured recent source-turn window; later revisions advance from the previous sequence boundary. The stored row records transcript provenance, revision number and canonical start/end sequence so the handoff remains a rebuildable derived projection rather than a second transcript.
+
+Foreground context may include the latest handoff from up to three recent other owner chats. It is injected as a developer-level orientation block explicitly marked as derived and non-canonical. It is lower priority than the selected chat: when the 75% initial working-context seat is exceeded, Atlas drops cross-chat orientation before trimming current-chat exchanges. Material historical details still route through `memory.search`/evidence rather than treating the handoff as proof.
+
+Owner correction/forget guards are applied when building and projecting handoffs. New guards invalidate all continuity capsules because a model paraphrase may not contain the exact forgotten string; clearing a guard through explicit re-remembering also invalidates them so the next pass rebuilds under the restored recall policy. This keeps the continuity layer disposable and subordinate to owner-directed memory semantics.

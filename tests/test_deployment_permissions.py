@@ -54,3 +54,25 @@ def test_production_owner_projects_are_mounted_read_only():
     unit = (DEPLOYMENT / 'systemd' / 'atlas-v5.service').read_text()
     assert 'BindReadOnlyPaths=/home/jaco/Projects:/var/lib/atlas-v5/projects' in unit
     assert 'BindPaths=/home/jaco/Projects:' not in unit
+
+def test_memory_maintenance_timer_is_bounded_and_enabled_by_deploy() -> None:
+    deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
+    service = (DEPLOYMENT / "systemd" / "atlas-v5-memory.service").read_text()
+    timer = (DEPLOYMENT / "systemd" / "atlas-v5-memory.timer").read_text()
+    assert "ExecStart=/opt/atlas-v5/venv/bin/python -m atlas.memory" in service
+    assert "TimeoutStartSec=4min" in service
+    assert "OnActiveSec=30s" in timer
+    assert "OnUnitActiveSec=5min" in timer
+    assert "systemctl enable atlas-v5-memory.timer" in deploy
+    assert "systemctl start atlas-v5-memory.timer" in deploy
+
+
+def test_deploy_quiesces_memory_worker_before_replacing_runtime() -> None:
+    script = (DEPLOYMENT / "deploy-host.sh").read_text()
+    stop_timer = script.index("systemctl stop atlas-v5-memory.timer")
+    stop_worker = script.index("systemctl stop atlas-v5-memory.service")
+    replace_code = script.index("rsync -a --delete")
+    sync_dependencies = script.index('"${UV_BIN}" sync')
+    assert stop_timer < replace_code
+    assert stop_worker < replace_code
+    assert stop_worker < sync_dependencies

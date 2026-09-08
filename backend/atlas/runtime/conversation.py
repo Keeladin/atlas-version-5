@@ -22,6 +22,7 @@ def build_model_instructions(
         "Compacted runtime evidence is an intentional projection of fuller canonical evidence, not proof that the underlying evidence is unavailable. "
         "Treat supplied earlier turns as available history; do not claim they are unavailable merely because the owner mentions a restart. "
         "If no explicit restart marker is present, say you cannot identify the exact restart boundary rather than claiming the prior conversation is inaccessible. "
+        "Cross-chat continuity capsules are compact derived orientation from other owner chats, not canonical evidence and not durable owner memory. Use them to understand the likely recent topic or unfinished thread, but verify material historical details and chronology with memory.search or exact evidence when needed. "
         "Historical recall is evidence-grounded: retrieval results are candidates, not proof. Answer only material historical claims directly supported by canonical evidence. "
         "Distinguish owner statements, prior Atlas/model statements, and runtime/tool observations. A prior Atlas statement proves what Atlas said, not by itself that an external action occurred; when claiming that a tool was used or an external action occurred, verify the exact tool observation when practical. "
         "Treat chronology qualifiers such as first, last, earliest, latest, before, and after as separate claims requiring structural historical coverage. Structural coverage is necessary but does not prove semantic search found every matching event; unless canonical evidence establishes the chronology, say the earliest or latest matching exchange found rather than claiming a global first or last. "
@@ -140,6 +141,7 @@ def turns_to_provider_messages(
     turns: list[Turn],
     *,
     context_summary: str | None = None,
+    continuity_context: str | None = None,
     summarized_through_turn_id: UUID | None = None,
     compact_tool_turn_ids: set[UUID] | None = None,
     suppressed_contents: list[str] | None = None,
@@ -147,10 +149,20 @@ def turns_to_provider_messages(
     messages: list[dict[str, str]] = []
     compact_ids = compact_tool_turn_ids or set()
     guards = suppressed_contents or []
+    if continuity_context:
+        messages.append({
+            "role": "developer",
+            "content": (
+                "Atlas cross-chat continuity orientation. This is a derived handoff, not canonical evidence "
+                "or durable owner memory. Use it for orientation and verify material historical details through "
+                "memory.search/evidence when needed:\n"
+                + redact_guarded_text(continuity_context, guards)
+            ),
+        })
     if context_summary:
         messages.append({
             "role": "developer",
-            "content": "Atlas durable context capsule from earlier canonical history:\n"
+            "content": "Atlas same-chat context capsule from earlier canonical history:\n"
             + redact_guarded_text(context_summary, guards),
         })
     for turn in context_turns(turns, summarized_through_turn_id):

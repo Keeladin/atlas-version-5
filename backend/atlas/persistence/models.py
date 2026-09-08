@@ -101,6 +101,24 @@ class TranscriptIndexStateRow(Base):
     )
 
 
+class ContinuityCapsuleRow(Base):
+    __tablename__ = "continuity_capsules"
+    __table_args__ = (
+        UniqueConstraint("transcript_id", "revision", name="uq_continuity_capsule_revision"),
+        Index("ix_continuity_capsules_transcript_created", "transcript_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    transcript_id: Mapped[UUID] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="CASCADE"), index=True
+    )
+    revision: Mapped[int] = mapped_column(BigInteger)
+    start_sequence: Mapped[int] = mapped_column(BigInteger)
+    end_sequence: Mapped[int] = mapped_column(BigInteger)
+    summary: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class DurableMemoryRow(Base):
     __tablename__ = "durable_memories"
     __table_args__ = (
