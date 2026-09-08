@@ -78,6 +78,13 @@ async def test_indexer_and_lexical_search_are_incremental_and_exclude_live_tail(
         coverage = await repository.coverage()
         assert coverage["transcripts_processed"] == 1
         assert coverage["chunks"] >= 1
+        transcript_coverage = coverage["transcripts"][0]
+        assert transcript_coverage["canonical_start_sequence"] == 1
+        assert transcript_coverage["canonical_end_sequence"] == 6
+        assert transcript_coverage["indexed_through_sequence"] == 4
+        assert transcript_coverage["active_tail_start_sequence"] == 5
+        assert transcript_coverage["requested_range_indexed"] is False
+        assert transcript_coverage["indexing_gaps"] == [{"start_sequence": 5, "end_sequence": 6}]
         assert matches
         assert "Caddy" in str(matches[0]["content"])
         assert matches[0]["source_turn_ids"]
@@ -94,6 +101,51 @@ async def test_indexer_and_lexical_search_are_incremental_and_exclude_live_tail(
         count_after = (await session.execute(select(func.count()).select_from(TranscriptIndexChunkRow))).scalar_one()
         assert again.turns_processed == 0
         assert count_after == count_before
+
+
+@pytest.mark.asyncio
+async def test_before_sequence_reports_straddling_chunk_instead_of_hiding_boundary_loss(pg_factory) -> None:
+    async with pg_factory() as session:
+        transcript = TranscriptRow(kind="owner", next_turn_sequence=4)
+        session.add(transcript)
+        await session.flush()
+        for sequence, actor, text in [
+            (1, "owner", "The early event is alpha."),
+            (2, "atlas", "Alpha happened before the later discussion."),
+            (3, "owner", "The later event is beta."),
+            (4, "atlas", "Beta belongs after the boundary."),
+        ]:
+            session.add(TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=sequence, actor=actor,
+                blocks=[{"type": "text", "text": text}],
+            ))
+        await session.commit()
+        transcript_id = transcript.id
+
+    async with pg_factory() as session:
+        indexed = await TranscriptIndexer(session, max_chars=500).run_once(active_tail_exchanges=0)
+        await session.commit()
+        assert indexed.chunks_created == 1
+
+    async with pg_factory() as session:
+        repository = MemorySearchRepository(session)
+        matches = await repository.search(
+            "alpha", transcript_id=transcript_id, before_sequence=3, limit=5
+        )
+        coverage = await repository.coverage(
+            transcript_id, before_sequence=3
+        )
+
+        assert matches == []  # Safe: do not leak/use later text from a straddling chunk.
+        item = coverage["transcripts"][0]
+        assert item["requested_range_indexed"] is True
+        assert item["requested_range_boundary_complete"] is False
+        assert len(item["straddling_chunks_excluded"]) == 1
+        boundary = item["straddling_chunks_excluded"][0]
+        assert boundary["chunk_id"]
+        assert boundary["start_sequence"] == 1
+        assert boundary["end_sequence"] == 4
+        assert item["embedding_coverage"]["eligible_chunks"] == 0
 
 
 class _FakeEmbeddingClient:
@@ -212,6 +264,8 @@ async def test_memory_search_falls_back_to_lexical_when_embedding_provider_fails
         {"query": "Caddy", "limit": 5}
     )
     assert result["retrieval"]["mode"] == "lexical_fallback"
+    assert result["retrieval"]["boundary_policy"] == "unbounded"
+    assert result["coverage"]["transcripts"]
     assert result["results"]
     assert "Caddy" in str(result["results"][0]["content"])
     assert "lexical" in result["results"][0]["retrieval_sources"]

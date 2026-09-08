@@ -142,7 +142,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             "required": ["task_id", "expected_revision"], "additionalProperties": False}, trust="internal"))
     registry.register_operation(OperationDescriptor(
         id="evidence.read", capability_id="atlas.evidence", family="Evidence",
-        description="Read exact canonical evidence by evidence_id; use JSON pointer and character offset/limit for bounded reads. For a referenced text artifact supply artifact_id.",
+        description="Read exact canonical evidence by evidence_id with actor/source metadata; use JSON pointer and character offset/limit for bounded reads. For a referenced text artifact supply artifact_id.",
         input_schema={"type": "object", "properties": {
             "evidence_id": {"type": "string", "format": "uuid"},
             "artifact_id": {"type": "string", "format": "uuid"}, "pointer": {"type": "string"},
@@ -156,7 +156,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             "required": ["evidence_id", "artifact_id"], "additionalProperties": False}, trust="external"))
     registry.register_operation(OperationDescriptor(
         id="memory.search", capability_id="atlas.memory", family="Memory",
-        description="Search indexed canonical transcript history using bounded hybrid lexical and semantic retrieval. Exact wording and technical identifiers remain lexical signals; related wording can be recovered semantically. Refine terms or exclude prior chunks when a first lookup is incomplete or wrong.",
+        description="Search indexed canonical transcript history using bounded hybrid lexical and semantic retrieval. Results are relevance candidates, not proof; coverage reports indexed ranges, active-tail gaps, embedding coverage, and any chunks safely excluded for crossing a before_sequence boundary. Refine terms or exclude prior chunks when a lookup is incomplete or wrong.",
         input_schema={"type": "object", "properties": {
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 10},

@@ -93,11 +93,42 @@ class EvidenceStore:
         row = await self.session.get(TurnRow, UUID(evidence_id))
         if row is None:
             raise ValueError('Canonical evidence not found')
-        value: Any = row.blocks
+        blocks = row.blocks or []
+        value: Any = blocks
+        tool_block = (
+            blocks[0]
+            if len(blocks) == 1 and blocks[0].get('type') == 'tool_observation'
+            else None
+        )
+        provenance: dict = {}
+        operation = phase = action_id = None
+        if tool_block is not None:
+            evidence_kind = 'tool_observation'
+            operation = tool_block.get('operation')
+            phase = tool_block.get('phase')
+            action_id = tool_block.get('action_id')
+            provenance = tool_block.get('provenance') or {}
+        elif row.actor == Actor.OWNER.value:
+            evidence_kind = 'owner_attachment' if artifact_id is not None else 'owner_statement'
+            if artifact_id is not None:
+                reference = next((
+                    block for block in blocks
+                    if block.get('type') == 'artifact_ref'
+                    and str(block.get('artifact_id')) == str(artifact_id)
+                ), None)
+                if reference is not None:
+                    provenance = reference.get('provenance') or {}
+        elif row.actor == Actor.ATLAS.value:
+            evidence_kind = 'model_statement'
+        elif row.actor == Actor.SYSTEM.value:
+            evidence_kind = 'system_statement'
+        else:
+            evidence_kind = 'transcript_evidence'
+
         # Tool evidence has one observation block. Owner turns may contain
         # several durable attachment refs, selectable by JSON pointer.
-        if len(value) == 1 and value[0].get('type') == 'tool_observation':
-            value = value[0]['detail']
+        if tool_block is not None:
+            value = tool_block['detail']
             if isinstance(value.get('evidence_payload'), dict):
                 value = json.loads(await self._artifact_bytes(value['evidence_payload']['artifact_id']))
         if artifact_id is not None:
@@ -127,9 +158,26 @@ class EvidenceStore:
         offset = max(0, offset)
         limit = max(1, min(limit, 8000))
         end = min(len(text), offset + limit)
-        return {'evidence_id': evidence_id, 'artifact_id': artifact_id, 'pointer': pointer,
-            'offset': offset, 'next_offset': end if end < len(text) else None,
-            'total_characters': len(text), 'text': text[offset:end], 'exact': True, 'trust': 'external'}
+        return {
+            'evidence_id': evidence_id,
+            'transcript_id': str(row.transcript_id),
+            'sequence': int(row.sequence),
+            'actor': row.actor,
+            'evidence_kind': evidence_kind,
+            'created_at': row.created_at.isoformat() if row.created_at else None,
+            'operation': operation,
+            'phase': phase,
+            'action_id': str(action_id) if action_id else None,
+            'provenance': provenance,
+            'artifact_id': artifact_id,
+            'pointer': pointer,
+            'offset': offset,
+            'next_offset': end if end < len(text) else None,
+            'total_characters': len(text),
+            'text': text[offset:end],
+            'exact': True,
+            'trust': 'external',
+        }
 
     async def task_read(self, task_id: str, *, expected_revision: int, offset: int = 0, limit: int = 4000) -> dict:
         row = (await self.session.execute(select(TranscriptRow).where(

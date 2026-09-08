@@ -5,7 +5,12 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from atlas.persistence.models import TranscriptIndexChunkRow, TranscriptIndexStateRow
+from atlas.persistence.models import (
+    TranscriptIndexChunkRow,
+    TranscriptIndexStateRow,
+    TranscriptRow,
+    TurnRow,
+)
 
 from .indexer import INDEX_VERSION
 
@@ -118,6 +123,9 @@ class MemorySearchRepository:
         if transcript_id is not None:
             statement = statement.where(TranscriptIndexChunkRow.transcript_id == transcript_id)
         if before_sequence is not None:
+            # Only whole chunks strictly before the boundary are searchable. A straddling
+            # chunk is deliberately excluded and reported by coverage() so the model does
+            # not treat later text inside that chunk as evidence about the earlier range.
             statement = statement.where(TranscriptIndexChunkRow.end_sequence < before_sequence)
         if exclude_chunk_ids:
             statement = statement.where(TranscriptIndexChunkRow.id.not_in(exclude_chunk_ids))
@@ -127,9 +135,13 @@ class MemorySearchRepository:
         self,
         transcript_id: UUID | None = None,
         *,
+        before_sequence: int | None = None,
         embedding_model: str | None = None,
         embedding_dimensions: int | None = None,
     ) -> dict[str, object]:
+        if before_sequence is not None and transcript_id is None:
+            raise ValueError("before_sequence coverage requires transcript_id")
+
         chunk_query = select(
             func.count(TranscriptIndexChunkRow.id),
             func.count(func.distinct(TranscriptIndexChunkRow.transcript_id)),
@@ -141,6 +153,7 @@ class MemorySearchRepository:
             TranscriptIndexChunkRow.index_version == INDEX_VERSION,
             TranscriptIndexChunkRow.embedding.is_not(None),
         )
+        transcript_query = select(TranscriptRow).order_by(TranscriptRow.created_at, TranscriptRow.id)
         if embedding_model:
             embedded_query = embedded_query.where(
                 TranscriptIndexChunkRow.embedding_model == embedding_model
@@ -153,9 +166,169 @@ class MemorySearchRepository:
             chunk_query = chunk_query.where(TranscriptIndexChunkRow.transcript_id == transcript_id)
             state_query = state_query.where(TranscriptIndexStateRow.transcript_id == transcript_id)
             embedded_query = embedded_query.where(TranscriptIndexChunkRow.transcript_id == transcript_id)
+            transcript_query = transcript_query.where(TranscriptRow.id == transcript_id)
+
         chunk_count, transcript_count = (await self.session.execute(chunk_query)).one()
         state_count = (await self.session.execute(state_query)).scalar_one()
         embedded_count = (await self.session.execute(embedded_query)).scalar_one()
+        transcripts = list((await self.session.execute(transcript_query)).scalars())
+        transcript_ids = [transcript.id for transcript in transcripts]
+
+        turn_stats: dict[UUID, tuple[int | None, int | None, int]] = {}
+        states: dict[UUID, TranscriptIndexStateRow] = {}
+        eligible_chunk_counts: dict[UUID, int] = {}
+        eligible_embedded_counts: dict[UUID, int] = {}
+        boundary_by_transcript: dict[UUID, list[TranscriptIndexChunkRow]] = {}
+        if transcript_ids:
+            turn_rows = (await self.session.execute(
+                select(
+                    TurnRow.transcript_id,
+                    func.min(TurnRow.sequence),
+                    func.max(TurnRow.sequence),
+                    func.count(TurnRow.id),
+                )
+                .where(TurnRow.transcript_id.in_(transcript_ids))
+                .group_by(TurnRow.transcript_id)
+            )).all()
+            turn_stats = {
+                row[0]: (row[1], row[2], int(row[3] or 0))
+                for row in turn_rows
+            }
+            state_rows = list((await self.session.execute(
+                select(TranscriptIndexStateRow).where(
+                    TranscriptIndexStateRow.index_version == INDEX_VERSION,
+                    TranscriptIndexStateRow.transcript_id.in_(transcript_ids),
+                )
+            )).scalars())
+            states = {row.transcript_id: row for row in state_rows}
+
+            eligible_query = (
+                select(TranscriptIndexChunkRow.transcript_id, func.count(TranscriptIndexChunkRow.id))
+                .where(
+                    TranscriptIndexChunkRow.index_version == INDEX_VERSION,
+                    TranscriptIndexChunkRow.transcript_id.in_(transcript_ids),
+                )
+                .group_by(TranscriptIndexChunkRow.transcript_id)
+            )
+            eligible_embedded_query = (
+                select(TranscriptIndexChunkRow.transcript_id, func.count(TranscriptIndexChunkRow.id))
+                .where(
+                    TranscriptIndexChunkRow.index_version == INDEX_VERSION,
+                    TranscriptIndexChunkRow.transcript_id.in_(transcript_ids),
+                    TranscriptIndexChunkRow.embedding.is_not(None),
+                )
+                .group_by(TranscriptIndexChunkRow.transcript_id)
+            )
+            if embedding_model:
+                eligible_embedded_query = eligible_embedded_query.where(
+                    TranscriptIndexChunkRow.embedding_model == embedding_model
+                )
+            if embedding_dimensions is not None:
+                eligible_embedded_query = eligible_embedded_query.where(
+                    TranscriptIndexChunkRow.embedding_dimensions == embedding_dimensions
+                )
+            if before_sequence is not None:
+                eligible_query = eligible_query.where(
+                    TranscriptIndexChunkRow.end_sequence < before_sequence
+                )
+                eligible_embedded_query = eligible_embedded_query.where(
+                    TranscriptIndexChunkRow.end_sequence < before_sequence
+                )
+                boundary_rows = list((await self.session.execute(
+                    select(TranscriptIndexChunkRow).where(
+                        TranscriptIndexChunkRow.index_version == INDEX_VERSION,
+                        TranscriptIndexChunkRow.transcript_id.in_(transcript_ids),
+                        TranscriptIndexChunkRow.start_sequence < before_sequence,
+                        TranscriptIndexChunkRow.end_sequence >= before_sequence,
+                    ).order_by(
+                        TranscriptIndexChunkRow.transcript_id,
+                        TranscriptIndexChunkRow.start_sequence,
+                    )
+                )).scalars())
+                for chunk in boundary_rows:
+                    boundary_by_transcript.setdefault(chunk.transcript_id, []).append(chunk)
+
+            eligible_chunk_counts = {
+                row[0]: int(row[1] or 0)
+                for row in (await self.session.execute(eligible_query)).all()
+            }
+            eligible_embedded_counts = {
+                row[0]: int(row[1] or 0)
+                for row in (await self.session.execute(eligible_embedded_query)).all()
+            }
+
+        transcript_coverage: list[dict[str, object]] = []
+        eligible_chunks_total = 0
+        eligible_embedded_total = 0
+        for transcript in transcripts:
+            canonical_start, canonical_end, turn_count = turn_stats.get(
+                transcript.id, (None, None, 0)
+            )
+            state = states.get(transcript.id)
+            indexed_through = int(state.last_indexed_sequence) if state is not None else 0
+            requested_start = int(canonical_start) if canonical_start is not None else None
+            requested_end = int(canonical_end) if canonical_end is not None else None
+            if before_sequence is not None and requested_start is not None:
+                if requested_start >= before_sequence:
+                    requested_start = None
+                    requested_end = None
+                elif requested_end is not None:
+                    requested_end = min(requested_end, before_sequence - 1)
+
+            eligible_chunks = eligible_chunk_counts.get(transcript.id, 0)
+            eligible_embedded = eligible_embedded_counts.get(transcript.id, 0)
+            eligible_chunks_total += eligible_chunks
+            eligible_embedded_total += eligible_embedded
+
+            requested_range_indexed = (
+                requested_end is None or indexed_through >= requested_end
+            )
+            indexing_gaps: list[dict[str, int]] = []
+            if (
+                requested_end is not None
+                and canonical_start is not None
+                and indexed_through < requested_end
+            ):
+                indexing_gaps.append({
+                    "start_sequence": max(int(canonical_start), indexed_through + 1),
+                    "end_sequence": requested_end,
+                })
+            boundary_intersections = [
+                {
+                    "chunk_id": str(chunk.id),
+                    "start_sequence": int(chunk.start_sequence),
+                    "end_sequence": int(chunk.end_sequence),
+                }
+                for chunk in boundary_by_transcript.get(transcript.id, [])[:10]
+            ]
+            transcript_coverage.append({
+                "transcript_id": str(transcript.id),
+                "created_at": transcript.created_at.isoformat() if transcript.created_at else None,
+                "closed_at": transcript.closed_at.isoformat() if transcript.closed_at else None,
+                "canonical_start_sequence": int(canonical_start) if canonical_start is not None else None,
+                "canonical_end_sequence": int(canonical_end) if canonical_end is not None else None,
+                "canonical_turns": int(turn_count or 0),
+                "indexed_through_sequence": indexed_through,
+                "active_tail_start_sequence": (
+                    indexed_through + 1
+                    if canonical_end is not None and indexed_through < int(canonical_end)
+                    else None
+                ),
+                "requested_before_sequence": before_sequence,
+                "requested_range_start_sequence": requested_start,
+                "requested_range_end_sequence": requested_end,
+                "requested_range_indexed": requested_range_indexed,
+                "requested_range_boundary_complete": (
+                    requested_range_indexed and not boundary_intersections
+                ),
+                "indexing_gaps": indexing_gaps,
+                "straddling_chunks_excluded": boundary_intersections,
+                "embedding_coverage": {
+                    "eligible_chunks": eligible_chunks,
+                    "embedded_chunks": eligible_embedded,
+                },
+            })
+
         return {
             "index_version": INDEX_VERSION,
             "chunks": int(chunk_count or 0),
@@ -164,6 +337,11 @@ class MemorySearchRepository:
             "embedding_dimensions": embedding_dimensions,
             "transcripts_with_chunks": int(transcript_count or 0),
             "transcripts_processed": int(state_count or 0),
+            "embedding_coverage": {
+                "eligible_chunks": eligible_chunks_total,
+                "embedded_chunks": eligible_embedded_total,
+            },
+            "transcripts": transcript_coverage,
         }
 
     @staticmethod

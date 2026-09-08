@@ -40,23 +40,27 @@ class MemoryService:
                 semantic_status = "lexical_fallback"
 
         transcript_id = UUID(str(transcript_raw)) if transcript_raw else None
+        before_sequence = (
+            int(arguments["before_sequence"])
+            if arguments.get("before_sequence") is not None
+            else None
+        )
+        if before_sequence is not None and transcript_id is None:
+            raise ValueError("before_sequence requires transcript_id")
         async with self.factory() as session:
             repository = MemorySearchRepository(session)
             results = await repository.search(
                 query,
                 limit=int(arguments.get("limit") or 5),
                 transcript_id=transcript_id,
-                before_sequence=(
-                    int(arguments["before_sequence"])
-                    if arguments.get("before_sequence") is not None
-                    else None
-                ),
+                before_sequence=before_sequence,
                 exclude_chunk_ids=[UUID(str(item)) for item in excludes],
                 query_embedding=query_embedding,
                 embedding_model=self.embedder.model if self.embedder is not None else None,
             )
             coverage = await repository.coverage(
                 transcript_id,
+                before_sequence=before_sequence,
                 embedding_model=self.embedder.model if self.embedder is not None else None,
                 embedding_dimensions=(
                     self.embedder.dimensions if self.embedder is not None else None
@@ -64,7 +68,14 @@ class MemoryService:
             )
         return {
             "query": query,
-            "retrieval": {"mode": semantic_status},
+            "retrieval": {
+                "mode": semantic_status,
+                "boundary_policy": (
+                    "whole_chunks_strictly_before_sequence"
+                    if before_sequence is not None
+                    else "unbounded"
+                ),
+            },
             "coverage": coverage,
             "results": results,
         }

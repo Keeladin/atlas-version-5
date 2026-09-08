@@ -1,6 +1,7 @@
 from uuid import uuid4
 
 from atlas.runtime.conversation import (
+    build_model_instructions,
     context_turns,
     recent_exchange_turns,
     tool_observation_is_compactable,
@@ -80,3 +81,13 @@ def test_failure_and_uncertainty_are_not_normal_compaction_candidates() -> None:
     assert tool_observation_is_compactable(ToolObservationBlock(phase="searched")) is True
     assert tool_observation_is_compactable(ToolObservationBlock(phase="failed")) is False
     assert tool_observation_is_compactable(ToolObservationBlock(phase="uncertain")) is False
+
+
+def test_model_instructions_ground_historical_recall_in_evidence() -> None:
+    instructions = build_model_instructions([], active_task_enabled=False)
+
+    assert "retrieval results are candidates, not proof" in instructions
+    assert "verify the exact tool observation" in instructions
+    assert "chronology qualifiers" in instructions
+    assert "earliest or latest matching exchange found" in instructions
+    assert "rather than inventing continuity" in instructions

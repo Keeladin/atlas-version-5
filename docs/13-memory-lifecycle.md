@@ -81,6 +81,8 @@ Canonical source content stays separable from derived indexes so indexes can be 
 
 Retrieval is constrained before relevance ranking by explicit owner corrections/forgetting, supersession/tombstones, source authority, and freshness. A semantically strong older match must not override a newer canonical correction or a live authoritative source.
 
+Within the set of still-valid sources, retrieval relevance does not by itself establish answerability. Runtime exposes source class, exact evidence locators, ordering, and structural indexing coverage; the model decides whether those facts are sufficient for the specific historical claim. A prior Atlas/model statement is evidence that Atlas made that statement, while a corresponding tool observation is stronger evidence that the operation actually occurred. Chronology claims such as "first" or "latest" require separate ordering support and must be qualified when search or coverage cannot establish exhaustiveness.
+
 Within the set of still-valid sources, normal recall prefers the cheapest sufficient path:
 
 1. current model-visible transcript/context when it is not known to be stale;

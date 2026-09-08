@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from atlas.actions.authority import AuthorityStore
@@ -20,6 +21,7 @@ from atlas.persistence.models import (
 from atlas.runtime.execution import RunExecutor
 from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import RunInterrupted, recover_abandoned_runs
+from atlas.transcript.models import Actor, TextBlock
 from atlas.transcript.repository import TranscriptRepository
 from sqlalchemy import func, select
 
@@ -62,6 +64,51 @@ async def test_exact_resource_is_stored_once_and_replayed_without_normalization(
         assert ''.join(parts) == text
         acquired = await store.acquire(result['evidence_id'], resource['artifact_id'])
         assert base64.b64decode(acquired['resource']['data_base64']).decode() == text
+
+
+@pytest.mark.asyncio
+async def test_exact_evidence_read_exposes_source_class_and_runtime_provenance(pg_factory, tmp_path):
+    artifacts = ArtifactStore(tmp_path / 'artifacts')
+    transcript_id, run_id = await create_run(pg_factory)
+    async with pg_factory() as session:
+        repository = TranscriptRepository(session)
+        owner = await repository.append_turn(
+            transcript_id, Actor.OWNER, [TextBlock(text='I asked for the repository review.')],
+        )
+        atlas = await repository.append_turn(
+            transcript_id, Actor.ATLAS, [TextBlock(text='I reviewed it through GitHub.')],
+        )
+        action_id = uuid4()
+        tool_id, _ = await EvidenceStore(session, artifacts).record(
+            transcript_id,
+            operation='github.get_repository_tree',
+            phase='succeeded',
+            detail={'repository': 'atlas-version-5'},
+            run_id=run_id,
+            action_id=action_id,
+            trust='external',
+        )
+        await session.commit()
+
+        store = EvidenceStore(session, artifacts)
+        owner_read = await store.read(str(owner.id))
+        atlas_read = await store.read(str(atlas.id))
+        tool_read = await store.read(str(tool_id))
+
+        assert owner_read['actor'] == 'owner'
+        assert owner_read['evidence_kind'] == 'owner_statement'
+        assert owner_read['transcript_id'] == str(transcript_id)
+        assert owner_read['sequence'] == owner.sequence
+        assert atlas_read['actor'] == 'atlas'
+        assert atlas_read['evidence_kind'] == 'model_statement'
+        assert tool_read['actor'] == 'tool'
+        assert tool_read['evidence_kind'] == 'tool_observation'
+        assert tool_read['operation'] == 'github.get_repository_tree'
+        assert tool_read['phase'] == 'succeeded'
+        assert tool_read['action_id'] == str(action_id)
+        assert tool_read['provenance']['source'] == 'github.get_repository_tree'
+        assert tool_read['provenance']['run_id'] == str(run_id)
+        assert tool_read['exact'] is True
 
 
 @pytest.mark.asyncio
