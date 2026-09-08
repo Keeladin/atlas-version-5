@@ -4,6 +4,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DEPLOYMENT = ROOT / "deployment"
 
 
+def test_control_state_directory_is_provisioned_for_runtime_user() -> None:
+    deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
+    bootstrap = (DEPLOYMENT / "bootstrap-host.sh").read_text()
+    expected = "/var/lib/atlas-v5/control"
+    assert expected in deploy
+    assert expected in bootstrap
+    assert "install -d -o atlas-v5 -g atlas-v5 -m 0700" in deploy
+
+
 def test_normal_deploy_does_not_walk_owner_projects() -> None:
     script = (DEPLOYMENT / "deploy-host.sh").read_text()
     assert "find /home/jaco/Projects" not in script

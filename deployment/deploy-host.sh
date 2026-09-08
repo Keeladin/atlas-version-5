@@ -70,7 +70,7 @@ install -d -o jaco -g atlas-v5 -m 2770 \
   /home/jaco/Workspace/Scratch
 install -d -o atlas-v5 -g atlas-v5 -m 0770 /var/lib/atlas-v5/workspace
 install -d -o atlas-v5 -g atlas-v5 -m 0750 /var/lib/atlas-v5/projects
-install -d -o atlas-v5 -g atlas-v5 -m 0700 /var/lib/atlas-v5/auth /var/lib/atlas-v5/project-checkpoints
+install -d -o atlas-v5 -g atlas-v5 -m 0700 /var/lib/atlas-v5/auth /var/lib/atlas-v5/project-checkpoints /var/lib/atlas-v5/control
 
 # Project ACLs are provisioned separately by reconcile-project-access.sh.
 # Deployments must not recursively rewrite owner project permissions.

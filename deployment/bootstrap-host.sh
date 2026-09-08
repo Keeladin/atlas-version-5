@@ -25,7 +25,7 @@ if [[ -d /home/jaco/Projects ]]; then
 fi
 
 install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0700 \
-  /var/lib/atlas-v5/artifacts /var/lib/atlas-v5/runtime /var/lib/atlas-v5/backups
+  /var/lib/atlas-v5/artifacts /var/lib/atlas-v5/runtime /var/lib/atlas-v5/backups /var/lib/atlas-v5/control
 install -d -o root -g "${APP_GROUP}" -m 0750 \
   /etc/atlas-v5/config /etc/atlas-v5/secrets /opt/atlas-v5
 
