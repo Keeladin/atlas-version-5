@@ -43,6 +43,7 @@ class TranscriptRow(Base):
     active_task_state: Mapped[dict] = mapped_column(JSONB, default=dict)
     active_task_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     next_turn_sequence: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    content_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
 
 
 class TurnRow(Base):
@@ -88,6 +89,7 @@ class TranscriptIndexChunkRow(Base):
     start_sequence: Mapped[int] = mapped_column(BigInteger)
     end_sequence: Mapped[int] = mapped_column(BigInteger)
     source_turn_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    source_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     content: Mapped[str] = mapped_column(Text)
     search_vector: Mapped[str] = mapped_column(
         TSVECTOR,
@@ -127,6 +129,7 @@ class ContinuityCapsuleRow(Base):
     revision: Mapped[int] = mapped_column(BigInteger)
     start_sequence: Mapped[int] = mapped_column(BigInteger)
     end_sequence: Mapped[int] = mapped_column(BigInteger)
+    source_revision: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
     summary: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -237,11 +240,11 @@ class MemoryCandidateRow(Base):
             "uq_pending_memory_candidate_fingerprint",
             "fingerprint",
             unique=True,
-            postgresql_where=text("status = 'pending' AND fingerprint IS NOT NULL"),
+            postgresql_where=text("status IN ('pending', 'leased', 'retained_short_term') AND fingerprint IS NOT NULL"),
         ),
         CheckConstraint(
-            "status <> 'pending' OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
-            name="ck_pending_candidate_has_payload",
+            "status NOT IN ('pending', 'leased', 'retained_short_term') OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
+            name="ck_reconcilable_candidate_has_payload",
         ),
     )
 
@@ -262,6 +265,11 @@ class MemoryCandidateRow(Base):
     invalidation_operation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
     )
+    lease_token: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    attempt_count: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    review_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     source_transcript_id: Mapped[UUID] = mapped_column(
         ForeignKey("transcripts.id", ondelete="CASCADE"), index=True
     )
@@ -276,6 +284,39 @@ class MemoryCandidateRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryReconciliationAttemptRow(Base):
+    __tablename__ = "memory_reconciliation_attempts"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "attempt_number", name="uq_memory_reconciliation_candidate_attempt"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    lease_token: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
+    attempt_number: Mapped[int] = mapped_column(BigInteger)
+    evaluated_memory_revision: Mapped[int | None] = mapped_column(BigInteger)
+    evaluated_source_revision: Mapped[int | None] = mapped_column(BigInteger)
+    semantic_decision: Mapped[str | None] = mapped_column(String(32), index=True)
+    target_memory_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
+    )
+    operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="claimed", index=True)
+    evidence_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    result_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MemoryProvenanceRow(Base):

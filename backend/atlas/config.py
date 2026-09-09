@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     memory_continuity_chats: int = 3
     memory_continuity_source_turns: int = 40
     memory_continuity_summary_chars: int = 1_800
+    memory_reconciliation_enabled: bool = False
+    memory_reconciliation_model: str | None = None
+    memory_reconciliation_batch_size: int = 8
+    memory_reconciliation_lease_seconds: int = 180
+    memory_reconciliation_max_attempts: int = 3
+    memory_short_term_review_hours: int = 24
+    memory_short_term_expiry_days: int = 14
     capability_call_limit: int = 16
     capability_completion_reserve: int = 2
     gws_command: Path = Path("/opt/atlas-v5/bin/gws")

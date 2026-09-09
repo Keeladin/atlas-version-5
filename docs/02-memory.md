@@ -82,7 +82,7 @@ Production now runs that deterministic maintenance pass from `atlas-v5-memory.ti
 
 `memory.search` now performs bounded hybrid retrieval: exact/full-text candidates and cosine-similarity candidates are independently ranked and fused, while preserving transcript/turn provenance and exclusion constraints for iterative refinement. Query embedding is a retrieval primitive rather than memory reasoning; if it is temporarily unavailable, lexical recall remains usable. The current transcript vector schema is fixed at 1,536 dimensions and defaults to OpenAI `text-embedding-3-large` requested at that dimension.
 
-At this checkpoint this was still a retrieval substrate rather than durable interpreted memory. The subsequent owner-directed memory milestone below adds explicit remember/correct/retire/restore/delete commands; context-capsule generation, automatic semantic promotion/reconciliation, visual attachment indexing, and the separate memory-reasoning worker that decides create/merge/supersede/discard remain staged. Derived lexical/vector indexes remain rebuildable from canonical transcript history.
+At this checkpoint this was still a retrieval substrate rather than durable interpreted memory. Subsequent milestones below add explicit owner-directed remember/correct/retire/restore/delete commands, continuity capsules, and bounded candidate-driven semantic reconciliation. Visual attachment indexing, broad history sweeps/consolidation, and OEM-manual retrieval remain staged. Derived lexical/vector indexes remain rebuildable from canonical transcript history.
 
 ## 10. Evidence-grounded historical recall — 2026-09-08
 
@@ -104,7 +104,7 @@ Current search admits only applicable active records. Explicit `include_historic
 
 Migration `25a11` introduces lifecycle/classification fields, provenance edges, deletion receipts and database payload constraints. Source-inclusive deletion redacts safely isolated exact passages, scrubs recorded candidate/provider-evidence dependencies and legacy command payloads, invalidates summaries and rewinds transcript indexing to a safe chunk boundary. `memory_only` retains source text. Artifact bytes, backup/WAL erasure and exhaustive paraphrase removal are not implemented.
 
-See [Memory lifecycle](13-memory-lifecycle.md#10-owner-memory-lifecycle--implemented-2026-09-09) for operation semantics, transaction boundaries and limitations. Automatic semantic promotion remains staged.
+See [Memory lifecycle](13-memory-lifecycle.md#10-owner-memory-lifecycle--implemented-2026-09-09) for operation semantics, transaction boundaries and limitations. Candidate-driven semantic publication is implemented in the `25a12` reconciliation milestone below; broad history consolidation remains staged.
 
 ## 12. Cross-chat continuity handoffs — 2026-09-08
 
@@ -124,4 +124,19 @@ Each memory candidate is a bounded proposal with `kind`, `content`, `scope`, `co
 
 The intake distinction is deliberate: `identity` and durable preferences may be suggested as long-term cross-chat candidates; project implementation state normally belongs in project scope; deployments, machine breakdowns, applications, travel, housing, and similar circumstances should remain short-term/project state or transcript history. The prompt explicitly discourages a growing monolithic `user_profile` blob.
 
-Candidate confidence means only "how strongly the model believes the owner conveyed this candidate." It is not authority to persist the content as active memory. Pending candidates are not returned by `memory.search` and do not affect context assembly. Exact pending duplicates are collapsed deterministically. Automatic semantic reconciliation/promotion remains the next background-memory milestone.
+Candidate confidence means only "how strongly the model believes the owner conveyed this candidate." It is not authority to persist the content as active memory. Pending/leased/retained-short-term candidates are not returned by `memory.search` and do not affect context assembly. Exact active candidate duplicates are collapsed deterministically across `pending`, `leased`, and `retained_short_term` states.
+
+
+## 14. Candidate-driven reconciliation — 2026-09-09
+
+Migration `25a12` adds the first bounded asynchronous semantic reconciler. The five-minute memory maintenance service may claim a small batch of eligible candidates with durable lease tokens, evaluate them against a consistent snapshot of canonical source evidence, applicable active memories, lifecycle restrictions, and the current `memory_state/owner` revision, then choose one semantic outcome: `discard`, `retain_short_term`, `create`, `equivalent`, `merge`, or `supersede`. The production host configuration enables this bounded loop; the library default remains disabled so generic/test installs opt in deliberately.
+
+A lease is fenced by an opaque token as well as expiry. If a worker stalls and another worker reclaims the candidate, the old worker cannot publish even when the owner-memory revision is unchanged. Expired attempts are closed in the reconciliation ledger; attempt counts are bounded. A newly reasoned attempt receives a new operation identity, while transport replay of the same concrete publication reuses its operation ID through `SharedStateWriter`.
+
+Evaluation reads occur under a short `REPEATABLE READ` snapshot; no database transaction is held while the model reasons. Publication rechecks the lease, candidate eligibility, canonical transcript `content_revision`, source-turn availability, and expected `memory_state/owner` revision in the protected write transaction. Owner remember/correct/retire/delete changes therefore win over in-flight derived inference.
+
+Derived publication is a separate write path. It writes `record_kind=derived`, preserves candidate kind/scope/scope-key/durability/subject/namespace, may only merge or supersede an active **derived** memory from the evaluated snapshot, and cannot restore retired memory, clear owner suppression, or impersonate owner-directed authority. `equivalent` names an existing applicable memory; if the exact source lineage is new, provenance changes and the memory revision advances, otherwise storage reports a true `no_change`. Distinct turns are preserved as provenance, not automatically treated as independent confidence evidence.
+
+`retain_short_term` does not create a second searchable memory representation. The candidate remains non-authoritative with `review_after` and `expires_at`; ordinary transcript retrieval remains the recall source. Unresolved project scope cannot publish durable memory until runtime has a canonical project identity.
+
+Canonical transcripts now carry monotonic `content_revision`. Appends and owner-directed redactions advance it. Lexical chunks and continuity capsules record the revision they read; continuity publication is rejected if the source changed, and stale capsules are excluded from projection. Transcript embeddings update only the exact chunk/source revision they read, while durable-memory embeddings update only a still-active memory with the same fingerprint. These fences prevent a pre-deletion maintenance worker from republishing removed content after the deletion transaction wins.

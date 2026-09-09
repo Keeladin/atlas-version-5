@@ -70,7 +70,11 @@ class TranscriptEmbeddingIndexer:
             take = min(size, remaining)
             async with self.factory() as session:
                 statement = (
-                    select(TranscriptIndexChunkRow.id, TranscriptIndexChunkRow.content)
+                    select(
+                        TranscriptIndexChunkRow.id,
+                        TranscriptIndexChunkRow.source_revision,
+                        TranscriptIndexChunkRow.content,
+                    )
                     .where(
                         TranscriptIndexChunkRow.index_version == INDEX_VERSION,
                         or_(
@@ -88,12 +92,18 @@ class TranscriptEmbeddingIndexer:
             if not rows:
                 break
 
-            vectors = await self.client.embed([content for _, content in rows])
+            vectors = await self.client.embed([content for _, _, content in rows])
+            updated = 0
             async with self.factory() as session:
-                for (chunk_id, _), vector in zip(rows, vectors, strict=True):
-                    await session.execute(
+                for (chunk_id, source_revision, _), vector in zip(
+                    rows, vectors, strict=True
+                ):
+                    result = await session.execute(
                         update(TranscriptIndexChunkRow)
-                        .where(TranscriptIndexChunkRow.id == chunk_id)
+                        .where(
+                            TranscriptIndexChunkRow.id == chunk_id,
+                            TranscriptIndexChunkRow.source_revision == source_revision,
+                        )
                         .values(
                             embedding=vector,
                             embedding_model=self.client.model,
@@ -101,9 +111,10 @@ class TranscriptEmbeddingIndexer:
                             embedded_at=func.now(),
                         )
                     )
+                    updated += int(result.rowcount or 0)
                 await session.commit()
             count = len(rows)
-            embedded += count
+            embedded += updated
             batches += 1
             remaining -= count
         return {"chunks_embedded": embedded, "embedding_batches": batches}
@@ -125,7 +136,11 @@ class DurableMemoryEmbeddingIndexer:
             take = min(size, remaining)
             async with self.factory() as session:
                 statement = (
-                    select(DurableMemoryRow.id, DurableMemoryRow.content)
+                    select(
+                        DurableMemoryRow.id,
+                        DurableMemoryRow.fingerprint,
+                        DurableMemoryRow.content,
+                    )
                     .where(
                         DurableMemoryRow.status == "active",
                         DurableMemoryRow.content.is_not(None),
@@ -144,12 +159,19 @@ class DurableMemoryEmbeddingIndexer:
             if not rows:
                 break
 
-            vectors = await self.client.embed([content for _, content in rows])
+            vectors = await self.client.embed([content for _, _, content in rows])
+            updated = 0
             async with self.factory() as session:
-                for (memory_id, _), vector in zip(rows, vectors, strict=True):
-                    await session.execute(
+                for (memory_id, fingerprint, _), vector in zip(
+                    rows, vectors, strict=True
+                ):
+                    result = await session.execute(
                         update(DurableMemoryRow)
-                        .where(DurableMemoryRow.id == memory_id)
+                        .where(
+                            DurableMemoryRow.id == memory_id,
+                            DurableMemoryRow.status == "active",
+                            DurableMemoryRow.fingerprint == fingerprint,
+                        )
                         .values(
                             embedding=vector,
                             embedding_model=self.client.model,
@@ -157,9 +179,10 @@ class DurableMemoryEmbeddingIndexer:
                             embedded_at=func.now(),
                         )
                     )
+                    updated += int(result.rowcount or 0)
                 await session.commit()
             count = len(rows)
-            embedded += count
+            embedded += updated
             batches += 1
             remaining -= count
         return {

@@ -103,7 +103,7 @@ class MemoryCandidateRepository:
             )
             .on_conflict_do_nothing(
                 index_elements=[MemoryCandidateRow.fingerprint],
-                index_where=(MemoryCandidateRow.status == "pending")
+                index_where=MemoryCandidateRow.status.in_(["pending", "leased", "retained_short_term"])
                 & MemoryCandidateRow.fingerprint.is_not(None),
             )
             .returning(MemoryCandidateRow.id)
@@ -117,7 +117,7 @@ class MemoryCandidateRepository:
         existing = (
             await self.session.execute(
                 select(MemoryCandidateRow).where(
-                    MemoryCandidateRow.status == "pending",
+                    MemoryCandidateRow.status.in_(["pending", "leased", "retained_short_term"]),
                     MemoryCandidateRow.fingerprint == fingerprint,
                 ).order_by(MemoryCandidateRow.created_at.desc()).limit(1)
             )

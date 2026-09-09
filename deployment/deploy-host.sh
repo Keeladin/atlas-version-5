@@ -115,6 +115,24 @@ fi
 if ! grep -q '^ATLAS_ACTION_STALE_AFTER_SECONDS=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_ACTION_STALE_AFTER_SECONDS=300' >> /etc/atlas-v5/config/runtime.env
 fi
+if ! grep -q '^ATLAS_MEMORY_RECONCILIATION_ENABLED=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_MEMORY_RECONCILIATION_ENABLED=true' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_MEMORY_RECONCILIATION_BATCH_SIZE=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_MEMORY_RECONCILIATION_BATCH_SIZE=8' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_MEMORY_RECONCILIATION_LEASE_SECONDS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_MEMORY_RECONCILIATION_LEASE_SECONDS=180' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_MEMORY_RECONCILIATION_MAX_ATTEMPTS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_MEMORY_RECONCILIATION_MAX_ATTEMPTS=3' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_MEMORY_SHORT_TERM_REVIEW_HOURS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_MEMORY_SHORT_TERM_REVIEW_HOURS=24' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_MEMORY_SHORT_TERM_EXPIRY_DAYS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_MEMORY_SHORT_TERM_EXPIRY_DAYS=14' >> /etc/atlas-v5/config/runtime.env
+fi
 if ! grep -q '^ATLAS_AUTH_REQUIRED=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_AUTH_REQUIRED=true' >> /etc/atlas-v5/config/runtime.env
 fi

@@ -235,6 +235,7 @@ class TranscriptRepository:
             update(TranscriptRow).where(TranscriptRow.id == transcript_id)
             .values(
                 next_turn_sequence=TranscriptRow.next_turn_sequence + 1,
+                content_revision=TranscriptRow.content_revision + 1,
                 updated_at=func.now(),
             )
             .returning(TranscriptRow.next_turn_sequence)

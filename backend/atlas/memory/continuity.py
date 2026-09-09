@@ -79,6 +79,7 @@ async def recent_continuity_context(
         .where(
             TranscriptRow.kind == "owner",
             TranscriptRow.id != active_transcript_id,
+            ContinuityCapsuleRow.source_revision == TranscriptRow.content_revision,
         )
         .order_by(TranscriptRow.updated_at.desc(), TranscriptRow.id.desc())
         .limit(max(1, min(limit, 8)))
@@ -175,6 +176,7 @@ class ContinuityCapsuleService:
             title = transcript.title or "Untitled chat"
             previous_summary = redact_guarded_text(previous.summary, guards) if previous else None
             previous_revision = previous.revision if previous else 0
+            source_revision = int(transcript.content_revision or 0)
             coverage_start = previous.start_sequence if previous else rows[0].sequence
             source_end = rows[-1].sequence
 
@@ -208,6 +210,8 @@ class ContinuityCapsuleService:
             )).scalar_one_or_none()
             if transcript is None or transcript.closed_at is None:
                 return False
+            if int(transcript.content_revision or 0) != source_revision:
+                return False
             current = (await session.execute(
                 select(ContinuityCapsuleRow)
                 .where(ContinuityCapsuleRow.transcript_id == transcript_id)
@@ -222,6 +226,7 @@ class ContinuityCapsuleService:
                 revision=previous_revision + 1,
                 start_sequence=coverage_start,
                 end_sequence=source_end,
+                source_revision=source_revision,
                 summary=summary,
             ))
             await session.commit()

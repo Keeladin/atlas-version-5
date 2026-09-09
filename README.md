@@ -27,7 +27,7 @@ The model is the primary semantic decision-maker: it interprets intent, selects 
 
 ## Deliberate boundaries
 
-Atlas does not currently provide general shell or code execution. GitHub remains read-only, project changes are staged for owner integration, and consequential external effects remain owner-gated. Transcript hybrid lexical/semantic recall and explicit owner-directed remember/correct/retire/restore/delete semantics are implemented on PostgreSQL plus pgvector. Automatic semantic promotion/reconciliation, same-chat pressure capsules, visual attachment indexing, and indexed OEM-manual retrieval remain staged work.
+Atlas does not currently provide general shell or code execution. GitHub remains read-only, project changes are staged for owner integration, and consequential external effects remain owner-gated. Transcript hybrid lexical/semantic recall, explicit owner-directed remember/correct/retire/restore/delete semantics, and bounded candidate-driven semantic reconciliation are implemented on PostgreSQL plus pgvector. Whole-history memory sweeps/consolidation, same-chat pressure capsules, visual attachment indexing, and indexed OEM-manual retrieval remain staged work.
 
 ## Repository map
 
@@ -46,4 +46,4 @@ The governing documents are:
 - `docs/20-implementation-notes.md`
 - `docs/21-runtime-invariant-test-matrix.md`
 
-**Status:** Phase 0 foundation complete; Phase 1 working Atlas centre operational; Phase 5 memory now provides deterministic transcript indexing, hybrid lexical/semantic recall, evidence-grounded historical verification, and explicit durable owner-directed remember/correct/retire/restore/delete semantics. Automatic memory promotion/reconciliation, same-chat pressure capsules, and visual attachment indexing remain staged.
+**Status:** Phase 0 foundation complete; Phase 1 working Atlas centre operational; Phase 5 memory now provides deterministic transcript indexing, hybrid lexical/semantic recall, evidence-grounded historical verification, explicit owner-directed lifecycle semantics, and bounded candidate-driven derived-memory reconciliation. Whole-history consolidation, same-chat pressure capsules, and visual attachment indexing remain staged.

@@ -102,6 +102,16 @@ class TranscriptIndexer:
     async def index_transcript(self, transcript_id: UUID, *, through_sequence: int) -> tuple[int, int]:
         if through_sequence <= 0:
             return 0, 0
+        transcript = (
+            await self.session.execute(
+                select(TranscriptRow)
+                .where(TranscriptRow.id == transcript_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if transcript is None:
+            return 0, 0
+        source_revision = int(transcript.content_revision or 0)
         state = await self._state_for_update(transcript_id)
         if through_sequence <= state.last_indexed_sequence:
             return 0, 0
@@ -127,6 +137,7 @@ class TranscriptIndexer:
                 start_sequence=chunk_rows[0].sequence,
                 end_sequence=chunk_rows[-1].sequence,
                 source_turn_ids=[str(row.id) for row in chunk_rows],
+                source_revision=source_revision,
                 content=content,
             ))
             created += 1

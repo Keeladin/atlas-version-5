@@ -59,6 +59,11 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Control-managed connection overrides persist privately across restart and never return submitted credentials | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Filesystem modes + backend/frontend transport |
 | Model setup verifies before save; GitHub/Google setup verify before restart-required activation | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Provider/MCP boundaries with test doubles |
 | Model selection is populated from the authenticated provider catalog; discovery never persists or returns the submitted key, and stored-key refresh stays server-side | `test_control_connections.py`, `frontend/tests/control.test.mjs` | Provider catalog double + frontend transport |
+| Stale/reclaimed memory-candidate lease cannot publish even when the owner-memory revision is unchanged | `test_memory_reconciliation.py` | Real PostgreSQL |
+| Owner memory/source changes during reconciliation reject stale semantic publication | `test_memory_reconciliation.py`, `test_durable_memory.py` | Real PostgreSQL |
+| Derived reconciliation cannot supersede owner memory, restore lifecycle-restricted content, widen unresolved scope, or target unseen memory | `test_memory_reconciliation.py` | Real PostgreSQL |
+| Equivalent claims add provenance only for a genuinely new source; repeated lineage is a true no-op | `test_memory_reconciliation.py` | Real PostgreSQL |
+| Pre-redaction continuity/embedding work cannot publish stale copies after canonical source or lifecycle state changes | `test_memory_reconciliation.py`, `test_continuity_capsules.py`, `test_memory.py` | Real PostgreSQL + provider doubles |
 
 ## Still intentionally thin
 

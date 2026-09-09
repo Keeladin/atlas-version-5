@@ -812,6 +812,7 @@ class MemoryLifecycleCommands:
                 )
             transcript = await session.get(TranscriptRow, transcript_id)
             if transcript is not None:
+                transcript.content_revision = int(transcript.content_revision or 0) + 1
                 transcript.context_summary = None
                 transcript.summarized_through_turn_id = None
                 transcript.active_task_state = {}
@@ -872,8 +873,12 @@ class MemoryLifecycleCommands:
                     evidence_turn_ids.add(evidence_turn.id)
 
         for row in selected.values():
-            if row.status == "pending":
+            if row.status in {"pending", "leased", "retained_short_term"}:
                 row.status = "invalidated"
+                row.lease_token = None
+                row.leased_until = None
+                row.review_after = None
+                row.processed_at = now
             row.invalidated_at = now
             row.invalidation_operation_id = operation_id
             if scrub:
