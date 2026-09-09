@@ -4,7 +4,6 @@ from .continuity import (
     recent_continuity_context,
 )
 from .indexer import INDEX_VERSION, IndexRunResult, TranscriptIndexer
-from .maintenance import run_memory_index_once
 from .repository import MemorySearchRepository
 from .service import MemoryService
 
@@ -17,5 +16,4 @@ __all__ = [
     "MemoryService",
     "TranscriptIndexer",
     "recent_continuity_context",
-    "run_memory_index_once",
 ]

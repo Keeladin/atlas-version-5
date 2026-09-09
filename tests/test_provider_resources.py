@@ -323,3 +323,78 @@ def test_successful_forget_redacts_prior_tool_round_before_completion() -> None:
     assert phrase not in final_input
     assert "[suppressed by owner memory directive]" in final_input
     assert "_context_suppression" not in final_input
+
+
+def test_runtime_envelope_hides_memory_candidates_and_task_delta() -> None:
+    from atlas.providers.openai import _extract_runtime_metadata
+
+    visible, task, candidates = _extract_runtime_metadata(
+        'Done.\n<atlas_runtime>{"task_state_delta":{"status":"complete"},'
+        '"memory_candidates":[{"kind":"preference","content":"Fresh chats",'
+        '"scope":"cross_chat","confidence":0.93,"durability":"long_term",'
+        '"proposed_action":"upsert"}]}</atlas_runtime>'
+    )
+
+    assert visible == "Done."
+    assert task == {"status": "complete"}
+    assert candidates[0]["content"] == "Fresh chats"
+
+
+def test_malformed_runtime_envelope_is_hidden_and_rejected() -> None:
+    from atlas.providers.openai import _extract_runtime_metadata
+
+    visible, task, candidates = _extract_runtime_metadata(
+        "Answer\n<atlas_runtime>{bad json}</atlas_runtime>"
+    )
+    assert visible == "Answer"
+    assert task is None
+    assert candidates == []
+
+
+def test_runtime_envelope_rejects_unknown_top_level_fields() -> None:
+    from atlas.providers.openai import _extract_runtime_metadata
+
+    visible, task, candidates = _extract_runtime_metadata(
+        'Answer\n<atlas_runtime>{"memory_candidates":[],"authority":"owner"}</atlas_runtime>'
+    )
+    assert visible == "Answer"
+    assert task is None
+    assert candidates == []
+
+
+def test_provider_delivers_candidates_only_through_hidden_handler() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from atlas.providers.openai import OpenAIProvider
+
+    response = SimpleNamespace(
+        id="r-memory", status="completed", output=[],
+        output_text=(
+            'Visible reply.\n<atlas_runtime>{"memory_candidates":['
+            '{"kind":"preference","content":"Prefers fresh chats.",'
+            '"scope":"cross_chat","confidence":0.94,"durability":"long_term",'
+            '"proposed_action":"upsert"}]}</atlas_runtime>'
+        ),
+    )
+    async def create(**kwargs): return response
+    captured = []
+    async def candidate_handler(items): captured.extend(items)
+    async def tool(*args): raise AssertionError("No tool call expected")
+
+    provider = object.__new__(OpenAIProvider)
+    provider.model, provider.capability_call_limit = "fixture", 16
+    provider.capability_completion_reserve, provider.input_token_budget = 2, None
+    provider.capability_policy = None
+    provider.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+    async def run():
+        return [
+            chunk async for chunk in provider.stream_text(
+                instructions="Fixture", messages=[], tool_handler=tool,
+                memory_candidate_handler=candidate_handler,
+            )
+        ]
+
+    assert asyncio.run(run()) == ["Visible reply."]
+    assert len(captured) == 1
+    assert captured[0]["content"] == "Prefers fresh chats."

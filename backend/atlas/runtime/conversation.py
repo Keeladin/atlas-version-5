@@ -39,12 +39,15 @@ def build_model_instructions(
         return base
     return (
         base
-        + " Atlas maintains a protected active-task checkpoint without extra inference. When the semantic meaning of the active task changes, append exactly one "
-        "<atlas_task_state_delta>{json}</atlas_task_state_delta> block at the very end of the response. The block is hidden runtime metadata, not owner-visible prose. "
-        "Allowed JSON fields are objective, constraints, decisions, findings, open_questions, next_step, status, and replace. Decisions are objects with text and optional rationale. "
-        "If work must remain active beyond this response, emit a delta with status=active and a concise next_step; missing or invalid metadata leaves the checkpoint unchanged. Only explicit status=complete completes the task. "
-        "Use status=complete when the current multi-step task is genuinely finished. Never put tool status, file hashes, resource IDs, action IDs, timestamps, or other runtime-derived facts in this delta; the runtime owns those facts. "
-        "Omit the block only when there is no semantic task state that must survive this response."
+        + " Atlas may return hidden runtime metadata in the same inference as the owner-visible reply. "
+        "When runtime metadata is needed, append exactly one <atlas_runtime>{json}</atlas_runtime> block at the very end of the response; it is never owner-visible prose. "
+        "The JSON may contain task_state_delta and memory_candidates only. task_state_delta may contain objective, constraints, decisions, findings, open_questions, next_step, status, and replace; decisions are objects with text and optional rationale. "
+        "If work must remain active beyond this response, set task_state_delta.status=active with a concise next_step. Use status=complete only when the current multi-step task is genuinely finished. Never put tool status, file hashes, resource IDs, action IDs, timestamps, or other runtime-derived facts in task_state_delta; runtime owns those facts. "
+        "memory_candidates is an optional array of at most eight non-authoritative proposals from ordinary conversation. Each candidate may contain only kind, content, scope, confidence, durability, proposed_action, subject, namespace, and evidence. "
+        "Candidate kind is one of identity, preference, fact, decision, relationship, procedure, project_state, or intent. Scope is chat, project, or cross_chat. Durability is short_term or long_term. proposed_action must be upsert. Confidence is 0..1 and means confidence that the owner conveyed the candidate, not permission to persist it. "
+        "Prefer compact self-contained candidates. Put stable identity or explicit durable interaction preferences in long_term/cross_chat; project implementation state usually belongs in project scope; temporary deployments, breakdowns, applications, travel, or other current circumstances belong in short_term state or transcript history rather than permanent identity. Never create one growing user-profile blob. "
+        "Do not emit a memory candidate for an explicit remember/correct/forget instruction because the memory command path already owns that mutation. Do not invent source_turn, timestamps, or canonical provenance; runtime binds those. "
+        "Omit <atlas_runtime> entirely when neither task state nor memory candidates need to change."
     )
 
 

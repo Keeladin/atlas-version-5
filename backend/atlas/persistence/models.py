@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     Computed,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     LargeBinary,
@@ -194,6 +195,87 @@ class MemoryCommandRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryCandidateRow(Base):
+    __tablename__ = "memory_candidates"
+    __table_args__ = (
+        Index(
+            "uq_pending_memory_candidate_fingerprint",
+            "fingerprint",
+            unique=True,
+            postgresql_where=text("status = 'pending'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    scope: Mapped[str] = mapped_column(String(32), index=True)
+    confidence: Mapped[float] = mapped_column(Float)
+    durability: Mapped[str] = mapped_column(String(32), index=True)
+    proposed_action: Mapped[str] = mapped_column(String(32), default="upsert")
+    subject: Mapped[str | None] = mapped_column(String(160), index=True)
+    namespace: Mapped[str | None] = mapped_column(String(160), index=True)
+    evidence: Mapped[str | None] = mapped_column(Text)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    source_transcript_id: Mapped[UUID] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="CASCADE"), index=True
+    )
+    source_turn_id: Mapped[UUID] = mapped_column(
+        ForeignKey("turns.id", ondelete="CASCADE"), index=True
+    )
+    source_provider_evidence_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), index=True
+    )
+    decision_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SharedResourceVersionRow(Base):
+    __tablename__ = "shared_resource_versions"
+
+    resource_type: Mapped[str] = mapped_column(String(64), primary_key=True)
+    resource_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    version: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SharedWriteOperationRow(Base):
+    __tablename__ = "shared_write_operations"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    resource_type: Mapped[str] = mapped_column(String(64), index=True)
+    resource_id: Mapped[str] = mapped_column(String(255), index=True)
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    expected_version: Mapped[int | None] = mapped_column(BigInteger)
+    payload_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[str] = mapped_column(String(64), index=True)
+    source_transcript_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="SET NULL"), index=True
+    )
+    source_turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), index=True
+    )
+    source_run_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    outcome: Mapped[str] = mapped_column(String(32), index=True)
+    observed_version: Mapped[int] = mapped_column(BigInteger)
+    committed_version: Mapped[int | None] = mapped_column(BigInteger)
+    result_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class ArtifactRow(Base):

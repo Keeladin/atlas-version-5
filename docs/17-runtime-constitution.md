@@ -70,6 +70,8 @@ Every autonomous or scheduled wake has its own durable run identity and conversa
 
 Foreground and background runs may share durable resources, but runtime must make conflicting mutation explicit through serialization, leases, version checks, resource locks, or another deterministic coordination mechanism appropriate to the resource.
 
+A chat transcript is not the concurrency boundary for Atlas-owned durable state. For mutable shared resources, runtime binds canonical provenance and a durable operation identity, applies an appropriate resource-version fence, and commits the mutation, version transition and result atomically. A stale writer must conflict explicitly rather than silently overwrite a newer value. The minimal common contract is specified in `23-shared-state-write-contract.md`.
+
 Duplicate triggers, missed triggers, cancellation, restart catch-up, and overlap behavior must be explicit and observable rather than accidental consequences of process timing.
 
 A schedule never receives privileged authority. Current capability enablement, credentials, containment, and effect rules are evaluated when the scheduled work executes.
@@ -90,9 +92,11 @@ Completed tool/resource detail may be compacted or reacquired by reference witho
 
 ## 10. Memory commands have precedence and completion state
 
-The transcript remains the normal write surface of the active model, and background memory processing remains separate from conversational inference. Where memory classification requires semantic judgment, the memory processor may use its own model inference; deterministic runtime owns queueing, persistence, precedence, and enforcement rather than performing that semantic judgment itself.
+The transcript remains the normal write surface of the active model, and background memory processing remains separate from conversational inference. As an owner-approved refinement, the foreground model may also emit a bounded set of **non-authoritative memory candidate hints** in hidden runtime metadata as a by-product of the same reply inference. Those hints are not durable memory, do not enter retrieval merely because they were proposed, and may be ignored or reclassified later.
 
-Explicit owner instructions to remember, correct, or forget something are not merely hints. Runtime records them as durable memory commands with a visible lifecycle such as pending, applied, or failed.
+Runtime may deterministically validate the candidate envelope, attach canonical transcript/turn/provider-evidence provenance, deduplicate exact pending proposals, and queue them. It must not reinterpret the candidate semantically at intake. Where memory classification, reconciliation, merge/supersession, or promotion requires semantic judgment, the asynchronous memory processor owns that judgment and may use its own model inference. No memory-candidate-only foreground model call is permitted.
+
+Explicit owner instructions to remember, correct, or forget something are not merely hints. Runtime records them as durable memory commands with a visible lifecycle such as pending, applied, or failed; that explicit path outranks ordinary inferred candidates.
 
 Owner corrections and forgetting outrank stale derived memory. Tombstones/supersession state must prevent an older transcript, queued processor job, capsule, embedding, or short-term index from recreating memory that has been explicitly corrected or forgotten.
 

@@ -328,3 +328,15 @@ The same five-minute background memory pass now derives small cross-chat continu
 Foreground context may include the latest handoff from up to three recent other owner chats. It is injected as a developer-level orientation block explicitly marked as derived and non-canonical. It is lower priority than the selected chat: when the 75% initial working-context seat is exceeded, Atlas drops cross-chat orientation before trimming current-chat exchanges. Material historical details still route through `memory.search`/evidence rather than treating the handoff as proof.
 
 Owner correction/forget guards are applied when building and projecting handoffs. New guards invalidate all continuity capsules because a model paraphrase may not contain the exact forgotten string; clearing a guard through explicit re-remembering also invalidates them so the next pass rebuilds under the restored recall policy. This keeps the continuity layer disposable and subordinate to owner-directed memory semantics.
+
+
+## 2026-09-09 — Shared-state write contract
+
+Atlas now has a resource-neutral local mutation boundary for state shared across independent chats and background workers. `shared_resource_versions` provides one monotonic version fence per `(resource_type, resource_id)`, while `shared_write_operations` records the runtime-owned operation identity, canonical provenance, expected/observed/committed versions, payload hash and final outcome.
+
+`SharedStateWriter` owns one PostgreSQL transaction containing the operation claim, resource-specific mutation, version transition and final receipt. Matching retries of the same operation ID return the durable receipt without re-running the mutation. Reusing an operation ID with different identity or payload fails as an idempotency conflict. A stale expected version records `conflict/version_conflict` and never invokes the mutation callback.
+
+This primitive is intentionally local-state-only. It does not replace the consequential action/evidence/reconciliation contract for external effects, and it does not make semantic decisions for the memory processor. The first intended semantic consumer is derived-memory reconciliation: a worker may reason about create/merge/supersede, but runtime will commit that decision only against the memory resource version the worker evaluated.
+The PostgreSQL validation also exposed a mismatch in the preceding memory-candidate slice: migration `25a09` created the partial unique pending-candidate index, but `MemoryCandidateRow` metadata did not declare it. That made `Base.metadata.create_all()` schemas incompatible with the candidate `ON CONFLICT` clause and caused `alembic check` to report drift. The model now declares the same partial index as the migration.
+
+Repository-wide disposable PostgreSQL/pgvector validation passed **241 backend tests** with no failures, including the shared-write concurrency/idempotency/rollback cases, memory-candidate intake, empty/historical Alembic upgrades and `alembic check`. Ruff, Python compilation and `git diff --check` also pass. Production state and services were not modified.

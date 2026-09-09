@@ -102,4 +102,14 @@ Corrections and forgetting are precedence operations, not transcript edits. Supe
 
 Re-remembering the same forgotten content is a new explicit owner instruction and clears that content's suppression guard while retaining the old forgotten record for audit. Exact duplicate active remembers are idempotent.
 
-This explicit command layer does not perform automatic CREATE/MERGE/SUPERSEDE decisions over ordinary conversation. That later background reasoning worker remains a separate milestone, as do context capsules and visual/attachment-aware memory.
+This explicit command layer does not perform automatic CREATE/MERGE/SUPERSEDE decisions over ordinary conversation. Cross-chat continuity capsules and foreground non-authoritative candidate hint intake are now implemented, but the later background reasoning worker that reconciles and publishes ordinary-conversation candidates remains a separate milestone, as does visual/attachment-aware memory.
+
+## 11. Foreground candidate hints — implemented 2026-09-09
+
+Ordinary foreground conversation may now produce a bounded `memory_candidates` list inside the hidden runtime envelope of the same model response. This is an opportunistic handoff, not a second memory-processing path and not a durable-memory write.
+
+Runtime accepts only the bounded schema, attaches canonical source provenance itself, and stores valid candidates as `pending`. The model cannot supply or overwrite canonical source turn IDs. Pending candidates have no recall authority and are not injected into foreground context.
+
+The candidate schema separates stable identity/preferences from project state and temporary circumstances through `kind`, `scope`, and `durability`. This is intentionally granular rather than a single append-only profile document. The canonical transcript remains the complete fallback source, so the candidate channel may be sparse without losing history.
+
+The next lifecycle stage is asynchronous reconciliation: compare a pending candidate against existing valid memory and precedence guards, then semantically choose discard, retain-short-term, create, merge, or supersede. Any derived durable-memory mutation from that worker must use the shared-state write contract in `23-shared-state-write-contract.md`, so the semantic decision is committed only against the memory resource version it actually evaluated. That reconciliation stage is not enabled by this intake milestone.

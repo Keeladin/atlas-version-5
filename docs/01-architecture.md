@@ -50,6 +50,8 @@ Durable memory uses PostgreSQL as the canonical substrate, with pgvector for sem
 
 The active model is not the normal writer to durable memory. Its natural write surface is the transcript; the memory processor performs durable memory mutation.
 
+Owner chats are independent interaction streams, not separate owners of Atlas state. Durable memory, projects, schedules and other shared mutable resources live outside chat transcripts. Conversations and background workers may propose changes; runtime owns canonical provenance, idempotency, version fencing and the atomic commit. The minimal shared-state mutation boundary is defined in `23-shared-state-write-contract.md`.
+
 ## 7. Schedules
 
 Schedules are persisted intents bound to deterministic triggers or execution windows. Runtime wakes Atlas when due; inference decides what the stored intent means and how to achieve it using the capabilities available at execution time.

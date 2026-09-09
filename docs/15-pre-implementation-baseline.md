@@ -127,8 +127,16 @@ Retention TTLs, transcript rollover thresholds, chunk sizes, embedding model, ra
 
 They should be selected experimentally during implementation and remain configurable where practical.
 
-## 13. Implementation gate
+## 13. Owner-approved memory-candidate refinement — 2026-09-09
 
-This baseline and `17-runtime-constitution.md` were accepted by the owner on 2026-09-05. Implementation planning may now begin from these documents without reopening settled architecture by default.
+The foreground conversational model may emit a small bounded set of **non-authoritative memory candidate hints** as hidden metadata in the same inference that produces the owner-visible reply. This adds no memory-only inference call and does not make the active model a durable-memory writer.
+
+Runtime validates the candidate schema, binds canonical transcript/turn/provider-evidence provenance, and queues valid hints. The asynchronous memory processor remains the only normal path that may interpret, reconcile, reclassify, merge, discard, or publish derived memory. A candidate has no retrieval authority merely because the conversational model proposed it. The canonical transcript remains sufficient source material when no candidate is emitted or when later memory processing chooses to ignore one.
+
+This refinement deliberately distinguishes **candidate proposal** from **memory mutation**. Explicit owner `remember`, `correct`, and `forget` commands retain their stronger canonical command path and precedence semantics.
+
+## 14. Implementation gate
+
+This baseline and `17-runtime-constitution.md` were accepted by the owner on 2026-09-05, with the bounded foreground candidate-hint refinement above approved on 2026-09-09. Implementation planning may proceed without reopening settled architecture by default.
 
 The implementation plan should translate these decisions into a heliocentric build sequence without reopening settled semantics through code-first experimentation. The constitution supplies runtime guardrails; it does not add a second semantic planner.

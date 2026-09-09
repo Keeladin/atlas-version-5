@@ -11,6 +11,7 @@ from atlas.runtime.evidence import attach_projection_metadata, bound_model_evide
 
 ToolHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 TaskStateHandler = Callable[[dict[str, Any]], Awaitable[None]]
+MemoryCandidateHandler = Callable[[list[dict[str, Any]]], Awaitable[None]]
 ObservationHandler = Callable[[dict[str, Any]], Awaitable[str | None]]
 
 
@@ -65,6 +66,8 @@ class _CapabilityBudget:
 
 _TASK_STATE_OPEN = "<atlas_task_state_delta>"
 _TASK_STATE_CLOSE = "</atlas_task_state_delta>"
+_RUNTIME_OPEN = "<atlas_runtime>"
+_RUNTIME_CLOSE = "</atlas_runtime>"
 _MODEL_TEXT_RESOURCE_CHAR_LIMIT = 48_000
 
 
@@ -82,6 +85,36 @@ def _extract_task_state_delta(text: str) -> tuple[str, dict[str, Any] | None]:
     except json.JSONDecodeError:
         return visible, None
     return visible, parsed if isinstance(parsed, dict) else None
+
+
+def _extract_runtime_metadata(
+    text: str,
+) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]]:
+    stripped = text.rstrip()
+    if stripped.endswith(_RUNTIME_CLOSE):
+        start = stripped.rfind(_RUNTIME_OPEN)
+        if start >= 0:
+            payload = stripped[start + len(_RUNTIME_OPEN) : -len(_RUNTIME_CLOSE)].strip()
+            visible = stripped[:start].rstrip()
+            try:
+                parsed = json.loads(payload)
+            except json.JSONDecodeError:
+                return visible, None, []
+            if isinstance(parsed, dict):
+                if not set(parsed).issubset({"task_state_delta", "memory_candidates"}):
+                    return visible, None, []
+                task = parsed.get("task_state_delta")
+                candidates = parsed.get("memory_candidates")
+                return (
+                    visible,
+                    task if isinstance(task, dict) else None,
+                    [item for item in candidates[:8] if isinstance(item, dict)]
+                    if isinstance(candidates, list)
+                    else [],
+                )
+            return visible, None, []
+    visible, task = _extract_task_state_delta(text)
+    return visible, task, []
 
 
 def _resource_input(resource: dict[str, Any]) -> dict[str, Any] | None:
@@ -296,6 +329,7 @@ class OpenAIProvider:
         messages: list[dict[str, str]],
         tool_handler: ToolHandler | None = None,
         task_state_handler: TaskStateHandler | None = None,
+        memory_candidate_handler: MemoryCandidateHandler | None = None,
         observation_handler: ObservationHandler | None = None,
         checkpoint_reader=None,
     ) -> AsyncIterator[str]:
@@ -354,11 +388,15 @@ class OpenAIProvider:
                     "status": getattr(response, "status", None), "output": public_items})
             if getattr(response, "status", "completed") != "completed":
                 raise RuntimeError("Provider response did not complete; task state was preserved")
-            visible_text, task_delta = _extract_task_state_delta(response.output_text or "")
+            visible_text, task_delta, memory_candidates = _extract_runtime_metadata(
+                response.output_text or ""
+            )
             if task_delta is not None and task_state_handler is not None:
                 await task_state_handler(task_delta)
             calls = [item for item in response.output if getattr(item, "type", None) == "function_call"]
             if not calls:
+                if memory_candidates and memory_candidate_handler is not None:
+                    await memory_candidate_handler(memory_candidates)
                 if visible_text:
                     yield visible_text
                 return

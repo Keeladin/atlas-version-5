@@ -50,6 +50,7 @@ from atlas.control import (
 )
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.memory.candidates import MemoryCandidateIntake
 from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
 from atlas.persistence.models import OwnerAttentionRow, RunRow
@@ -1219,6 +1220,14 @@ async def stream_conversation(request: ChatRequest):
                 run_id=run_id, checkpoint=False, trust="model")
             await task_session.commit()
 
+    async def memory_candidate_handler(candidates: list[dict[str, Any]]) -> None:
+        await MemoryCandidateIntake(factory).enqueue_many(
+            candidates,
+            source_transcript_id=transcript.id,
+            source_turn_id=owner_turn.id,
+            source_provider_evidence_id=provider_evidence_id,
+        )
+
     async def checkpoint_reader():
         async with factory() as session:
             state = await TranscriptRepository(session).get_active_task_state(transcript.id)
@@ -1232,7 +1241,9 @@ async def stream_conversation(request: ChatRequest):
                 async for delta in provider.stream_text(
                     instructions=build_model_instructions(await capability_runtime.compact_index_current()),
                     messages=messages, tool_handler=tool_handler,
-                    task_state_handler=task_state_handler, observation_handler=observation_handler, checkpoint_reader=checkpoint_reader,
+                    task_state_handler=task_state_handler,
+                    memory_candidate_handler=memory_candidate_handler,
+                    observation_handler=observation_handler, checkpoint_reader=checkpoint_reader,
                 ):
                     chunks.append(delta)
                     yield json.dumps({"type": "delta", "text": delta}) + "\n"
