@@ -146,6 +146,7 @@ class MemorySearchRepository:
             .select_from(guard)
             .where(
                 guard.c.suppresses_recall.is_(True),
+                guard.c.status != "deleted",
                 or_(
                     guard.c.source_turn_id.is_not(None)
                     & TranscriptIndexChunkRow.source_turn_ids.op("@>")(source_turn_guard),

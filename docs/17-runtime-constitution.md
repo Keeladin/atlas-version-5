@@ -51,7 +51,7 @@ Durable effect evidence must outlive temporary transcript retention.
 
 ## 6. The transcript is a faithful scribe
 
-The transcript records owner/model messages, artifact references, tool requests, and tool observations in order. Runtime does not decide which observations are semantically relevant while recording them.
+The transcript records owner/model messages, artifact references, tool requests, and tool observations in order. Runtime does not decide which observations are semantically relevant while recording them. Explicit owner deletion is a controlled exception to payload immutability: selected content may be replaced by a deletion marker while turn identity, ordering and deletion provenance remain. This does not permit ordinary inference to rewrite history.
 
 Large or binary observations may be stored as artifacts with stable references in the transcript.
 
@@ -96,9 +96,9 @@ The transcript remains the normal write surface of the active model, and backgro
 
 Runtime may deterministically validate the candidate envelope, attach canonical transcript/turn/provider-evidence provenance, deduplicate exact pending proposals, and queue them. It must not reinterpret the candidate semantically at intake. Where memory classification, reconciliation, merge/supersession, or promotion requires semantic judgment, the asynchronous memory processor owns that judgment and may use its own model inference. No memory-candidate-only foreground model call is permitted.
 
-Explicit owner instructions to remember, correct, or forget something are not merely hints. Runtime records them as durable memory commands with a visible lifecycle such as pending, applied, or failed; that explicit path outranks ordinary inferred candidates.
+Explicit owner instructions to remember, correct, retire, restore, or delete something are not merely hints. Runtime records them as durable memory commands with a visible lifecycle such as pending, applied, or failed; that explicit path outranks ordinary inferred candidates.
 
-Owner corrections and forgetting outrank stale derived memory. Tombstones/supersession state must prevent an older transcript, queued processor job, capsule, embedding, or short-term index from recreating memory that has been explicitly corrected or forgotten.
+Owner corrections, retirement and deletion outrank stale derived memory. Superseded claims are historical; retired claims are excluded from model recall; deleted identities retain no memory payload and cannot be restored. Provenance invalidation and revision fencing must prevent older transcripts, queued jobs, capsules, embeddings or short-term indexes from re-publishing invalidated information. See `13-memory-lifecycle.md` for the implemented deletion scope and remaining integration limits.
 
 Derived memory may be created asynchronously, but provenance, supersession, deletion, and canonical owner instructions constrain what retrieval is allowed to return as current truth.
 
@@ -123,7 +123,7 @@ The intended V5 topology is:
 
 Persistent runtime state must live outside the source checkout and have a defined backup/recovery strategy before it is treated as durable.
 
-Operations that require cross-record consistency, especially explicit forgetting/redaction and effect-state transitions, must define their transactional boundary rather than rely on eventual coincidence.
+Operations that require cross-record consistency, especially explicit retirement/deletion and effect-state transitions, must define their transactional boundary rather than rely on eventual coincidence.
 
 ## 13. Failure and owner attention are durable facts
 

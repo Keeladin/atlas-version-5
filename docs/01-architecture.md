@@ -45,7 +45,7 @@ Software workspaces may use applicable `AGENTS.md` files as local working instru
 
 Atlas owns the canonical temporary transcript. Provider conversation state is an optimization, not the source of continuity.
 
-The transcript records experience without interpreting it. Closed transcripts produce context capsules and enter indexed short-term memory. A separate asynchronous memory processor decides what is discarded, retained, promoted, merged, or superseded. Explicit remember/correct/forget instructions have durable command state and precedence over stale derived memory.
+The transcript records experience without interpreting it. Closed transcripts produce context capsules and enter indexed short-term memory. A separate asynchronous memory processor decides what is discarded, retained, promoted, merged, or superseded. Explicit remember/correct/retire/restore/delete instructions have durable command state and precedence over stale derived memory.
 Durable memory uses PostgreSQL as the canonical substrate, with pgvector for semantic retrieval and PostgreSQL lexical/full-text plus metadata search for exact retrieval. Large artifacts remain in file/object storage with database metadata.
 
 The active model is not the normal writer to durable memory. Its natural write surface is the transcript; the memory processor performs durable memory mutation.

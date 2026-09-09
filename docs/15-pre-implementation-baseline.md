@@ -38,7 +38,7 @@ The live transcript is the scribe: it records what happened in order without dec
 
 A separate asynchronous memory processor interprets closed or aging transcripts. It may discard information, retain it temporarily, promote it to embedded long-term memory, or preserve it as canonical durable memory. The active model is not the normal writer to durable memory.
 
-Explicit owner instructions to remember, correct, or forget are durable commands with observable completion state and precedence over stale derived memory. Forgetting/correction must prevent queued or older derived representations from resurrecting superseded information.
+Explicit owner instructions to remember, correct, retire, restore, or delete are durable commands with observable completion state and precedence over stale derived memory. Retirement/deletion/correction must prevent queued or older derived representations from resurrecting superseded information.
 
 The durable memory substrate is PostgreSQL. Semantic retrieval uses pgvector; exact and lexical retrieval use PostgreSQL search and metadata. Retrieval is hybrid rather than vector-only.
 
@@ -133,7 +133,7 @@ The foreground conversational model may emit a small bounded set of **non-author
 
 Runtime validates the candidate schema, binds canonical transcript/turn/provider-evidence provenance, and queues valid hints. The asynchronous memory processor remains the only normal path that may interpret, reconcile, reclassify, merge, discard, or publish derived memory. A candidate has no retrieval authority merely because the conversational model proposed it. The canonical transcript remains sufficient source material when no candidate is emitted or when later memory processing chooses to ignore one.
 
-This refinement deliberately distinguishes **candidate proposal** from **memory mutation**. Explicit owner `remember`, `correct`, and `forget` commands retain their stronger canonical command path and precedence semantics.
+This refinement deliberately distinguishes **candidate proposal** from **memory mutation**. Explicit owner `remember`, `correct`, `retire`, `restore`, and `delete` commands retain their stronger canonical command path and precedence semantics.
 
 ## 14. Implementation gate
 

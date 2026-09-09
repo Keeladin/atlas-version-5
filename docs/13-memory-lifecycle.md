@@ -67,7 +67,7 @@ It may:
 - merge or supersede an existing durable memory;
 - retain provenance without retaining all raw conversational detail.
 
-Explicit owner requests to remember, correct, or forget still enter through the transcript rather than direct model database writes, but runtime records them as durable memory commands with pending/applied/failed state. Corrections and forgetting take precedence over queued or stale derived material.
+Explicit owner requests to remember, correct, retire, restore, or delete still enter through the transcript rather than direct model database writes, but runtime records them as durable memory commands with pending/applied/failed state. Corrections, retirement and deletion take precedence over queued or stale derived material.
 
 ## 8. Promotion reuse
 
@@ -79,7 +79,7 @@ Canonical source content stays separable from derived indexes so indexes can be 
 
 ## 9. Retrieval order and authority
 
-Retrieval is constrained before relevance ranking by explicit owner corrections/forgetting, supersession/tombstones, source authority, and freshness. A semantically strong older match must not override a newer canonical correction or a live authoritative source.
+Retrieval is constrained before relevance ranking by explicit owner corrections/retirement/deletion, supersession/tombstones, source authority, and freshness. A semantically strong older match must not override a newer canonical correction or a live authoritative source.
 
 Within the set of still-valid sources, retrieval relevance does not by itself establish answerability. Runtime exposes source class, exact evidence locators, ordering, and structural indexing coverage; the model decides whether those facts are sufficient for the specific historical claim. A prior Atlas/model statement is evidence that Atlas made that statement, while a corresponding tool observation is stronger evidence that the operation actually occurred. Chronology claims such as "first" or "latest" require separate ordering support and must be qualified when search or coverage cannot establish exhaustiveness.
 
@@ -92,17 +92,32 @@ Within the set of still-valid sources, normal recall prefers the cheapest suffic
 5. external authoritative systems whenever the question requires their current state.
 
 This preserves continuity without making every conversation permanent or turning memory housekeeping into part of the active agent cycle. Memory mutation/recovery guarantees are further constrained by `17-runtime-constitution.md`.
-## 10. Explicit owner memory commands — implemented 2026-09-08
+## 10. Owner memory lifecycle — implemented 2026-09-09
 
-Owner-directed memory now has a deterministic mutation path separate from automatic background curation. The conversational model may interpret an explicit instruction, but it does not write database rows itself. It calls `memory.remember`, `memory.correct`, or `memory.forget`; runtime records a durable command first and then applies or fails it transactionally.
+The registered owner operations are `memory.remember`, `memory.correct`, `memory.retire`, `memory.restore`, `memory.delete`, and `memory.commands.list`. `memory.forget` is not registered. An ambiguous request to “forget” needs clarification when retaining versus deleting the content materially changes the outcome; otherwise the model follows the explicit intent.
 
-The command ledger exposes `pending`, `applied`, and `failed` lifecycle state. Applied commands retain source transcript/turn provenance and target/replacement memory identities. This makes memory mutation observable and recoverable instead of hiding it in model prose.
+| Record state | Stored payload | Recall |
+| --- | --- | --- |
+| active | Content, provenance and optional derived embedding | Applicable current recall |
+| superseded | Prior content and replacement relationship | Explicit `include_historical=true` memory search only |
+| retired | Content retained for restoration | Excluded from current and historical memory search |
+| deleted | Content, fingerprint, embedding and embedding metadata are NULL; ID, relationships, deletion timestamp and operation ID remain | Excluded; the identity cannot be restored or corrected |
 
-Corrections and forgetting are precedence operations, not transcript edits. Superseded and forgotten content remains part of canonical history, but active guards prevent that stale content from being returned as ordinary transcript recall. Model-visible working-context projections also redact exact guarded content so recent tool/search evidence cannot immediately resurrect a value after it was forgotten.
+Commands have a separate pending/applied/failed lifecycle. `memory.correct` distinguishes a correction from a change over time; the latter records the transition time. `memory.restore` reactivates a retired identity. Explicitly remembering the same retired content also restores it; remembering deleted information creates a new identity.
 
-Re-remembering the same forgotten content is a new explicit owner instruction and clears that content's suppression guard while retaining the old forgotten record for audit. Exact duplicate active remembers are idempotent.
+Lifecycle writes serialize on `memory_state/owner` through `SharedStateWriter`. The mutation, revision change, command completion and shared-write receipt commit together. A failure rolls them back, then records failed command state separately. Owner commands evaluate current state inside the serialized callback; future derived publishers must evaluate a revision and provide it as `expected_version`.
 
-This explicit command layer does not perform automatic CREATE/MERGE/SUPERSEDE decisions over ordinary conversation. Cross-chat continuity capsules and foreground non-authoritative candidate hint intake are now implemented, but the later background reasoning worker that reconciles and publishes ordinary-conversation candidates remains a separate milestone, as does visual/attachment-aware memory.
+Memory records carry kind, scope, scope key, durability, subject/namespace and temporal fields. Current owner commands support chat and cross-chat scope; project-scoped publication is deferred until runtime can bind a project identity. Derived records are projected with derived authority, while owner-directed records have owner authority. Lifecycle and applicable scope constrain memory search before relevance ranking.
+
+### Deletion boundary
+
+`memory.delete` supports `memory_only` and `memory_and_sources` (the default). Both null selected memory payloads and their recorded derived dependants, invalidate/scrub related candidates and their inline provider-evidence payloads, and retain a content-free deletion receipt. The source-inclusive operation also replaces the selected exact text in supporting transcript payloads with `[Content deleted by owner]`. Turn IDs and sequence numbers remain intact. If any selected supporting passage cannot be isolated by the current exact-content matcher, the transaction fails rather than removing unrelated text.
+
+Affected transcript chunks are removed and their checkpoints rewind to the beginning of the earliest invalidated chunk, preserving earlier unrelated turns in a multi-turn chunk when re-indexing. Affected transcript summaries/task projections and continuity capsules are invalidated. Related legacy command payloads are scrubbed. PostgreSQL constraints enforce the null payload and retained deletion identity of deleted records.
+
+The implemented boundary covers selected database payloads and recorded dependencies, not an exhaustive semantic search for every paraphrase. `memory_only` retains original source text. Artifact files, external systems, archived WAL, backups and restore-time deletion replay are outside this implementation. Deletion must not be described as physical erasure from every storage medium. Existing maintenance/foreground paths need additional revision coordination before claiming protection against every in-flight reader or derived writer.
+
+Automatic reconciliation/promotion remains a separate milestone. Its future writer must respect retirement/deletion provenance and the shared revision fence; pending candidates do not acquire recall authority.
 
 ## 11. Foreground candidate hints — implemented 2026-09-09
 

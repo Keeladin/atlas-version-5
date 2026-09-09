@@ -35,7 +35,7 @@ A context capsule may still provide orientation across transcript eras, and futu
 
 Owner chat transcripts remain durable until the owner deletes the chat. A chat that is not currently selected is eligible for complete transcript indexing; selecting it again does not require replaying other chats into its foreground context.
 
-Short-term retrieval is indexed so Atlas does not have to read many chat transcripts sequentially. Retrieval combines transcript identity/provenance with lexical/full-text and semantic/vector search. Deleting a chat removes that canonical transcript and its derived transcript indexes; separately promoted durable memories remain independent records unless the owner explicitly forgets or later erases them.
+Short-term retrieval is indexed so Atlas does not have to read many chat transcripts sequentially. Retrieval combines transcript identity/provenance with lexical/full-text and semantic/vector search. Deleting a chat removes that canonical transcript and its derived transcript indexes; separately promoted durable memories remain independent records unless the owner explicitly retires or deletes them.
 
 The capsule can act as a cheap first-stage locator. Atlas drills into exact transcript chunks only when precision is needed.
 
@@ -54,7 +54,7 @@ Large artifacts such as images, PDFs, documents, audio, or generated files remai
 The active model is not the normal writer to durable memory. Its natural write surface is the transcript.
 
 A separate memory processor reads closed or aging transcripts and may discard information, retain it temporarily, promote it to embedded long-term recall, preserve it as canonical durable memory, or merge/supersede an existing memory.
-Explicit owner instructions such as "remember this", "correct that", or "forget that" remain transcript events, but runtime also records them as durable memory commands with an observable pending/applied/failed lifecycle. Owner corrections and forgetting take precedence over stale derived memory and must not be resurrected by queued processing or older indexes.
+Explicit owner instructions such as "remember this", "correct that", "stop using that", or "delete that" remain transcript events, but runtime also records them as durable memory commands with an observable pending/applied/failed lifecycle. Owner corrections, retirement and deletion take precedence over stale derived memory and must not be resurrected by queued processing or older indexes.
 
 The model may receive broad read access to memory through bounded read-only database views/tools or higher-level retrieval tools that exclude secrets and protected runtime state. Ordinary durable writes remain controlled by the memory-processing path.
 
@@ -82,7 +82,7 @@ Production now runs that deterministic maintenance pass from `atlas-v5-memory.ti
 
 `memory.search` now performs bounded hybrid retrieval: exact/full-text candidates and cosine-similarity candidates are independently ranked and fused, while preserving transcript/turn provenance and exclusion constraints for iterative refinement. Query embedding is a retrieval primitive rather than memory reasoning; if it is temporarily unavailable, lexical recall remains usable. The current transcript vector schema is fixed at 1,536 dimensions and defaults to OpenAI `text-embedding-3-large` requested at that dimension.
 
-At this checkpoint this was still a retrieval substrate rather than durable interpreted memory. The subsequent owner-directed memory milestone below adds explicit remember/correct/forget commands; context-capsule generation, automatic semantic promotion/reconciliation, visual attachment indexing, and the separate memory-reasoning worker that decides create/merge/supersede/discard remain staged. Derived lexical/vector indexes remain rebuildable from canonical transcript history.
+At this checkpoint this was still a retrieval substrate rather than durable interpreted memory. The subsequent owner-directed memory milestone below adds explicit remember/correct/retire/restore/delete commands; context-capsule generation, automatic semantic promotion/reconciliation, visual attachment indexing, and the separate memory-reasoning worker that decides create/merge/supersede/discard remain staged. Derived lexical/vector indexes remain rebuildable from canonical transcript history.
 
 ## 10. Evidence-grounded historical recall — 2026-09-08
 
@@ -96,19 +96,15 @@ Historical qualifiers such as *first*, *last*, *before*, *after*, *earliest*, an
 
 This is intentionally a bounded trustworthiness milestone. It adds no confidence service, mandatory classifier, claim database, second inference call, or automatic memory promotion. Behavioral/adversarial evaluation should drive any further retrieval changes. The acceptance set includes false-premise recall, ambiguous twin events, chronology with incomplete structural coverage, a high-similarity near-match that does not answer the question, partial support where only one qualifier is uncertain, and claims about tool use that must be checked against the underlying observation. Success means useful supported details are answered, unsupported clauses are qualified, and absent evidence is not converted into remembered fact. Live source-authority testing passed this contract before owner-directed durable memory was added.
 
-## 11. Durable owner-directed memory — 2026-09-08
+## 11. Explicit owner memory lifecycle — 2026-09-09
 
-Atlas now has an explicit canonical memory layer for owner-directed `remember`, `correct`, and `forget` instructions. Ordinary conversation is not promoted automatically. The conversational model interprets the owner's instruction and calls a bounded memory capability; deterministic runtime owns persistence, precedence, lifecycle state, and retrieval constraints.
+Owner-directed memory uses `memory.remember`, `memory.correct`, `memory.retire`, `memory.restore`, and `memory.delete`, with a pending/applied/failed command ledger. `memory.forget` is absent from the registry. Correction supersedes a prior claim; retirement excludes retained content from recall; deletion removes selected payloads while preserving stable identities and relationships. Deleted identities are terminal.
 
-`durable_memories` stores active owner-directed memories plus superseded and forgotten records. `memory_commands` is a durable operational ledger for explicit memory mutations with `pending`, `applied`, and `failed` state, source transcript/turn provenance, target/replacement identities, and timestamps. A failed mutation remains inspectable rather than disappearing as an inferred model-side state change.
+Current search admits only applicable active records. Explicit `include_historical=true` also searches superseded memories; retired/deleted records remain excluded. Owner-directed and derived authority are projected separately. Owner writes share the `memory_state/owner` revision fence, which future reconciliation must also use with an expected revision.
 
-`memory.remember` creates a concise self-contained active record and is idempotent for the same normalized active content. Re-remembering previously forgotten identical content is an explicit owner reversal: Atlas creates a new active record and clears the old recall guard without rewriting historical records.
+Migration `25a11` introduces lifecycle/classification fields, provenance edges, deletion receipts and database payload constraints. Source-inclusive deletion redacts safely isolated exact passages, scrubs recorded candidate/provider-evidence dependencies and legacy command payloads, invalidates summaries and rewinds transcript indexing to a safe chunk boundary. `memory_only` retains source text. Artifact bytes, backup/WAL erasure and exhaustive paraphrase removal are not implemented.
 
-`memory.correct` supersedes an active record, or creates an owner correction guard when the corrected information exists only in legacy transcript history. The replacement becomes active owner-authoritative memory; the old value remains canonical evidence but is no longer eligible to win recall.
-
-`memory.forget` marks an active record forgotten, or creates a tombstone when the target exists only in transcript history. Forgetting never edits the canonical transcript. Instead, active correction/forget guards constrain transcript search before lexical/semantic ranking through a database-side anti-join whose query shape does not grow with the number of guards. Later working-context assembly also redacts guarded exact content from owner/model/tool history, and the provider tool loop removes newly forgotten content from subsequent reasoning rounds in the same foreground turn. A successful forget is acknowledged without repeating the forgotten value.
-
-Durable active memories participate in `memory.search` ahead of transcript interpretation and are labeled as owner-authoritative state. They reuse the existing 1,536-dimensional background embedding pipeline. Only active durable rows are embedding candidates; superseded/forgotten records retain canonical audit state but their derived vectors are cleared and are not re-embedded or returned as active memories. Ordinary conversation may now produce queued non-authoritative candidate hints, but automatic reconciliation/promotion of those candidates into derived long-term memory is still intentionally absent.
+See [Memory lifecycle](13-memory-lifecycle.md#10-owner-memory-lifecycle--implemented-2026-09-09) for operation semantics, transaction boundaries and limitations. Automatic semantic promotion remains staged.
 
 ## 12. Cross-chat continuity handoffs — 2026-09-08
 
@@ -116,7 +112,7 @@ Multi-chat changes the role of summarization. A fresh owner chat should not inhe
 
 A handoff is derived orientation, not durable owner memory and not canonical evidence. The foreground context assembler may include the latest handoff from up to three recent other chats, explicitly labels that material as non-canonical, and removes it before trimming current-chat history when the working-context budget is under pressure. Exact historical claims still require `memory.search` and, where needed, canonical evidence reads.
 
-Recall guards are applied before source material is summarized and again before a handoff is projected. Because a paraphrased summary cannot be made safe by exact-string redaction alone, a new correction or forget guard invalidates all derived continuity handoffs so the worker can rebuild them from canonical source material under the current suppression policy. Re-remembering content that clears a prior guard also invalidates the handoffs so restored information is not permanently omitted from derived orientation.
+Recall guards are applied before source material is summarized and again before a handoff is projected. Because a paraphrased summary cannot be made safe by exact-string redaction alone, a new correction or retirement guard invalidates all derived continuity handoffs so the worker can rebuild them from canonical source material under the current suppression policy. Re-remembering content that clears a prior guard also invalidates the handoffs so restored information is not permanently omitted from derived orientation.
 
 This is deliberately separate from automatic long-term memory curation. The continuity summarizer answers only "where were we / what were we doing?"; it does not decide which ordinary conversation facts should become durable memory.
 

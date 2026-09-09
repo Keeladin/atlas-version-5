@@ -1,3 +1,4 @@
+import pytest
 from atlas.providers.openai import _public_tool_result, _resource_input
 
 
@@ -232,9 +233,10 @@ def test_provider_captures_web_citations_and_delta_without_extra_inference():
     assert deltas == [{'status': 'complete'}]
 
 
-def test_memory_context_suppression_metadata_is_not_model_visible() -> None:
+@pytest.mark.parametrize("operation", ["memory.retire", "memory.delete"])
+def test_memory_context_suppression_metadata_is_not_model_visible(operation) -> None:
     result = {
-        "operation_id": "memory.forget",
+        "operation_id": operation,
         "status": "succeeded",
         "output": {
             "status": "applied",
@@ -250,7 +252,11 @@ def test_memory_context_suppression_metadata_is_not_model_visible() -> None:
     assert "Roses are red" not in str(public)
 
 
-def test_successful_forget_redacts_prior_tool_round_before_completion() -> None:
+@pytest.mark.parametrize("operation_id, acknowledgement", [
+    ("memory.retire", "Retired from recall."),
+    ("memory.delete", "Deleted."),
+])
+def test_lifecycle_mutation_redacts_prior_tool_round_before_completion(operation_id, acknowledgement) -> None:
     import asyncio
     import json
     from types import SimpleNamespace
@@ -276,8 +282,8 @@ def test_successful_forget_redacts_prior_tool_round_before_completion() -> None:
     seen_inputs = []
     responses = [
         SimpleNamespace(id="r1", status="completed", output=[Call("c1", "memory.search", {"query": "phrase"})], output_text=""),
-        SimpleNamespace(id="r2", status="completed", output=[Call("c2", "memory.forget", {"content": phrase})], output_text=""),
-        SimpleNamespace(id="r3", status="completed", output=[], output_text="Forgotten."),
+        SimpleNamespace(id="r2", status="completed", output=[Call("c2", operation_id, {"content": phrase})], output_text=""),
+        SimpleNamespace(id="r3", status="completed", output=[], output_text=acknowledgement),
     ]
 
     async def create(**kwargs):
@@ -291,7 +297,7 @@ def test_successful_forget_redacts_prior_tool_round_before_completion() -> None:
                 "status": "succeeded", "operation_id": operation,
                 "output": {"results": [{"content": phrase}]},
             }
-        assert operation == "memory.forget"
+        assert operation == operation_id
         return {
             "status": "succeeded", "operation_id": operation,
             "output": {
@@ -313,12 +319,12 @@ def test_successful_forget_redacts_prior_tool_round_before_completion() -> None:
             chunk
             async for chunk in provider.stream_text(
                 instructions="Fixture",
-                messages=[{"role": "user", "content": f"Forget {phrase}"}],
+                messages=[{"role": "user", "content": f"{operation_id.rsplit('.', 1)[1]} {phrase}"}],
                 tool_handler=tool,
             )
         ]
 
-    assert asyncio.run(run()) == ["Forgotten."]
+    assert asyncio.run(run()) == [acknowledgement]
     final_input = json.dumps(seen_inputs[-1], ensure_ascii=False)
     assert phrase not in final_input
     assert "[suppressed by owner memory directive]" in final_input

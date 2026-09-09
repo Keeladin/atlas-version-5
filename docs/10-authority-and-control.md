@@ -27,7 +27,7 @@ The model decides whether an action is useful. Runtime answers only deterministi
 
 A denial or failure is returned to inference as a concrete technical fact. The model decides how to adapt.
 
-For Atlas's own durable memory, the active model is normally read-only. New durable memory is derived from the transcript by the asynchronous memory processor rather than arbitrary model-generated database writes. Explicit owner remember/correct/forget instructions have a durable completion state and precedence over stale derived memory.
+For Atlas's own durable memory, the active model is normally read-only. New durable memory is derived from the transcript by the asynchronous memory processor rather than arbitrary model-generated database writes. Explicit owner remember/correct/retire/restore/delete instructions have a durable completion state and precedence over stale derived memory.
 
 Consequential effects use durable action identity, exact evidence, and recovery rules defined by `17-runtime-constitution.md`; the transcript alone is not the source of effect truth.
 

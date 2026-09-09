@@ -96,7 +96,7 @@ def test_model_instructions_calibrate_historical_recall_by_evidence_mode() -> No
     assert "do not force jokes, nicknames, or intimacy" in instructions
 
 
-def test_owner_forgetting_redacts_guarded_content_from_working_projection() -> None:
+def test_owner_retirement_redacts_guarded_content_from_working_projection() -> None:
     phrase = "Roses are red, violets are blue."
     owner = _turn(Actor.OWNER, TextBlock(text=f"Remember this phrase: {phrase}"))
     atlas = _turn(Actor.ATLAS, TextBlock(text=f"Got it: {phrase}"))

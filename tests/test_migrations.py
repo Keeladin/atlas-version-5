@@ -49,10 +49,14 @@ def test_migration_history_adds_owner_chat_metadata() -> None:
     assert 'op.add_column("transcripts", sa.Column("title"' in owner_chat_text
     assert '"updated_at"' in owner_chat_text
     continuity_text = metadata["25a08"][1].read_text()
-    assert head == "25a10"
+    assert head == "25a11"
     assert '"continuity_capsules"' in continuity_text
     assert '"memory_candidates"' in metadata["25a09"][1].read_text()
-    assert '"shared_write_operations"' in metadata[head][1].read_text()
+    assert '"shared_write_operations"' in metadata["25a10"][1].read_text()
+    lifecycle_text = metadata["25a11"][1].read_text()
+    assert '"memory_provenance"' in lifecycle_text
+    assert '"memory_deletion_receipts"' in lifecycle_text
+    assert "status = 'retired'" in lifecycle_text
 
 
 import asyncio
@@ -74,7 +78,8 @@ async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_exi
         schema = (await connection.execute(text('SELECT current_schema()'))).scalar_one()
         await connection.run_sync(Base.metadata.drop_all)
     env = {**os.environ, 'ATLAS_DATABASE_URL': os.environ['ATLAS_TEST_DATABASE_URL'],
-        'PGOPTIONS': f'-csearch_path={schema},public'}
+        'PGOPTIONS': f'-csearch_path={schema},public',
+        'PYTHONPATH': str(Path.cwd() / 'backend')}
     env.pop('ATLAS_DATABASE_URL_FILE', None)
     async def migrate(target):
         result = await asyncio.to_thread(subprocess.run,
@@ -96,7 +101,7 @@ async def test_migrations_on_postgresql_preserve_history(pg_factory, upgrade_exi
         env=env, capture_output=True, text=True, check=False)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     async with pg_factory() as session:
-        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a10'
+        assert (await session.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a11'
         if upgrade_existing:
             rows = (await session.execute(select(TranscriptRow))).scalars().all()
             assert len(rows) == 2 and sum(row.closed_at is None for row in rows) == 1

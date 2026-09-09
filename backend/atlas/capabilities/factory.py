@@ -52,7 +52,9 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     runtime.register_executor("memory.search", memory.search)
     runtime.register_executor("memory.remember", memory.remember)
     runtime.register_executor("memory.correct", memory.correct)
-    runtime.register_executor("memory.forget", memory.forget)
+    runtime.register_executor("memory.retire", memory.retire)
+    runtime.register_executor("memory.restore", memory.restore)
+    runtime.register_executor("memory.delete", memory.delete)
     runtime.register_executor("memory.commands.list", memory.commands)
 
     async def policy_reader():

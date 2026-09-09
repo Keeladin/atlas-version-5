@@ -54,3 +54,22 @@ def test_memory_search_is_bounded_read_capability() -> None:
     assert operation.effect == EffectKind.READ
     assert operation.authority == AuthorityMode.AUTO
     assert operation.input_schema["properties"]["limit"]["maximum"] == 10
+
+
+def test_memory_registry_exposes_explicit_lifecycle_operations() -> None:
+    from atlas.capabilities import AuthorityMode, EffectKind
+    from atlas.registry.service import build_phase0_registry
+
+    registry = build_phase0_registry()
+    operations = {item.id: item for item in registry.operations()}
+    assert "memory.forget" not in operations
+    for name, effect in (("retire", EffectKind.UPDATE), ("restore", EffectKind.UPDATE),
+                         ("delete", EffectKind.DELETE)):
+        operation = operations[f"memory.{name}"]
+        assert operation.effect == effect
+        assert operation.authority == AuthorityMode.AUTO
+    memory_entry = next(entry for entry in registry.all_entries() if entry.id == "atlas.memory")
+    assert "memory.forget" not in memory_entry.executable_operations
+    assert {"memory.retire", "memory.restore", "memory.delete"}.issubset(
+        memory_entry.executable_operations
+    )

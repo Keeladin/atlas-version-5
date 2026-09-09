@@ -111,7 +111,7 @@ Foreground `memory_candidates` remain non-authoritative proposals. Candidate int
 
 When the asynchronous memory processor later evaluates a candidate against valid current memory, its create/merge/supersede decision must be applied through this shared-state boundary. The processor therefore evaluates a known memory resource version and commits only against that same version. If another chat, explicit owner command, or worker changes the target first, the stale processor write conflicts and must re-read/reason rather than overwrite newer state.
 
-Explicit owner remember/correct/forget commands keep their existing precedence and command ledger. They already use transactional resource-specific mutation. Retrofitting them onto this generic fence is optional hardening, not a prerequisite for derived-memory reconciliation.
+Explicit owner remember/correct/retire/restore/delete commands retain their command ledger and now serialize through this boundary on `(memory_state, owner)`. They evaluate current state inside the locked mutation callback with `expected_version=null`; successful mutations advance the shared revision. Future derived-memory reconciliation must read that revision before inference and commit with the matching `expected_version`. Indexing, embeddings and continuity maintenance are not yet all coordinated through this fence.
 
 ## 10. Deliberate non-goals
 

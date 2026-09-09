@@ -42,11 +42,22 @@ class MemoryCandidate(BaseModel):
         return MemoryCandidate.model_validate(data)
 
 
-def candidate_fingerprint(candidate: MemoryCandidate) -> str:
+def candidate_scope_key(candidate: MemoryCandidate, source_transcript_id: UUID) -> str:
+    if candidate.scope == "cross_chat":
+        return "owner"
+    if candidate.scope == "chat":
+        return f"chat:{source_transcript_id}"
+    # V5 does not yet expose one canonical project identity to memory intake.
+    # Keep project candidates isolated to their source chat until runtime can bind one.
+    return f"project-unresolved:{source_transcript_id}"
+
+
+def candidate_fingerprint(candidate: MemoryCandidate, scope_key: str) -> str:
     payload = {
         "kind": candidate.kind,
         "content": candidate.content.casefold(),
         "scope": candidate.scope,
+        "scope_key": scope_key,
         "subject": (candidate.subject or "").casefold(),
         "namespace": (candidate.namespace or "").casefold(),
     }
@@ -67,7 +78,8 @@ class MemoryCandidateRepository:
         source_provider_evidence_id: UUID | None,
     ) -> tuple[MemoryCandidateRow, bool]:
         candidate = candidate.normalized()
-        fingerprint = candidate_fingerprint(candidate)
+        scope_key = candidate_scope_key(candidate, source_transcript_id)
+        fingerprint = candidate_fingerprint(candidate, scope_key)
         candidate_id = uuid4()
         statement = (
             insert(MemoryCandidateRow)
@@ -77,6 +89,7 @@ class MemoryCandidateRepository:
                 kind=candidate.kind,
                 content=candidate.content,
                 scope=candidate.scope,
+                scope_key=scope_key,
                 confidence=candidate.confidence,
                 durability=candidate.durability,
                 proposed_action=candidate.proposed_action,
@@ -90,7 +103,8 @@ class MemoryCandidateRepository:
             )
             .on_conflict_do_nothing(
                 index_elements=[MemoryCandidateRow.fingerprint],
-                index_where=MemoryCandidateRow.status == "pending",
+                index_where=(MemoryCandidateRow.status == "pending")
+                & MemoryCandidateRow.fingerprint.is_not(None),
             )
             .returning(MemoryCandidateRow.id)
         )

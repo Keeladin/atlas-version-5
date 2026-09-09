@@ -158,3 +158,91 @@ async def test_concurrent_duplicate_candidates_have_one_pending_winner(pg_factor
             await session.execute(select(func.count()).select_from(MemoryCandidateRow))
         ).scalar_one()
         assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_scoped_candidate_identity_is_bound_to_source_chat(pg_factory) -> None:
+    intake = MemoryCandidateIntake(pg_factory)
+    sources = []
+    async with pg_factory() as session:
+        for text in ("Chat one preference.", "Chat two preference."):
+            transcript = TranscriptRow(kind="owner", next_turn_sequence=1, closed_at=None)
+            session.add(transcript)
+            await session.flush()
+            owner = TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=1, actor="owner",
+                blocks=[{"type": "text", "text": text}],
+            )
+            session.add(owner)
+            await session.flush()
+            sources.append((transcript.id, owner.id))
+            transcript.closed_at = func.now()
+        await session.commit()
+
+    candidate = [{
+        "kind": "preference",
+        "content": "Use compact tables in this chat.",
+        "scope": "chat",
+        "confidence": 0.9,
+        "durability": "short_term",
+        "proposed_action": "upsert",
+    }]
+    results = []
+    for transcript_id, owner_id in sources:
+        results.append(await intake.enqueue_many(
+            candidate, source_transcript_id=transcript_id,
+            source_turn_id=owner_id, source_provider_evidence_id=None,
+        ))
+    assert [item["accepted"] for item in results] == [1, 1]
+
+    async with pg_factory() as session:
+        rows = list((await session.execute(
+            select(MemoryCandidateRow).order_by(MemoryCandidateRow.created_at)
+        )).scalars())
+        assert len(rows) == 2
+        assert rows[0].scope_key != rows[1].scope_key
+        assert rows[0].fingerprint != rows[1].fingerprint
+        assert all(str(row.scope_key).startswith("chat:") for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_cross_chat_candidate_identity_deduplicates_across_source_chats(pg_factory) -> None:
+    intake = MemoryCandidateIntake(pg_factory)
+    sources = []
+    async with pg_factory() as session:
+        for text in ("First statement.", "Second statement."):
+            transcript = TranscriptRow(kind="owner", next_turn_sequence=1, closed_at=None)
+            session.add(transcript)
+            await session.flush()
+            owner = TurnRow(
+                id=uuid4(), transcript_id=transcript.id, sequence=1, actor="owner",
+                blocks=[{"type": "text", "text": text}],
+            )
+            session.add(owner)
+            await session.flush()
+            sources.append((transcript.id, owner.id))
+            transcript.closed_at = func.now()
+        await session.commit()
+
+    candidate = [{
+        "kind": "preference",
+        "content": "Jaco prefers fresh topic-specific chats.",
+        "scope": "cross_chat",
+        "confidence": 0.95,
+        "durability": "long_term",
+        "proposed_action": "upsert",
+    }]
+    first = await intake.enqueue_many(
+        candidate, source_transcript_id=sources[0][0], source_turn_id=sources[0][1],
+        source_provider_evidence_id=None,
+    )
+    second = await intake.enqueue_many(
+        candidate, source_transcript_id=sources[1][0], source_turn_id=sources[1][1],
+        source_provider_evidence_id=None,
+    )
+    assert first["accepted"] == 1
+    assert second["duplicate"] == 1
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(MemoryCandidateRow))).scalar_one()
+        assert row.scope_key == "owner"

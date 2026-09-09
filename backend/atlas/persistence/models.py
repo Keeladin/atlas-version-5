@@ -5,6 +5,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Computed,
     DateTime,
     Float,
@@ -53,6 +54,16 @@ class TurnRow(Base):
     actor: Mapped[str] = mapped_column(String(32))
     sequence: Mapped[int] = mapped_column(BigInteger)
     blocks: Mapped[list[dict]] = mapped_column(JSONB)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deletion_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "shared_write_operations.id",
+            name="fk_turns_deletion_operation",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
@@ -127,7 +138,7 @@ class DurableMemoryRow(Base):
             "uq_active_durable_memory_fingerprint",
             "fingerprint",
             unique=True,
-            postgresql_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active' AND fingerprint IS NOT NULL"),
         ),
         Index("ix_durable_memories_search_vector", "search_vector", postgresql_using="gin"),
         Index(
@@ -137,13 +148,29 @@ class DurableMemoryRow(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
             postgresql_where=text("embedding IS NOT NULL"),
         ),
+        CheckConstraint(
+            "status <> 'deleted' OR (content IS NULL AND fingerprint IS NULL AND embedding IS NULL "
+            "AND embedding_model IS NULL AND embedding_dimensions IS NULL AND embedded_at IS NULL "
+            "AND deleted_at IS NOT NULL AND deletion_operation_id IS NOT NULL AND suppresses_recall IS TRUE)",
+            name="ck_deleted_memory_payload_shape",
+        ),
+        CheckConstraint(
+            "status = 'deleted' OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
+            name="ck_nondeleted_memory_has_payload",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     record_kind: Mapped[str] = mapped_column(String(32), default="owner_directed", index=True)
-    content: Mapped[str] = mapped_column(Text)
-    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    memory_kind: Mapped[str | None] = mapped_column(String(32), index=True)
+    scope: Mapped[str] = mapped_column(String(32), default="cross_chat", server_default="cross_chat", index=True)
+    scope_key: Mapped[str | None] = mapped_column(String(255), index=True)
+    durability: Mapped[str] = mapped_column(String(32), default="long_term", server_default="long_term", index=True)
+    subject: Mapped[str | None] = mapped_column(String(160), index=True)
+    namespace: Mapped[str | None] = mapped_column(String(160), index=True)
+    content: Mapped[str | None] = mapped_column(Text)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
     suppresses_recall: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
     search_vector: Mapped[str] = mapped_column(
         TSVECTOR,
@@ -165,7 +192,13 @@ class DurableMemoryRow(Base):
     superseded_by_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
     )
-    forgotten_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deletion_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -204,22 +237,31 @@ class MemoryCandidateRow(Base):
             "uq_pending_memory_candidate_fingerprint",
             "fingerprint",
             unique=True,
-            postgresql_where=text("status = 'pending'"),
+            postgresql_where=text("status = 'pending' AND fingerprint IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "status <> 'pending' OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
+            name="ck_pending_candidate_has_payload",
         ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     kind: Mapped[str] = mapped_column(String(32), index=True)
-    content: Mapped[str] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text)
     scope: Mapped[str] = mapped_column(String(32), index=True)
+    scope_key: Mapped[str | None] = mapped_column(String(255), index=True)
     confidence: Mapped[float] = mapped_column(Float)
     durability: Mapped[str] = mapped_column(String(32), index=True)
     proposed_action: Mapped[str] = mapped_column(String(32), default="upsert")
     subject: Mapped[str | None] = mapped_column(String(160), index=True)
     namespace: Mapped[str | None] = mapped_column(String(160), index=True)
     evidence: Mapped[str | None] = mapped_column(Text)
-    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    invalidation_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
     source_transcript_id: Mapped[UUID] = mapped_column(
         ForeignKey("transcripts.id", ondelete="CASCADE"), index=True
     )
@@ -234,6 +276,34 @@ class MemoryCandidateRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryProvenanceRow(Base):
+    __tablename__ = "memory_provenance"
+    __table_args__ = (
+        CheckConstraint(
+            "source_turn_id IS NOT NULL OR source_candidate_id IS NOT NULL OR source_memory_id IS NOT NULL",
+            name="ck_memory_provenance_has_source",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    memory_id: Mapped[UUID] = mapped_column(ForeignKey("durable_memories.id", ondelete="CASCADE"), index=True)
+    relationship: Mapped[str] = mapped_column(String(32), index=True)
+    source_turn_id: Mapped[UUID | None] = mapped_column(ForeignKey("turns.id", ondelete="SET NULL"), index=True)
+    source_candidate_id: Mapped[UUID | None] = mapped_column(ForeignKey("memory_candidates.id", ondelete="SET NULL"), index=True)
+    source_memory_id: Mapped[UUID | None] = mapped_column(ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MemoryDeletionReceiptRow(Base):
+    __tablename__ = "memory_deletion_receipts"
+
+    operation_id: Mapped[UUID] = mapped_column(ForeignKey("shared_write_operations.id", ondelete="CASCADE"), primary_key=True)
+    target_memory_id: Mapped[UUID | None] = mapped_column(ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True)
+    scope: Mapped[str] = mapped_column(String(32))
+    affected_json: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class SharedResourceVersionRow(Base):

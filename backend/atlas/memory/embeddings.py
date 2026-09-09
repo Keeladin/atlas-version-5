@@ -128,6 +128,7 @@ class DurableMemoryEmbeddingIndexer:
                     select(DurableMemoryRow.id, DurableMemoryRow.content)
                     .where(
                         DurableMemoryRow.status == "active",
+                        DurableMemoryRow.content.is_not(None),
                         or_(
                             DurableMemoryRow.embedding.is_(None),
                             DurableMemoryRow.embedding_model.is_(None),

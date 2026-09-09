@@ -348,3 +348,16 @@ Atlas model instructions now use three proportional evidence modes instead of tr
 Chronology words such as `last`, `earlier`, `latest`, `before`, and `after` no longer force exhaustive historical verification by themselves. When exact chronology cannot be established, Atlas should give the best-supported answer with brief uncertainty rather than withholding useful continuity. Canonical evidence remains preferred for material claims and exact reconstruction.
 
 The same instruction block now permits restrained familiarity from supplied context: Atlas may naturally use ongoing projects, preferences, shared shorthand, and established conversational tone when relevant, while avoiding forced jokes, nicknames, or manufactured intimacy. The minimal seat bootstrap remains unchanged.
+
+
+## 2026-09-09 — Explicit memory lifecycle integration (not deployed)
+
+The lifecycle worktree replaces the registered `memory.forget` operation with explicit `memory.retire`, `memory.restore`, and `memory.delete`. The obsolete executor registration and unused service alias are removed; provider suppression tests exercise both retirement and deletion.
+
+Migration `25a11` adds retained deletion identities with null payload constraints, provenance edges, candidate invalidation and deletion receipts. Owner lifecycle operations share the `memory_state/owner` write boundary. Explicit historical search exposes superseded memories; retired/deleted records stay out of memory search. Candidate fingerprints distinguish chat-local identity from cross-chat identity.
+
+Source-inclusive deletion preserves turn/sequence structure, fails atomically when selected source text cannot be isolated, scrubs candidate/provider-evidence dependencies, and rebuilds indexes from the earliest invalidated chunk boundary so unrelated earlier turns survive. The operation is scoped database-content removal, not artifact-file or backup/WAL erasure. Full in-flight maintenance coordination and automatic reconciliation remain staged; see `13-memory-lifecycle.md`.
+
+ID-selected correct/retire/delete calls now resolve the selected pre-mutation content inside the serialized callback and return it only as transient provider-context suppression metadata. Three PostgreSQL regressions reproduced missing suppression before the fix and pass afterward. This prevents the current provider loop from retaining the old value merely because the model selected an ID instead of sending the old text.
+
+Integration validation: **254 backend tests passed** on disposable PostgreSQL 18/pgvector, including six migration cases; a separate clean database upgraded from zero through `25a11` and `alembic check` reported no new operations. Ruff, Python compilation, deployment shell syntax and `git diff --check` passed. Frontend lint, **14 transport tests**, and the production build passed. Changes remain uncommitted in `memory-lifecycle-v1`; production and the main checkout remain at `3e6e17a`.

@@ -4,7 +4,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from .durable import DurableMemoryCommands, DurableMemoryRepository
+from .durable import DurableMemoryRepository
 from .embeddings import (
     DurableMemoryEmbeddingIndexer,
     EmbeddingClient,
@@ -12,6 +12,7 @@ from .embeddings import (
     TranscriptEmbeddingIndexer,
 )
 from .indexer import TranscriptIndexer
+from .lifecycle import MemoryLifecycleCommands
 from .repository import MemorySearchRepository
 
 
@@ -30,7 +31,7 @@ class MemoryService:
         self.embedder = embedder
         self.embedding_batch_size = embedding_batch_size
         self.embedding_max_chunks_per_run = embedding_max_chunks_per_run
-        self.durable_commands = DurableMemoryCommands(factory)
+        self.lifecycle_commands = MemoryLifecycleCommands(factory)
 
     async def search(self, arguments: dict) -> dict[str, object]:
         transcript_raw = arguments.get("transcript_id")
@@ -55,13 +56,26 @@ class MemoryService:
         if before_sequence is not None and transcript_id is None:
             raise ValueError("before_sequence requires transcript_id")
         limit = int(arguments.get("limit") or 5)
+        include_historical = bool(arguments.get("include_historical") or False)
         async with self.factory() as session:
             durable_repository = DurableMemoryRepository(session)
+            from atlas.runtime.invocation import current_transcript_id
+            effective_transcript_id = transcript_id or current_transcript_id.get()
             durable_memories = await durable_repository.search_active(
                 query,
                 limit=limit,
+                transcript_id=effective_transcript_id,
                 query_embedding=query_embedding,
                 embedding_model=self.embedder.model if self.embedder is not None else None,
+            )
+            historical_memories = (
+                await durable_repository.search_historical(
+                    query,
+                    limit=limit,
+                    transcript_id=effective_transcript_id,
+                )
+                if include_historical
+                else []
             )
             memory_state = await durable_repository.state()
             repository = MemorySearchRepository(session)
@@ -93,27 +107,34 @@ class MemoryService:
                 ),
             },
             "memory_policy": {
-                "authority": "owner_directed_durable_memory_precedes_transcript_recall",
-                "suppression": "active_forget_and_correction_guards_apply_before_transcript_ranking",
+                "authority": "owner_directed_precedes_derived; lifecycle_and_scope_apply_before_relevance",
+                "suppression": "superseded_retired_deleted_sources_are_ineligible_before_transcript_ranking",
                 "suppression_guards": int(memory_state["suppression_guards"]),
             },
             "memory_state": memory_state,
             "durable_memories": durable_memories,
+            "historical_memories": historical_memories,
             "coverage": coverage,
             "results": results,
         }
 
     async def remember(self, arguments: dict) -> dict[str, object]:
-        return await self.durable_commands.remember(arguments)
+        return await self.lifecycle_commands.remember(arguments)
 
     async def correct(self, arguments: dict) -> dict[str, object]:
-        return await self.durable_commands.correct(arguments)
+        return await self.lifecycle_commands.correct(arguments)
 
-    async def forget(self, arguments: dict) -> dict[str, object]:
-        return await self.durable_commands.forget(arguments)
+    async def retire(self, arguments: dict) -> dict[str, object]:
+        return await self.lifecycle_commands.retire(arguments)
+
+    async def restore(self, arguments: dict) -> dict[str, object]:
+        return await self.lifecycle_commands.restore(arguments)
+
+    async def delete(self, arguments: dict) -> dict[str, object]:
+        return await self.lifecycle_commands.delete(arguments)
 
     async def commands(self, arguments: dict) -> dict[str, object]:
-        return await self.durable_commands.commands(arguments)
+        return await self.lifecycle_commands.commands(arguments)
 
     async def index_once(self, *, active_tail_exchanges: int = 10) -> dict[str, object]:
         async with self.factory() as session:

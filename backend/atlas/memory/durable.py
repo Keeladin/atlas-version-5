@@ -4,8 +4,8 @@ import hashlib
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas.persistence.models import (
     ContinuityCapsuleRow,
@@ -14,11 +14,11 @@ from atlas.persistence.models import (
     TranscriptRow,
     TurnRow,
 )
-from atlas.runtime.invocation import current_transcript_id
 
 ACTIVE = "active"
 SUPERSEDED = "superseded"
-FORGOTTEN = "forgotten"
+RETIRED = "retired"
+DELETED = "deleted"
 PENDING = "pending"
 APPLIED = "applied"
 FAILED = "failed"
@@ -78,20 +78,31 @@ class DurableMemoryRepository:
         )
         return (await self.session.execute(statement)).scalar_one_or_none()
 
+    async def retired_by_fingerprint(self, fingerprint: str) -> DurableMemoryRow | None:
+        statement = (
+            select(DurableMemoryRow)
+            .where(
+                DurableMemoryRow.status == RETIRED,
+                DurableMemoryRow.fingerprint == fingerprint,
+            )
+            .order_by(DurableMemoryRow.updated_at.desc(), DurableMemoryRow.id.desc())
+            .limit(1)
+        )
+        return (await self.session.execute(statement)).scalar_one_or_none()
+
     async def clear_guards(self, fingerprint: str) -> bool:
         result = await self.session.execute(
             update(DurableMemoryRow)
             .where(
                 DurableMemoryRow.fingerprint == fingerprint,
                 DurableMemoryRow.suppresses_recall.is_(True),
+                DurableMemoryRow.status != DELETED,
             )
             .values(suppresses_recall=False, updated_at=utcnow())
         )
         return bool(result.rowcount)
 
     async def invalidate_continuity_capsules(self) -> None:
-        # Capsules are rebuildable derived orientation. Any new recall guard can
-        # invalidate a paraphrase that exact-string projection redaction would miss.
         await self.session.execute(delete(ContinuityCapsuleRow))
 
     async def create_active(
@@ -101,23 +112,37 @@ class DurableMemoryRepository:
         source_transcript_id: UUID | None,
         source_turn_id: UUID | None,
         supersedes_id: UUID | None = None,
+        record_kind: str = "owner_directed",
+        memory_kind: str | None = None,
+        scope: str = "cross_chat",
+        scope_key: str | None = None,
+        durability: str = "long_term",
+        subject: str | None = None,
+        namespace: str | None = None,
+        valid_from: datetime | None = None,
+        valid_to: datetime | None = None,
     ) -> tuple[DurableMemoryRow, bool]:
         fingerprint = memory_fingerprint(content)
-        guards_cleared = await self.clear_guards(fingerprint)
-        if guards_cleared:
-            await self.invalidate_continuity_capsules()
         existing = await self.active_by_fingerprint(fingerprint)
         if existing is not None:
             return existing, False
         row = DurableMemoryRow(
             status=ACTIVE,
-            record_kind="owner_directed",
+            record_kind=record_kind,
+            memory_kind=memory_kind,
+            scope=scope,
+            scope_key=scope_key,
+            durability=durability,
+            subject=subject,
+            namespace=namespace,
             content=content,
             fingerprint=fingerprint,
             suppresses_recall=False,
             source_transcript_id=source_transcript_id,
             source_turn_id=source_turn_id,
             supersedes_id=supersedes_id,
+            valid_from=valid_from,
+            valid_to=valid_to,
         )
         self.session.add(row)
         await self.session.flush()
@@ -132,10 +157,13 @@ class DurableMemoryRepository:
         source_transcript_id: UUID | None,
         source_turn_id: UUID | None,
     ) -> tuple[DurableMemoryRow, bool]:
+        if status not in (SUPERSEDED, RETIRED):
+            raise ValueError("guards may only be superseded or retired")
         fingerprint = memory_fingerprint(content)
         existing = (
             await self.session.execute(
-                select(DurableMemoryRow).where(
+                select(DurableMemoryRow)
+                .where(
                     DurableMemoryRow.fingerprint == fingerprint,
                     DurableMemoryRow.status == status,
                     DurableMemoryRow.suppresses_recall.is_(True),
@@ -149,22 +177,38 @@ class DurableMemoryRepository:
         row = DurableMemoryRow(
             status=status,
             record_kind=record_kind,
+            scope="cross_chat",
+            durability="long_term",
             content=content,
             fingerprint=fingerprint,
             suppresses_recall=True,
             source_transcript_id=source_transcript_id,
             source_turn_id=source_turn_id,
-            forgotten_at=utcnow() if status == FORGOTTEN else None,
+            retired_at=utcnow() if status == RETIRED else None,
         )
         self.session.add(row)
         await self.session.flush()
         return row, True
+
+    @staticmethod
+    def _applicable(statement, transcript_id: UUID | None):
+        if transcript_id is None:
+            return statement.where(DurableMemoryRow.scope == "cross_chat")
+        chat_key = f"chat:{transcript_id}"
+        return statement.where(
+            or_(
+                DurableMemoryRow.scope == "cross_chat",
+                (DurableMemoryRow.scope == "chat")
+                & (DurableMemoryRow.scope_key == chat_key),
+            )
+        )
 
     async def search_active(
         self,
         query: str,
         *,
         limit: int = 5,
+        transcript_id: UUID | None = None,
         query_embedding: list[float] | None = None,
         embedding_model: str | None = None,
     ) -> list[dict[str, object]]:
@@ -181,6 +225,7 @@ class DurableMemoryRepository:
             DurableMemoryRow.status == ACTIVE,
             DurableMemoryRow.search_vector.op("@@")(tsquery),
         )
+        lexical = self._applicable(lexical, transcript_id)
         lexical_rows = (
             await self.session.execute(
                 lexical.order_by(lexical_rank.desc(), DurableMemoryRow.updated_at.desc()).limit(
@@ -199,6 +244,7 @@ class DurableMemoryRepository:
                 DurableMemoryRow.embedding.is_not(None),
                 DurableMemoryRow.embedding_model == embedding_model,
             )
+            semantic = self._applicable(semantic, transcript_id)
             semantic_rows = (
                 await self.session.execute(
                     semantic.order_by(distance.asc(), DurableMemoryRow.updated_at.desc()).limit(
@@ -240,6 +286,40 @@ class DurableMemoryRepository:
         )
         return ordered[:bounded_limit]
 
+    async def search_historical(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        transcript_id: UUID | None = None,
+    ) -> list[dict[str, object]]:
+        normalized = query.strip()
+        if not normalized:
+            return []
+        bounded_limit = max(1, min(limit, 10))
+        tsquery = func.websearch_to_tsquery("simple", normalized)
+        lexical_rank = func.ts_rank_cd(
+            DurableMemoryRow.search_vector, tsquery
+        ).label("lexical_rank")
+        statement = select(DurableMemoryRow, lexical_rank).where(
+            DurableMemoryRow.status == SUPERSEDED,
+            DurableMemoryRow.search_vector.op("@@")(tsquery),
+        )
+        statement = self._applicable(statement, transcript_id)
+        rows = (await self.session.execute(
+            statement.order_by(
+                lexical_rank.desc(), DurableMemoryRow.updated_at.desc()
+            ).limit(bounded_limit)
+        )).all()
+        results: list[dict[str, object]] = []
+        for row, score in rows:
+            item = self.project(row)
+            item["lexical_rank"] = float(score or 0.0)
+            item["hybrid_rank"] = float(score or 0.0)
+            item["retrieval_sources"] = ["historical_lexical"]
+            results.append(item)
+        return results
+
     async def recall_guards(self) -> list[dict[str, object]]:
         statement = select(DurableMemoryRow).where(
             DurableMemoryRow.suppresses_recall.is_(True)
@@ -276,7 +356,8 @@ class DurableMemoryRepository:
         return {
             "active_memories": memories.get(ACTIVE, 0),
             "superseded_memories": memories.get(SUPERSEDED, 0),
-            "forgotten_memories": memories.get(FORGOTTEN, 0),
+            "retired_memories": memories.get(RETIRED, 0),
+            "deleted_memory_identities": memories.get(DELETED, 0),
             "suppression_guards": int(
                 (
                     await self.session.execute(
@@ -325,246 +406,34 @@ class DurableMemoryRepository:
 
     @staticmethod
     def project(row: DurableMemoryRow) -> dict[str, object]:
+        owner_directed = row.record_kind.startswith("owner_") or row.record_kind == "owner_directed"
         return {
             "memory_id": str(row.id),
-            "source_class": "owner_canonical_memory",
+            "source_class": "owner_canonical_memory" if owner_directed else "derived_memory",
             "status": row.status,
             "record_kind": row.record_kind,
+            "memory_kind": row.memory_kind,
+            "scope": row.scope,
+            "scope_key": row.scope_key,
+            "durability": row.durability,
+            "subject": row.subject,
+            "namespace": row.namespace,
             "content": row.content,
             "source_transcript_id": (
                 str(row.source_transcript_id) if row.source_transcript_id else None
             ),
             "source_turn_id": str(row.source_turn_id) if row.source_turn_id else None,
             "supersedes_id": str(row.supersedes_id) if row.supersedes_id else None,
+            "superseded_by_id": str(row.superseded_by_id) if row.superseded_by_id else None,
+            "valid_from": row.valid_from.isoformat() if row.valid_from else None,
+            "valid_to": row.valid_to.isoformat() if row.valid_to else None,
+            "retired_at": row.retired_at.isoformat() if row.retired_at else None,
+            "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "lexical_rank": None,
             "semantic_similarity": None,
             "hybrid_rank": None,
             "retrieval_sources": [],
-            "authority": "owner_directed",
+            "authority": "owner_directed" if owner_directed else "derived",
         }
-
-
-class DurableMemoryCommands:
-    def __init__(self, factory: async_sessionmaker) -> None:
-        self.factory = factory
-
-    async def remember(self, arguments: dict) -> dict[str, object]:
-        content = clean_memory_content(arguments.get("content"))
-        command_id, source = await self._begin("remember", {"content": content})
-        try:
-            async with self.factory() as session:
-                repository = DurableMemoryRepository(session)
-                memory, created = await repository.create_active(
-                    content,
-                    source_transcript_id=source[0],
-                    source_turn_id=source[1],
-                )
-                command = await session.get(MemoryCommandRow, command_id)
-                assert command is not None
-                command.status = APPLIED
-                command.replacement_memory_id = memory.id
-                command.applied_at = utcnow()
-                await session.commit()
-                return {
-                    "command_id": str(command_id),
-                    "status": APPLIED,
-                    "operation": "remember",
-                    "result": "created" if created else "already_active",
-                    "memory": DurableMemoryRepository.project(memory),
-                }
-        except Exception as exc:
-            await self._fail(command_id, exc)
-            raise MemoryMutationError(
-                f"remember failed (command_id={command_id}): {exc}"
-            ) from exc
-
-    async def correct(self, arguments: dict) -> dict[str, object]:
-        new_content = clean_memory_content(arguments.get("content"))
-        memory_raw = arguments.get("memory_id")
-        old_raw = arguments.get("old_content")
-        old_content = clean_memory_content(old_raw, "old_content") if old_raw is not None else None
-        if memory_raw is None and old_content is None:
-            raise ValueError("correct requires memory_id or old_content")
-        command_arguments = {"content": new_content}
-        if memory_raw is not None:
-            command_arguments["memory_id"] = str(memory_raw)
-        if old_content is not None:
-            command_arguments["old_content"] = old_content
-        command_id, source = await self._begin("correct", command_arguments)
-        try:
-            async with self.factory() as session:
-                repository = DurableMemoryRepository(session)
-                target = None
-                if memory_raw is not None:
-                    target = await repository.get(UUID(str(memory_raw)))
-                    if target is None:
-                        raise ValueError("target memory does not exist")
-                    if target.status != ACTIVE:
-                        raise ValueError("target memory is not active")
-                    if old_content is not None and target.fingerprint != memory_fingerprint(old_content):
-                        raise ValueError("old_content does not match target memory")
-                elif old_content is not None:
-                    target = await repository.active_by_fingerprint(memory_fingerprint(old_content))
-                    if target is None:
-                        target, _ = await repository.create_guard(
-                            old_content,
-                            status=SUPERSEDED,
-                            record_kind="owner_correction_guard",
-                            source_transcript_id=source[0],
-                            source_turn_id=source[1],
-                        )
-
-                assert target is not None
-                new_fingerprint = memory_fingerprint(new_content)
-                if target.status == ACTIVE and target.fingerprint == new_fingerprint:
-                    replacement = target
-                    created = False
-                    await repository.clear_guards(new_fingerprint)
-                else:
-                    replacement, created = await repository.create_active(
-                        new_content,
-                        source_transcript_id=source[0],
-                        source_turn_id=source[1],
-                        supersedes_id=target.id,
-                    )
-                    if target.id != replacement.id:
-                        target.status = SUPERSEDED
-                        target.suppresses_recall = True
-                        target.superseded_by_id = replacement.id
-                        target.embedding = None
-                        target.embedding_model = None
-                        target.embedding_dimensions = None
-                        target.embedded_at = None
-                        target.updated_at = utcnow()
-                        await repository.invalidate_continuity_capsules()
-
-                command = await session.get(MemoryCommandRow, command_id)
-                assert command is not None
-                command.status = APPLIED
-                command.target_memory_id = target.id
-                command.replacement_memory_id = replacement.id
-                command.applied_at = utcnow()
-                await session.commit()
-                suppression = [target.content] if target.id != replacement.id else []
-                return {
-                    "command_id": str(command_id),
-                    "status": APPLIED,
-                    "operation": "correct",
-                    "result": "created" if created else "already_current",
-                    "target_memory_id": str(target.id),
-                    "memory": DurableMemoryRepository.project(replacement),
-                    "_context_suppression": {"contents": suppression},
-                }
-        except Exception as exc:
-            await self._fail(command_id, exc)
-            raise MemoryMutationError(
-                f"correct failed (command_id={command_id}): {exc}"
-            ) from exc
-
-    async def forget(self, arguments: dict) -> dict[str, object]:
-        memory_raw = arguments.get("memory_id")
-        content_raw = arguments.get("content")
-        content = clean_memory_content(content_raw) if content_raw is not None else None
-        if memory_raw is None and content is None:
-            raise ValueError("forget requires memory_id or content")
-        command_arguments: dict[str, object] = {}
-        if memory_raw is not None:
-            command_arguments["memory_id"] = str(memory_raw)
-        if content is not None:
-            command_arguments["content"] = content
-        command_id, source = await self._begin("forget", command_arguments)
-        try:
-            async with self.factory() as session:
-                repository = DurableMemoryRepository(session)
-                target = None
-                if memory_raw is not None:
-                    target = await repository.get(UUID(str(memory_raw)))
-                    if target is None:
-                        raise ValueError("target memory does not exist")
-                    if target.status != ACTIVE:
-                        raise ValueError("target memory is not active")
-                    if content is not None and target.fingerprint != memory_fingerprint(content):
-                        raise ValueError("content does not match target memory")
-                if target is None and content is not None:
-                    target = await repository.active_by_fingerprint(memory_fingerprint(content))
-
-                if target is None:
-                    assert content is not None
-                    target, guard_created = await repository.create_guard(
-                        content,
-                        status=FORGOTTEN,
-                        record_kind="owner_forget_tombstone",
-                        source_transcript_id=source[0],
-                        source_turn_id=source[1],
-                    )
-                    result = "tombstone_created" if guard_created else "already_forgotten"
-                else:
-                    target.status = FORGOTTEN
-                    target.suppresses_recall = True
-                    target.embedding = None
-                    target.embedding_model = None
-                    target.embedding_dimensions = None
-                    target.embedded_at = None
-                    target.forgotten_at = utcnow()
-                    target.updated_at = utcnow()
-                    result = "forgotten"
-
-                await repository.invalidate_continuity_capsules()
-                command = await session.get(MemoryCommandRow, command_id)
-                assert command is not None
-                command.status = APPLIED
-                command.target_memory_id = target.id
-                command.applied_at = utcnow()
-                await session.commit()
-                return {
-                    "command_id": str(command_id),
-                    "status": APPLIED,
-                    "operation": "forget",
-                    "result": result,
-                    "memory_id": str(target.id),
-                    "_context_suppression": {"contents": [target.content]},
-                }
-        except Exception as exc:
-            await self._fail(command_id, exc)
-            raise MemoryMutationError(
-                f"forget failed (command_id={command_id}): {exc}"
-            ) from exc
-
-    async def commands(self, arguments: dict) -> dict[str, object]:
-        status = str(arguments.get("status") or "").strip() or None
-        limit = int(arguments.get("limit") or 20)
-        async with self.factory() as session:
-            repository = DurableMemoryRepository(session)
-            return {
-                "commands": await repository.list_commands(limit=limit, status=status),
-                "state": await repository.state(),
-            }
-
-    async def _begin(
-        self, operation: str, arguments: dict[str, object]
-    ) -> tuple[UUID, tuple[UUID | None, UUID | None]]:
-        async with self.factory() as session:
-            repository = DurableMemoryRepository(session)
-            source = await repository.latest_owner_source(current_transcript_id.get())
-            command = MemoryCommandRow(
-                operation=operation,
-                status=PENDING,
-                arguments_json=arguments,
-                source_transcript_id=source[0],
-                source_turn_id=source[1],
-            )
-            session.add(command)
-            await session.commit()
-            return command.id, source
-
-    async def _fail(self, command_id: UUID, exc: Exception) -> None:
-        async with self.factory() as session:
-            command = await session.get(MemoryCommandRow, command_id)
-            if command is None:
-                return
-            command.status = FAILED
-            command.error = f"{type(exc).__name__}: {exc}"[:2_000]
-            command.failed_at = utcnow()
-            await session.commit()
