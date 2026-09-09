@@ -340,3 +340,11 @@ This primitive is intentionally local-state-only. It does not replace the conseq
 The PostgreSQL validation also exposed a mismatch in the preceding memory-candidate slice: migration `25a09` created the partial unique pending-candidate index, but `MemoryCandidateRow` metadata did not declare it. That made `Base.metadata.create_all()` schemas incompatible with the candidate `ON CONFLICT` clause and caused `alembic check` to report drift. The model now declares the same partial index as the migration.
 
 Repository-wide disposable PostgreSQL/pgvector validation passed **241 backend tests** with no failures, including the shared-write concurrency/idempotency/rollback cases, memory-candidate intake, empty/historical Alembic upgrades and `alembic check`. Ruff, Python compilation and `git diff --check` also pass. Production state and services were not modified.
+
+## 2026-09-09 — Conversational evidence calibration
+
+Atlas model instructions now use three proportional evidence modes instead of treating ordinary continuity as forensic reconstruction. `CONVERSATIONAL` is the default for low-stakes continuity, preferences, recent decisions, and prior-work references; supplied continuity and durable memory may be used directly when sufficiently clear. `PRECISE` escalates to canonical/runtime verification for exact values, current configuration, consequential project state, conflicting context, or materially important distinctions. `FORENSIC` reserves structural historical coverage for disputes, audits, provenance questions, and exact record claims such as first-ever or most-recent-across-all-history.
+
+Chronology words such as `last`, `earlier`, `latest`, `before`, and `after` no longer force exhaustive historical verification by themselves. When exact chronology cannot be established, Atlas should give the best-supported answer with brief uncertainty rather than withholding useful continuity. Canonical evidence remains preferred for material claims and exact reconstruction.
+
+The same instruction block now permits restrained familiarity from supplied context: Atlas may naturally use ongoing projects, preferences, shared shorthand, and established conversational tone when relevant, while avoiding forced jokes, nicknames, or manufactured intimacy. The minimal seat bootstrap remains unchanged.
