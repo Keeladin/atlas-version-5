@@ -257,3 +257,50 @@ def test_cross_chat_continuity_is_dropped_before_current_chat_history(monkeypatc
     assert policy["selected_exchanges"] == 2
     assert policy["budget_exceeded"] is False
     assert all("cross-chat continuity orientation" not in str(message.get("content", "")) for message in messages)
+
+@pytest.mark.asyncio
+async def test_memory_observability_stream_emits_sse_snapshot(monkeypatch) -> None:
+    import atlas.api.app as app_module
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeFactory:
+        def __call__(self):
+            return FakeSession()
+
+    class FakeService:
+        def __init__(self, session):
+            self.session = session
+
+        async def change_token(self):
+            return "c" * 64
+
+        async def overview(self, *, limit):
+            return {
+                "summary": {"candidate_counts": {}, "memory_counts": {}, "authority_counts": {"owner": 0, "derived": 0}, "last_attempt": None},
+                "recent_candidates": [],
+                "recent_memories": [],
+            }
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {}
+
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr(app_module, "get_session_factory", lambda: FakeFactory())
+    monkeypatch.setattr(app_module, "MemoryObservabilityService", FakeService)
+    response = await app_module.control_memory_stream(FakeRequest(), limit=12, since=None)
+    chunk = await anext(response.body_iterator)
+    text = chunk.decode() if isinstance(chunk, bytes) else chunk
+    assert "event: snapshot" in text
+    assert "id: " + "c" * 64 in text
+    assert '"stream_token":"' + "c" * 64 + '"' in text
+    assert response.media_type == "text/event-stream"
+    await response.body_iterator.aclose()

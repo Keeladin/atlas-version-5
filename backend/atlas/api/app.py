@@ -19,6 +19,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAIError
@@ -53,6 +54,7 @@ from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.memory.candidates import MemoryCandidateIntake
 from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
+from atlas.memory.observability import MemoryObservabilityService
 from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
 from atlas.registry.repository import RegistryRepository
@@ -532,6 +534,82 @@ async def control_configuration():
             },
         ],
     }
+
+
+def _memory_reconciliation_projection() -> dict[str, object]:
+    return {
+        "enabled": settings.memory_reconciliation_enabled,
+        "model": settings.memory_reconciliation_model or settings.openai_model,
+        "batch_size": settings.memory_reconciliation_batch_size,
+        "lease_seconds": settings.memory_reconciliation_lease_seconds,
+        "max_attempts": settings.memory_reconciliation_max_attempts,
+        "short_term_review_hours": settings.memory_short_term_review_hours,
+        "short_term_expiry_days": settings.memory_short_term_expiry_days,
+    }
+
+
+async def _memory_observability_snapshot(session: AsyncSession, *, limit: int) -> dict[str, object]:
+    service = MemoryObservabilityService(session)
+    token = await service.change_token()
+    payload = await service.overview(limit=limit)
+    payload["reconciliation"] = _memory_reconciliation_projection()
+    payload["stream_token"] = token
+    return payload
+
+
+@app.get("/api/control/memory")
+async def control_memory_observability(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(default=40, ge=1, le=100),
+):
+    return await _memory_observability_snapshot(session, limit=limit)
+
+
+@app.get("/api/control/memory/stream")
+async def control_memory_stream(
+    request: Request,
+    limit: int = Query(default=40, ge=1, le=100),
+    since: str | None = Query(default=None, min_length=64, max_length=64),
+):
+    async def events() -> AsyncIterator[str]:
+        last_token = request.headers.get("last-event-id") or since
+        last_heartbeat = asyncio.get_running_loop().time()
+        while not await request.is_disconnected():
+            async with get_session_factory()() as stream_session:
+                service = MemoryObservabilityService(stream_session)
+                current_token = await service.change_token()
+                if current_token != last_token:
+                    payload = await _memory_observability_snapshot(stream_session, limit=limit)
+                    current_token = str(payload["stream_token"])
+                    encoded = json.dumps(jsonable_encoder(payload), separators=(",", ":"))
+                    yield f"id: {current_token}\nretry: 2000\nevent: snapshot\ndata: {encoded}\n\n"
+                    last_token = current_token
+                    last_heartbeat = asyncio.get_running_loop().time()
+            now = asyncio.get_running_loop().time()
+            if now - last_heartbeat >= 15:
+                yield ": keep-alive\n\n"
+                last_heartbeat = now
+            await asyncio.sleep(1.0)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/control/memory/candidates/{candidate_id}")
+async def control_memory_candidate_detail(
+    candidate_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    try:
+        return await MemoryObservabilityService(session).candidate_detail(candidate_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/schedules")

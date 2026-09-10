@@ -3,6 +3,7 @@ import { startAuthentication, startRegistration, type PublicKeyCredentialCreatio
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
+import { MemoryObservabilityPanel } from './MemoryObservability'
 import { approvalFields } from './approval'
 import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
 
@@ -908,6 +909,8 @@ function ControlPage({ health }: { health: Health | null }) {
           {capabilityError ? <p className="warning-text">{capabilityError}</p> : null}
           <div className="capability-grid">{capabilities.map((item) => <button type="button" role="switch" aria-checked={item.enabled} className={`capability-switch${item.enabled ? ' enabled' : ''}`} key={item.id} disabled={capabilityBusy !== null} onClick={() => { void toggleCapability(item) }}><span className="capability-switch-copy"><strong>{item.family}</strong><small>{item.availability}</small></span><span className="capability-toggle"><i /></span></button>)}</div>
         </section>
+
+        <MemoryObservabilityPanel />
 
         <details className="control-card control-full control-advanced">
           <summary><span><span className="panel-title">Advanced & diagnostics</span><small>Context analysis, credential protection and registry details</small></span><span>Expand</span></summary>

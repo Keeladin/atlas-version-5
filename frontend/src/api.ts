@@ -527,3 +527,145 @@ export async function setOwnerCapability(id: string, enabled: boolean): Promise<
   })
   if (!response.ok) throw new Error('Capability setting was not saved')
 }
+
+export type MemoryReconciliationAttempt = {
+  id: string
+  attempt_number: number
+  status: string
+  semantic_decision: string | null
+  target_memory_id: string | null
+  operation_id: string | null
+  evaluated_memory_revision: number | null
+  evaluated_source_revision: number | null
+  evidence_refs: Record<string, unknown>
+  result: Record<string, unknown>
+  error: string | null
+  started_at: string
+  completed_at: string | null
+}
+
+export type MemoryCandidate = {
+  id: string
+  status: string
+  kind: string
+  content: string | null
+  scope: string
+  scope_key: string | null
+  confidence: number
+  durability: string
+  proposed_action: string
+  subject: string | null
+  namespace: string | null
+  evidence: string | null
+  attempt_count: number
+  decision: Record<string, unknown>
+  review_after: string | null
+  expires_at: string | null
+  invalidated_at: string | null
+  created_at: string
+  processed_at: string | null
+  source_transcript_id: string
+  source_turn_id: string
+  source_provider_evidence_id: string | null
+  source_chat_title: string | null
+  source_sequence: number | null
+  latest_attempt: MemoryReconciliationAttempt | null
+}
+
+export type DurableMemoryInspection = {
+  id: string
+  status: string
+  authority: 'owner' | 'derived'
+  record_kind: string
+  memory_kind: string | null
+  scope: string
+  scope_key: string | null
+  durability: string
+  subject: string | null
+  namespace: string | null
+  content: string | null
+  suppresses_recall: boolean
+  embedded: boolean
+  embedding_model: string | null
+  source_transcript_id: string | null
+  source_turn_id: string | null
+  supersedes_id: string | null
+  superseded_by_id: string | null
+  valid_from: string | null
+  valid_to: string | null
+  retired_at: string | null
+  deleted_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type MemoryObservability = {
+  stream_token: string
+  reconciliation: {
+    enabled: boolean
+    model: string
+    batch_size: number
+    lease_seconds: number
+    max_attempts: number
+    short_term_review_hours: number
+    short_term_expiry_days: number
+  }
+  summary: {
+    candidate_counts: Record<string, number>
+    memory_counts: Record<string, number>
+    authority_counts: { owner: number; derived: number }
+    last_attempt: MemoryReconciliationAttempt | null
+  }
+  recent_candidates: MemoryCandidate[]
+  recent_memories: DurableMemoryInspection[]
+}
+
+export type MemoryCandidateDetail = {
+  candidate: MemoryCandidate
+  source: {
+    chat_title: string | null
+    turn_id: string
+    sequence: number | null
+    actor: string | null
+    deleted: boolean
+    text: string | null
+  }
+  attempts: MemoryReconciliationAttempt[]
+  linked_memories: Array<DurableMemoryInspection & { provenance: Array<Record<string, unknown>> }>
+  reason_retained: boolean
+}
+
+export async function getMemoryObservability(limit = 40): Promise<MemoryObservability> {
+  const response = await fetch(`/api/control/memory?limit=${limit}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Memory observability load failed (${response.status})`)
+  return body as MemoryObservability
+}
+
+export async function getMemoryCandidateDetail(candidateId: string): Promise<MemoryCandidateDetail> {
+  const response = await fetch(`/api/control/memory/candidates/${encodeURIComponent(candidateId)}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Memory candidate load failed (${response.status})`)
+  return body as MemoryCandidateDetail
+}
+
+export type MemoryStreamState = 'connecting' | 'live' | 'reconnecting'
+
+export function streamMemoryObservability(
+  onSnapshot: (snapshot: MemoryObservability) => void,
+  onState: (state: MemoryStreamState) => void,
+  limit = 40,
+  since?: string,
+): () => void {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (since) params.set('since', since)
+  const source = new EventSource(`/api/control/memory/stream?${params.toString()}`)
+  onState('connecting')
+  source.onopen = () => onState('live')
+  source.onerror = () => onState('reconnecting')
+  source.addEventListener('snapshot', (event) => {
+    const snapshot = JSON.parse((event as MessageEvent<string>).data) as MemoryObservability
+    onSnapshot(snapshot)
+  })
+  return () => source.close()
+}

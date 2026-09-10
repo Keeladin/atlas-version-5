@@ -64,6 +64,7 @@ This matrix treats tests as protection for runtime truth, not as a raw test-coun
 | Derived reconciliation cannot supersede owner memory, restore lifecycle-restricted content, widen unresolved scope, or target unseen memory | `test_memory_reconciliation.py` | Real PostgreSQL |
 | Equivalent claims add provenance only for a genuinely new source; repeated lineage is a true no-op | `test_memory_reconciliation.py` | Real PostgreSQL |
 | Pre-redaction continuity/embedding work cannot publish stale copies after canonical source or lifecycle state changes | `test_memory_reconciliation.py`, `test_continuity_capsules.py`, `test_memory.py` | Real PostgreSQL + provider doubles |
+| Memory observability remains read-only, excludes deleted source text, and its SSE change token advances with candidate/attempt state | `test_memory_observability.py`, `test_api.py`, `frontend/tests/memory-observability.test.mjs` | Real PostgreSQL + ASGI stream + frontend transport |
 
 ## Still intentionally thin
 
