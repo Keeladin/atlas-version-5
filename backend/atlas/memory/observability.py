@@ -251,6 +251,71 @@ class MemoryObservabilityService:
             ),
         }
 
+        comparison_rows = list(
+            (
+                await self.session.execute(
+                    select(
+                        MemoryComparisonVerdictRow.verdict,
+                        MemoryCandidateRow.id,
+                        MemoryCandidateRow.proposer_model,
+                        MemoryIndependentReadingRow.verifier_model,
+                    )
+                    .join(
+                        MemoryIndependentReadingRow,
+                        MemoryIndependentReadingRow.id == MemoryComparisonVerdictRow.reading_id,
+                    )
+                    .join(
+                        MemoryCandidateRow,
+                        MemoryCandidateRow.id == MemoryComparisonVerdictRow.candidate_id,
+                    )
+                    .where(
+                        MemoryComparisonVerdictRow.tombstoned_at.is_(None),
+                        MemoryIndependentReadingRow.tombstoned_at.is_(None),
+                    )
+                )
+            ).all()
+        )
+        comparison_candidate_ids = {row.id for row in comparison_rows}
+        review_candidate_ids: set[UUID] = set()
+        if comparison_candidate_ids:
+            review_candidate_ids = set(
+                (
+                    await self.session.execute(
+                        select(MemoryCandidateEvidenceRow.candidate_id)
+                        .join(TurnRow, TurnRow.id == MemoryCandidateEvidenceRow.turn_id)
+                        .join(TranscriptRow, TranscriptRow.id == TurnRow.transcript_id)
+                        .where(
+                            MemoryCandidateEvidenceRow.candidate_id.in_(comparison_candidate_ids),
+                            TranscriptRow.kind == "memory_review",
+                        )
+                        .distinct()
+                    )
+                ).scalars()
+            )
+        eligible_comparisons = [
+            row for row in comparison_rows if row.id not in review_candidate_ids
+        ]
+        agree_count = sum(1 for row in eligible_comparisons if row.verdict == "agree")
+        disagree_count = len(eligible_comparisons) - agree_count
+        known_model_pairs = [
+            row for row in eligible_comparisons if row.proposer_model and row.verifier_model
+        ]
+        same_model_count = sum(
+            1 for row in known_model_pairs if row.proposer_model == row.verifier_model
+        )
+        proposal_verifier = {
+            "eligible": len(eligible_comparisons),
+            "agree": agree_count,
+            "disagree": disagree_count,
+            "disagreement_rate": (
+                disagree_count / len(eligible_comparisons) if eligible_comparisons else None
+            ),
+            "review_excluded": len(comparison_rows) - len(eligible_comparisons),
+            "same_model": same_model_count,
+            "cross_model": len(known_model_pairs) - same_model_count,
+            "unknown_model_pair": len(eligible_comparisons) - len(known_model_pairs),
+        }
+
         candidates = list(
             (
                 await self.session.execute(
@@ -326,6 +391,7 @@ class MemoryObservabilityService:
                 "memory_counts": memory_counts,
                 "authority_counts": authority_counts,
                 "grounding_counts": grounding_counts,
+                "proposal_verifier": proposal_verifier,
                 "last_attempt": _attempt_projection(latest_attempt) if latest_attempt else None,
             },
             "recent_candidates": [

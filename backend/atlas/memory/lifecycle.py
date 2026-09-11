@@ -489,8 +489,12 @@ class MemoryLifecycleCommands:
                     ).scalar_one_or_none()
 
             affected_memory_ids: set[UUID] = set()
+            preserved_memory_ids: set[UUID] = set()
             if target is not None:
-                affected_memory_ids = await self._memory_descendants(session, {target.id})
+                affected_memory_ids, preserved = await self._memory_descendants(
+                    session, {target.id}, never_preserve={target.id}
+                )
+                preserved_memory_ids.update(preserved)
             affected_rows = []
             if affected_memory_ids:
                 affected_rows = list((await session.execute(
@@ -585,9 +589,19 @@ class MemoryLifecycleCommands:
                     ).scalars()
                 )
                 affected_memory_ids.update(directly_sourced | provenance_sourced)
-            affected_memory_ids = await self._dependent_memory_closure(
-                session, affected_memory_ids, candidate_ids
+            affected_memory_ids, preserved = await self._dependent_memory_closure(
+                session, affected_memory_ids, candidate_ids,
+                never_preserve=({target.id} if target is not None else set()),
             )
+            preserved_memory_ids.update(preserved)
+            if preserved_memory_ids:
+                await self._detach_purged_dependencies(
+                    session,
+                    preserved_memory_ids,
+                    purged_turn_ids=redacted_turn_ids,
+                    invalidated_candidate_ids=candidate_ids,
+                    deleted_memory_ids=affected_memory_ids,
+                )
             affected_rows = list((await session.execute(
                 select(DurableMemoryRow).where(DurableMemoryRow.id.in_(affected_memory_ids))
             )).scalars()) if affected_memory_ids else []
@@ -638,6 +652,7 @@ class MemoryLifecycleCommands:
                 "memory_ids": sorted(str(item) for item in affected_memory_ids),
                 "turn_ids": sorted(str(item) for item in all_redacted_turn_ids),
                 "candidate_ids": sorted(str(item) for item in candidate_ids),
+                "preserved_memory_ids": sorted(str(item) for item in preserved_memory_ids),
                 "memory_count": len(affected_memory_ids),
                 "turn_count": len(all_redacted_turn_ids),
                 "candidate_count": len(candidate_ids),
@@ -1217,36 +1232,81 @@ class MemoryLifecycleCommands:
                     obligation.resolved_at = None
             await session.commit()
 
-    async def _memory_descendants(
-        self, session: AsyncSession, initial: set[UUID]
+    async def _independent_owner_grounded_ids(
+        self,
+        session: AsyncSession,
+        memory_ids: set[UUID],
+        *,
+        never_preserve: set[UUID],
     ) -> set[UUID]:
+        eligible = memory_ids - never_preserve
+        if not eligible:
+            return set()
+        rows = list((await session.execute(
+            select(DurableMemoryRow).where(
+                DurableMemoryRow.id.in_(eligible),
+                DurableMemoryRow.status != DELETED,
+                DurableMemoryRow.grounding_status == "verified",
+                DurableMemoryRow.owner_assertion_turn_id.is_not(None),
+            )
+        )).scalars())
+        assertion_ids = {
+            row.owner_assertion_turn_id for row in rows
+            if row.owner_assertion_turn_id is not None
+        }
+        if not assertion_ids:
+            return set()
+        live_assertions = set((await session.execute(
+            select(TurnRow.id).where(
+                TurnRow.id.in_(assertion_ids),
+                TurnRow.deleted_at.is_(None),
+            )
+        )).scalars())
+        return {
+            row.id for row in rows
+            if row.owner_assertion_turn_id in live_assertions
+        }
+
+    async def _memory_descendants(
+        self, session: AsyncSession, initial: set[UUID], *, never_preserve: set[UUID]
+    ) -> tuple[set[UUID], set[UUID]]:
         seen = set(initial)
+        preserved: set[UUID] = set()
         queue = deque(initial)
         while queue:
             batch = []
             while queue and len(batch) < 100:
                 batch.append(queue.popleft())
-            rows = list((await session.execute(
+            candidate_ids = set((await session.execute(
                 select(MemoryProvenanceRow.memory_id).where(
                     MemoryProvenanceRow.source_memory_id.in_(batch)
                 )
-            )).scalars())
-            for memory_id in rows:
-                if memory_id not in seen:
-                    if len(seen) >= 1_000:
-                        raise ValueError("memory dependency graph exceeds deletion safety bound")
-                    seen.add(memory_id)
-                    queue.append(memory_id)
-        return seen
+            )).scalars()) - seen - preserved
+            barriers = await self._independent_owner_grounded_ids(
+                session, candidate_ids, never_preserve=never_preserve
+            )
+            preserved.update(barriers)
+            for memory_id in candidate_ids - barriers:
+                if len(seen) >= 1_000:
+                    raise ValueError("memory dependency graph exceeds deletion safety bound")
+                seen.add(memory_id)
+                queue.append(memory_id)
+        return seen, preserved
 
     async def _dependent_memory_closure(
         self,
         session: AsyncSession,
         memory_ids: set[UUID],
         candidate_ids: set[UUID],
-    ) -> set[UUID]:
-        seen = set(memory_ids)
-        frontier_memories = set(memory_ids)
+        *,
+        never_preserve: set[UUID],
+    ) -> tuple[set[UUID], set[UUID]]:
+        initial_barriers = await self._independent_owner_grounded_ids(
+            session, memory_ids, never_preserve=never_preserve
+        )
+        seen = set(memory_ids) - initial_barriers
+        preserved = set(initial_barriers)
+        frontier_memories = set(seen)
         frontier_candidates = set(candidate_ids)
         while frontier_memories or frontier_candidates:
             conditions = []
@@ -1256,11 +1316,15 @@ class MemoryLifecycleCommands:
                 conditions.append(MemoryProvenanceRow.source_candidate_id.in_(frontier_candidates))
             if not conditions:
                 break
-            from sqlalchemy import or_
             rows = list((await session.execute(
                 select(MemoryProvenanceRow).where(or_(*conditions))
             )).scalars())
-            new_memories = {row.memory_id for row in rows} - seen
+            new_memories = {row.memory_id for row in rows} - seen - preserved
+            barriers = await self._independent_owner_grounded_ids(
+                session, new_memories, never_preserve=never_preserve
+            )
+            preserved.update(barriers)
+            new_memories -= barriers
             if len(seen) + len(new_memories) > 1_000:
                 raise ValueError("memory dependency graph exceeds deletion safety bound")
             seen.update(new_memories)
@@ -1269,7 +1333,67 @@ class MemoryLifecycleCommands:
                 row.source_candidate_id for row in rows
                 if row.source_candidate_id is not None and row.memory_id in new_memories
             }
-        return seen
+        return seen, preserved
+
+    async def _detach_purged_dependencies(
+        self,
+        session: AsyncSession,
+        memory_ids: set[UUID],
+        *,
+        purged_turn_ids: set[UUID],
+        invalidated_candidate_ids: set[UUID],
+        deleted_memory_ids: set[UUID],
+    ) -> None:
+        if not memory_ids:
+            return
+        rows = list((await session.execute(
+            select(DurableMemoryRow).where(DurableMemoryRow.id.in_(memory_ids))
+        )).scalars())
+        assertion_turn_ids = {
+            row.owner_assertion_turn_id for row in rows
+            if row.owner_assertion_turn_id is not None
+        }
+        assertion_turns = {}
+        if assertion_turn_ids:
+            assertion_turns = {
+                row.id: row for row in (await session.execute(
+                    select(TurnRow).where(TurnRow.id.in_(assertion_turn_ids))
+                )).scalars()
+            }
+        invalid_reconciliation_ids: set[UUID] = set()
+        if invalidated_candidate_ids:
+            invalid_reconciliation_ids = set((await session.execute(
+                select(MemoryReconciliationRecordRow.id).where(
+                    MemoryReconciliationRecordRow.candidate_id.in_(invalidated_candidate_ids)
+                )
+            )).scalars())
+        for row in rows:
+            assertion = assertion_turns.get(row.owner_assertion_turn_id)
+            if assertion is None or assertion.deleted_at is not None:
+                continue
+            if row.source_turn_id in purged_turn_ids:
+                row.source_turn_id = assertion.id
+                row.source_transcript_id = assertion.transcript_id
+            if row.verification_record_id in invalid_reconciliation_ids:
+                row.verification_record_id = None
+            row.updated_at = utcnow()
+
+        conditions = []
+        if purged_turn_ids:
+            conditions.append(MemoryProvenanceRow.source_turn_id.in_(purged_turn_ids))
+        if invalidated_candidate_ids:
+            conditions.append(
+                MemoryProvenanceRow.source_candidate_id.in_(invalidated_candidate_ids)
+            )
+        if deleted_memory_ids:
+            conditions.append(MemoryProvenanceRow.source_memory_id.in_(deleted_memory_ids))
+        if conditions:
+            await session.execute(
+                delete(MemoryProvenanceRow).where(
+                    MemoryProvenanceRow.memory_id.in_(memory_ids),
+                    or_(*conditions),
+                )
+            )
 
     async def _redact_source_turns(
         self,

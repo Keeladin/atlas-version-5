@@ -95,3 +95,73 @@ async def test_25a13_marks_all_existing_memories_unverified_and_downgrades(pg_fa
         }
         assert 'grounding_status' not in columns
         assert 'origin' not in columns
+
+
+@pytest.mark.asyncio
+async def test_25a13_downgrade_refuses_after_review_resolution(pg_factory):
+    engine = pg_factory.kw["bind"]
+    async with engine.begin() as connection:
+        schema = (await connection.execute(text("SELECT current_schema()"))).scalar_one()
+        await connection.run_sync(Base.metadata.drop_all)
+    env = {
+        **os.environ,
+        "ATLAS_DATABASE_URL": os.environ["ATLAS_TEST_DATABASE_URL"],
+        "PGOPTIONS": f"-csearch_path={schema},public",
+        "PYTHONPATH": str(Path.cwd() / "backend"),
+    }
+    env.pop("ATLAS_DATABASE_URL_FILE", None)
+
+    async def migrate(*args: str, expect_ok: bool = True) -> subprocess.CompletedProcess[str]:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, "-m", "alembic", *args],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if expect_ok:
+            assert result.returncode == 0, result.stdout + result.stderr
+        return result
+
+    await migrate("upgrade", "25a12")
+    memory_id = uuid4()
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "INSERT INTO durable_memories "
+                "(id,status,record_kind,content,fingerprint,suppresses_recall,scope,durability) "
+                "VALUES (:id,'active','owner_directed','legacy owner row','legacy-owner-fp',false,'cross_chat','long_term')"
+            ),
+            {"id": memory_id},
+        )
+    await migrate("upgrade", "25a13")
+    async with engine.begin() as connection:
+        review_id = (await connection.execute(
+            text(
+                "SELECT id FROM memory_obligations "
+                "WHERE kind='memory_review' AND subject_id=:id"
+            ),
+            {"id": memory_id},
+        )).scalar_one()
+        await connection.execute(
+            text(
+                "UPDATE memory_obligations SET status='resolved', "
+                "resolution_code='confirmed', resolved_at=now() WHERE id=:id"
+            ),
+            {"id": review_id},
+        )
+
+    result = await migrate("downgrade", "25a12", expect_ok=False)
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "downgrade refused" in combined
+
+    async with engine.begin() as connection:
+        current = (await connection.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
+        assert current == "25a13"
+        row = (await connection.execute(
+            text("SELECT grounding_status, origin FROM durable_memories WHERE id=:id"),
+            {"id": memory_id},
+        )).one()
+        assert row.grounding_status == "legacy_unverified"
+        assert row.origin == "legacy_pre25a13"

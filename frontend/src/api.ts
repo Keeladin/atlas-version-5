@@ -616,6 +616,16 @@ export type MemoryObservability = {
     candidate_counts: Record<string, number>
     memory_counts: Record<string, number>
     authority_counts: { owner: number; derived: number }
+    proposal_verifier: {
+      eligible: number
+      agree: number
+      disagree: number
+      disagreement_rate: number | null
+      review_excluded: number
+      same_model: number
+      cross_model: number
+      unknown_model_pair: number
+    }
     last_attempt: MemoryReconciliationAttempt | null
   }
   recent_candidates: MemoryCandidate[]

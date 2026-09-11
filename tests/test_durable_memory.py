@@ -16,6 +16,7 @@ from atlas.persistence.models import (
     MemoryCandidateRow,
     MemoryCommandRow,
     MemoryDeletionReceiptRow,
+    MemoryProvenanceRow,
     SharedResourceVersionRow,
     SharedWriteOperationRow,
     TranscriptIndexChunkRow,
@@ -612,3 +613,89 @@ async def test_id_selected_lifecycle_mutation_suppresses_old_context(pg_factory,
         arguments["content"] = "The replacement signal is ORBIT-20."
     result = await getattr(service, operation)(arguments)
     assert result["_context_suppression"]["contents"] == [phrase]
+
+
+@pytest.mark.asyncio
+async def test_owner_assertion_is_path_sensitive_purge_barrier(pg_factory) -> None:
+    service = MemoryService(pg_factory)
+    assertion_text = "Jaco confirms the independently grounded preference."
+    async with pg_factory() as session:
+        review = TranscriptRow(
+            kind="memory_review", retention_policy="dependency_protected",
+            next_turn_sequence=1, content_revision=1,
+        )
+        session.add(review)
+        await session.flush()
+        assertion = TurnRow(
+            transcript_id=review.id, sequence=1, actor="owner",
+            blocks=[{"type": "text", "text": assertion_text}],
+        )
+        session.add(assertion)
+        await session.flush()
+
+        root = DurableMemoryRow(
+            status="active", record_kind="derived", origin="import",
+            grounding_status="legacy_unverified", scope="cross_chat",
+            durability="long_term", content="Imported root", fingerprint="a" * 64,
+            suppresses_recall=False,
+        )
+        barrier = DurableMemoryRow(
+            status="active", record_kind="derived", origin="owner_review_confirmation",
+            grounding_status="verified", owner_assertion_turn_id=assertion.id,
+            source_transcript_id=review.id, source_turn_id=assertion.id,
+            scope="cross_chat", durability="long_term",
+            content=assertion_text, fingerprint="b" * 64, suppresses_recall=False,
+        )
+        alternate = DurableMemoryRow(
+            status="active", record_kind="derived", origin="import",
+            grounding_status="legacy_unverified", scope="cross_chat",
+            durability="long_term", content="Alternate imported branch",
+            fingerprint="c" * 64, suppresses_recall=False,
+        )
+        downstream = DurableMemoryRow(
+            status="active", record_kind="derived", origin="derived",
+            grounding_status="legacy_unverified", scope="cross_chat",
+            durability="long_term", content="Downstream conclusion",
+            fingerprint="d" * 64, suppresses_recall=False,
+        )
+        session.add_all([root, barrier, alternate, downstream])
+        await session.flush()
+        session.add_all([
+            MemoryProvenanceRow(
+                memory_id=barrier.id, relationship="derived_from", source_memory_id=root.id
+            ),
+            MemoryProvenanceRow(
+                memory_id=alternate.id, relationship="derived_from", source_memory_id=root.id
+            ),
+            MemoryProvenanceRow(
+                memory_id=downstream.id, relationship="derived_from", source_memory_id=barrier.id
+            ),
+            MemoryProvenanceRow(
+                memory_id=downstream.id, relationship="derived_from", source_memory_id=alternate.id
+            ),
+        ])
+        await session.commit()
+        ids = root.id, barrier.id, alternate.id, downstream.id
+
+    result = await service.delete({"memory_id": str(ids[0]), "scope": "memory_only"})
+    assert str(ids[1]) in result["affected"]["preserved_memory_ids"]
+
+    async with pg_factory() as session:
+        root, barrier, alternate, downstream = [
+            await session.get(DurableMemoryRow, memory_id) for memory_id in ids
+        ]
+        assert root.status == "deleted"
+        assert barrier.status == "active"
+        assert alternate.status == "deleted"
+        # The barrier blocks root -> barrier -> downstream, but the independent
+        # root -> alternate -> downstream route still makes downstream purgeable.
+        assert downstream.status == "deleted"
+        obsolete_edge_count = (await session.execute(
+            select(func.count()).select_from(MemoryProvenanceRow).where(
+                MemoryProvenanceRow.memory_id == barrier.id,
+                MemoryProvenanceRow.source_memory_id == ids[0],
+            )
+        )).scalar_one()
+        assert obsolete_edge_count == 0
+        assertion_turn = await session.get(TurnRow, barrier.owner_assertion_turn_id)
+        assert assertion_turn is not None and assertion_turn.deleted_at is None
