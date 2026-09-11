@@ -79,6 +79,7 @@ def _candidate_projection(
         "evidence": row.evidence,
         "proposer_model": row.proposer_model,
         "intake_path": row.intake_path,
+        "origin": row.origin,
         "attempt_count": int(row.attempt_count or 0),
         "decision": row.decision_json or {},
         "review_after": row.review_after,
