@@ -148,6 +148,12 @@ class DurableMemoryRow(Base):
         ),
         Index("ix_durable_memories_search_vector", "search_vector", postgresql_using="gin"),
         Index(
+            "uq_durable_memories_originating_candidate_id",
+            "originating_candidate_id",
+            unique=True,
+            postgresql_where=text("originating_candidate_id IS NOT NULL"),
+        ),
+        Index(
             "ix_durable_memories_embedding_cosine",
             "embedding",
             postgresql_using="hnsw",
@@ -191,6 +197,14 @@ class DurableMemoryRow(Base):
     )
     owner_assertion_turn_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("turns.id", ondelete="RESTRICT"), index=True
+    )
+    originating_candidate_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "memory_candidates.id",
+            name="fk_durable_memories_originating_candidate",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
     )
     memory_kind: Mapped[str | None] = mapped_column(String(32), index=True)
     scope: Mapped[str] = mapped_column(String(32), default="cross_chat", server_default="cross_chat", index=True)
@@ -427,6 +441,7 @@ class MemoryIndependentReadingRow(Base):
     category: Mapped[str | None] = mapped_column(String(64), index=True)
     scope: Mapped[str | None] = mapped_column(String(32), index=True)
     durability: Mapped[str | None] = mapped_column(String(32), index=True)
+    claim_principal: Mapped[str | None] = mapped_column(String(32), index=True)
     event_valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     event_valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     verifier_model: Mapped[str | None] = mapped_column(String(128))

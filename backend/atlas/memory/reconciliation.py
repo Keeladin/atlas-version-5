@@ -44,7 +44,12 @@ from .durable import (
     memory_fingerprint,
     utcnow,
 )
-from .state_machine import PublicationBucket, PublicationOutcome
+from .explicit import settle_explicit_obligation
+from .state_machine import (
+    PublicationBucket,
+    PublicationOutcome,
+    PublicationTerminality,
+)
 
 _MEMORY_RESOURCE_TYPE = "memory_state"
 _MEMORY_RESOURCE_ID = "owner"
@@ -122,6 +127,7 @@ class IndependentReading(BaseModel):
     category: str | None = Field(default=None, max_length=64)
     scope: Literal["chat", "project", "cross_chat"] | None = None
     durability: Literal["short_term", "long_term"] | None = None
+    claim_principal: Literal["owner", "external", "mixed", "unknown"] | None = None
     event_valid_from: datetime | None = None
     event_valid_to: datetime | None = None
 
@@ -355,6 +361,9 @@ class MemoryCandidateLeaseRepository:
                 row.leased_until = None
                 row.review_after = None
                 row.decision_json = {"decision": "expired"}
+                await settle_explicit_obligation(
+                    session, row, now=now, code="retention_expired"
+                )
 
             exhausted = list(
                 (
@@ -388,6 +397,9 @@ class MemoryCandidateLeaseRepository:
                     "decision": "failed",
                     "code": "attempt_limit",
                 }
+                await settle_explicit_obligation(
+                    session, row, now=now, code="attempt_limit"
+                )
 
             eligible = or_(
                 and_(
@@ -445,6 +457,9 @@ class MemoryCandidateLeaseRepository:
                         "decision": "invalidated",
                         "code": "evidence_unavailable",
                     }
+                    await settle_explicit_obligation(
+                        session, row, now=now, code="evidence_unavailable"
+                    )
                     continue
                 if row.status == "leased":
                     await self._close_stale_attempts(
@@ -529,6 +544,9 @@ class MemoryCandidateLeaseRepository:
                         "decision": "expired",
                         "code": "owner_confirmation_expired",
                     }
+                    await settle_explicit_obligation(
+                        session, candidate, now=now, code="owner_confirmation_expired"
+                    )
             elif obligation.subject_type == "memory_conflict" and obligation.subject_id:
                 conflict = await session.get(MemoryConflictRow, obligation.subject_id)
                 if conflict is not None and conflict.status == "open":
@@ -544,6 +562,9 @@ class MemoryCandidateLeaseRepository:
                             "code": "owner_confirmation_expired",
                             "conflict_id": str(conflict.id),
                         }
+                        await settle_explicit_obligation(
+                            session, candidate, now=now, code="owner_confirmation_expired"
+                        )
         return len(obligations)
 
     @staticmethod
@@ -1188,6 +1209,7 @@ class DerivedMemoryPublisher:
                     grounding_status="verified",
                     verification_record_id=verification_record_id,
                     owner_assertion_turn_id=owner_assertion_turn_id,
+                    originating_candidate_id=candidate.id,
                     origin="conversation_verification",
                     memory_kind=classification["memory_kind"],
                     scope=classification["scope"],
@@ -1248,6 +1270,7 @@ class DerivedMemoryPublisher:
                     grounding_status="verified",
                     verification_record_id=verification_record_id,
                     owner_assertion_turn_id=owner_assertion_turn_id,
+                    originating_candidate_id=candidate.id,
                     **classification,
                 )
                 if not created or memory.record_kind != "derived":
@@ -1311,6 +1334,7 @@ class DerivedMemoryPublisher:
                 grounding_status="verified",
                 verification_record_id=verification_record_id,
                 owner_assertion_turn_id=owner_assertion_turn_id,
+                originating_candidate_id=candidate.id,
                 **classification,
             )
             if not created or replacement.id == target.id:
@@ -1351,7 +1375,34 @@ class DerivedMemoryPublisher:
                 }
             )
 
-        return await self.writer.execute(envelope, mutate)
+        async def mutate_and_settle(
+            session: AsyncSession, current_version: int
+        ) -> SharedWriteMutation:
+            outcome = await mutate(session, current_version)
+            result = dict(outcome.result or {})
+            try:
+                terminality = PublicationOutcome(str(result.get("result"))).terminality
+            except ValueError:
+                return outcome
+            if terminality not in {
+                PublicationTerminality.TERMINAL_SUCCESS,
+                PublicationTerminality.TERMINAL_FAILURE,
+            }:
+                return outcome
+            candidate = await session.get(MemoryCandidateRow, claim.candidate_id)
+            if candidate is None:
+                return outcome
+            memory_raw = result.get("memory_id") or result.get("replacement_memory_id")
+            await settle_explicit_obligation(
+                session,
+                candidate,
+                now=utcnow(),
+                memory_id=UUID(str(memory_raw)) if memory_raw else None,
+                code=(str(result.get("code")) if result.get("code") else None),
+            )
+            return outcome
+
+        return await self.writer.execute(envelope, mutate_and_settle)
 
     @staticmethod
     async def _live_evidence_rows(
@@ -1938,9 +1989,15 @@ class MemoryReconciliationService:
             "no memory-worthy claim, return an empty extracted_claims list and null category, "
             "scope, durability, and event times. event_valid_from/event_valid_to are semantic "
             "event times, not database write times; use recorded_at only when the statement "
-            "itself establishes a current state at that observation. Return exactly one JSON "
-            "object with keys extracted_claims, category, scope, durability, event_valid_from, "
-            "event_valid_to. No proposal comparison, policy judgment, or markdown."
+            "itself establishes a current state at that observation. For the supported claim set, "
+            "also classify claim_principal as owner when the claim "
+            "is directly asserted by owner-principal evidence, external when its authority comes "
+            "from a tool/document/third-party source even if the owner asks Atlas to remember it, "
+            "mixed when both are materially required, or unknown when authority cannot be resolved. "
+            "Do not treat an owner's storage request as evidence that an external claim is an owner fact. "
+            "Return exactly one JSON object with keys extracted_claims, category, scope, durability, "
+            "claim_principal, event_valid_from, event_valid_to. No proposal comparison, policy judgment, "
+            "or markdown."
         )
         raw = await self.model.complete_text(
             instructions=instructions,
@@ -1983,6 +2040,7 @@ class MemoryReconciliationService:
                 category=reading.category,
                 scope=reading.scope,
                 durability=reading.durability,
+                claim_principal=reading.claim_principal,
                 event_valid_from=reading.event_valid_from,
                 event_valid_to=reading.event_valid_to,
                 verifier_model=str(getattr(self.model, "model", "") or "") or None,
@@ -2114,6 +2172,7 @@ class MemoryReconciliationService:
                 category=reading_row.category,
                 scope=reading_row.scope,
                 durability=reading_row.durability,
+                claim_principal=reading_row.claim_principal,
                 event_valid_from=reading_row.event_valid_from,
                 event_valid_to=reading_row.event_valid_to,
             )
@@ -2467,6 +2526,17 @@ class MemoryReconciliationService:
         if scope == "project":
             return "block", "project_identity_unresolved"
         origin = str(snapshot.candidate.get("origin") or "conversation")
+        explicit_intent = origin in {"explicit_owner_request", "explicit_owner_correction"}
+        if explicit_intent:
+            # Storage intent is not evidence authority. An explicit request may waive
+            # the redundant confirmation step only when the blind reader says the
+            # supported claim itself is owner-principal. External/mixed claims still
+            # require review, and earlier hard policy blocks remain authoritative.
+            if reading.claim_principal == "owner":
+                return "allow", "explicit_owner_storage_intent"
+            if bool(snapshot.candidate.get("owner_confirmation_granted")):
+                return "allow", "owner_confirmed_external_claim"
+            return "require_owner_confirmation", "explicit_intent_external_claim"
         if origin not in {"conversation", "owner_statement", "sweep"}:
             if bool(snapshot.candidate.get("owner_confirmation_granted")):
                 return "allow", "owner_confirmed_import"
@@ -2584,6 +2654,7 @@ class MemoryReconciliationService:
             attempt.completed_at = now
             attempt.semantic_decision = "discard"
             attempt.result_json = {"result": "discarded", "code": code}
+            await settle_explicit_obligation(session, candidate, now=now, code=code)
 
     async def _finish_policy_block(
         self, claim: CandidateLease, code: str
@@ -2600,6 +2671,7 @@ class MemoryReconciliationService:
             attempt.status = "committed"
             attempt.completed_at = now
             attempt.result_json = {"result": "blocked", "code": code}
+            await settle_explicit_obligation(session, candidate, now=now, code=code)
 
     async def _requeue_after_version_conflict(
         self, claim: CandidateLease, snapshot: EvaluationSnapshot
@@ -2675,7 +2747,7 @@ class MemoryReconciliationService:
                 attempt.status = code
                 attempt.completed_at = utcnow()
                 attempt.result_json = {"result": code}
-                self._requeue_or_fail(candidate)
+                await self._requeue_or_fail(session, candidate)
 
     async def _release_failed(
         self, claim: CandidateLease, *, code: str
@@ -2701,19 +2773,32 @@ class MemoryReconciliationService:
             attempt.error = code
             attempt.completed_at = utcnow()
             attempt.result_json = {"result": "failed", "code": code}
-            self._requeue_or_fail(candidate)
+            await self._requeue_or_fail(session, candidate, code=code)
 
-    def _requeue_or_fail(self, candidate: MemoryCandidateRow) -> None:
+    async def _requeue_or_fail(
+        self,
+        session: AsyncSession,
+        candidate: MemoryCandidateRow,
+        *,
+        code: str | None = None,
+    ) -> None:
         candidate.lease_token = None
         candidate.leased_until = None
         if int(candidate.attempt_count or 0) >= self.max_attempts:
+            now = utcnow()
             candidate.status = "failed"
-            candidate.processed_at = utcnow()
+            candidate.processed_at = now
             candidate.decision_json = {
                 "decision": "failed",
                 "code": "attempt_limit",
+                **({"last_error": code} if code else {}),
             }
+            await settle_explicit_obligation(
+                session, candidate, now=now, code=(code or "attempt_limit")
+            )
         else:
+            # Automatic retry: the candidate returns to the queue and any
+            # explicit owner obligation stays pending untouched.
             candidate.status = "pending"
 
     @staticmethod

@@ -9,6 +9,7 @@ from atlas.memory.durable import (
     MemoryMutationError,
 )
 from atlas.memory.indexer import TranscriptIndexer
+from atlas.memory.reconciliation import MemoryReconciliationService
 from atlas.memory.service import MemoryService
 from atlas.persistence.models import (
     ContinuityCapsuleRow,
@@ -16,6 +17,7 @@ from atlas.persistence.models import (
     MemoryCandidateRow,
     MemoryCommandRow,
     MemoryDeletionReceiptRow,
+    MemoryObligationRow,
     MemoryProvenanceRow,
     SharedResourceVersionRow,
     SharedWriteOperationRow,
@@ -25,6 +27,22 @@ from atlas.persistence.models import (
     TurnRow,
 )
 from sqlalchemy import func, select
+from test_memory_explicit_commands import _OwnerClaimModel
+
+
+async def _publish(pg_factory, queued: dict) -> str:
+    """Drive a queued explicit remember/correct through verification and publication."""
+    assert queued["status"] == "queued", queued
+    result = await MemoryReconciliationService(
+        pg_factory, _OwnerClaimModel(pg_factory), lease_seconds=30, max_attempts=3
+    ).run_once()
+    assert result.reconciled == 1, result
+    async with pg_factory() as session:
+        obligation = await session.get(MemoryObligationRow, UUID(queued["obligation_id"]))
+        assert obligation is not None
+        assert obligation.status == "resolved"
+        assert obligation.resolution_code == "published"
+        return str(obligation.resolution_json["memory_id"])
 
 
 class _MemoryEmbeddingClient:
@@ -93,20 +111,23 @@ async def test_remember_is_durable_idempotent_and_owner_sourced(pg_factory) -> N
     service = MemoryService(pg_factory)
 
     first = await service.remember({"content": "My workshop bird is a starling."})
+    assert first["status"] == "queued"
+    assert "memory" not in first
+    first_id = await _publish(pg_factory, first)
     second = await service.remember({"content": "  my workshop bird is a STARLING.  "})
-
-    assert first["status"] == "applied"
-    assert first["result"] == "created"
-    assert second["status"] == "applied"
-    assert second["result"] == "already_active"
-    assert first["memory"]["memory_id"] == second["memory"]["memory_id"]
-    assert first["memory"]["source_turn_id"] == str(owner_turn_id)
+    second_id = await _publish(pg_factory, second)
+    assert first_id == second_id
 
     async with pg_factory() as session:
+        memory = await session.get(DurableMemoryRow, UUID(first_id))
+        assert memory is not None
+        assert memory.source_turn_id == owner_turn_id
         memories = (await session.execute(select(func.count()).select_from(DurableMemoryRow))).scalar_one()
-        commands = (await session.execute(select(func.count()).select_from(MemoryCommandRow))).scalar_one()
+        commands = list((await session.execute(select(MemoryCommandRow))).scalars())
         assert memories == 1
-        assert commands == 2
+        assert len(commands) == 2
+        assert {row.status for row in commands} == {"applied"}
+        assert {str(row.replacement_memory_id) for row in commands} == {first_id}
 
 
 @pytest.mark.asyncio
@@ -151,8 +172,9 @@ async def test_retire_legacy_phrase_preserves_transcript_but_blocks_recall(pg_fa
 async def test_re_remember_after_retire_clears_suppression(pg_factory) -> None:
     await _seed_transcript(pg_factory, "Remember that the signal phrase is roses are red.")
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": "The signal phrase is roses are red."})
-    memory_id = remembered["memory"]["memory_id"]
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": "The signal phrase is roses are red."})
+    )
 
     retired = await service.retire({"memory_id": memory_id})
     assert retired["result"] == "retired"
@@ -182,8 +204,8 @@ async def test_legacy_correction_supersedes_old_transcript_recall(pg_factory) ->
     service = MemoryService(pg_factory, embedder=_MemoryEmbeddingClient())
 
     corrected = await service.correct({"old_content": old, "content": new})
-    assert corrected["status"] == "applied"
-    assert corrected["memory"]["content"] == new
+    assert corrected["status"] == "queued"
+    new_id = await _publish(pg_factory, corrected)
 
     searched = await service.search({"query": "preferred bird", "limit": 5})
     assert searched["durable_memories"][0]["content"] == new
@@ -198,7 +220,7 @@ async def test_legacy_correction_supersedes_old_transcript_recall(pg_factory) ->
         assert guard.status == SUPERSEDED
         assert guard.suppresses_recall is True
         assert replacement.status == "active"
-        assert replacement.supersedes_id == guard.id
+        assert str(replacement.id) == new_id
 
 
 @pytest.mark.asyncio
@@ -221,7 +243,9 @@ async def test_failed_memory_command_is_auditable(pg_factory) -> None:
 async def test_durable_memory_embeddings_join_background_maintenance(pg_factory) -> None:
     await _seed_transcript(pg_factory, "Remember my preferred bird.")
     service = MemoryService(pg_factory, embedder=_MemoryEmbeddingClient())
-    remembered = await service.remember({"content": "My preferred bird is a starling."})
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": "My preferred bird is a starling."})
+    )
 
     maintenance = await service.index_once(active_tail_exchanges=10)
     assert maintenance["embedding_status"] == "ready"
@@ -231,7 +255,7 @@ async def test_durable_memory_embeddings_join_background_maintenance(pg_factory)
     searched = await service.search({"query": "feathered companion", "limit": 5})
     assert searched["durable_memories"]
     item = searched["durable_memories"][0]
-    assert item["memory_id"] == remembered["memory"]["memory_id"]
+    assert item["memory_id"] == memory_id
     assert item["lexical_rank"] is None
     assert "semantic" in item["retrieval_sources"]
     assert float(item["semantic_similarity"]) > 0.99
@@ -244,8 +268,9 @@ async def test_durable_memory_embeddings_join_background_maintenance(pg_factory)
 async def test_retirement_clears_vector_and_does_not_reembed_guard(pg_factory) -> None:
     await _seed_transcript(pg_factory, "Remember my temporary bird preference.")
     service = MemoryService(pg_factory, embedder=_MemoryEmbeddingClient())
-    remembered = await service.remember({"content": "My temporary bird is a starling."})
-    memory_id = UUID(remembered["memory"]["memory_id"])
+    memory_id = UUID(await _publish(
+        pg_factory, await service.remember({"content": "My temporary bird is a starling."})
+    ))
 
     first = await service.index_once(active_tail_exchanges=10)
     assert first["durable_memories_embedded"] == 1
@@ -326,8 +351,10 @@ async def test_retire_invalidates_derived_continuity_capsules(pg_factory) -> Non
 async def test_re_remember_invalidates_capsules_after_clearing_retirement_guard(pg_factory) -> None:
     transcript_id, _ = await _seed_transcript(pg_factory, "Remember the temporary continuity detail.")
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": "The temporary continuity detail."})
-    await service.retire({"memory_id": remembered["memory"]["memory_id"]})
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": "The temporary continuity detail."})
+    )
+    await service.retire({"memory_id": memory_id})
 
     async with pg_factory() as session:
         session.add(ContinuityCapsuleRow(
@@ -336,7 +363,7 @@ async def test_re_remember_invalidates_capsules_after_clearing_retirement_guard(
         ))
         await session.commit()
 
-    await service.restore({"memory_id": remembered["memory"]["memory_id"]})
+    await service.restore({"memory_id": memory_id})
 
     async with pg_factory() as session:
         assert (await session.execute(
@@ -355,8 +382,9 @@ async def test_delete_removes_live_payload_preserves_identity_and_rebuilds_redac
     )
     await _index_all(pg_factory)
     service = MemoryService(pg_factory, embedder=_MemoryEmbeddingClient())
-    remembered = await service.remember({"content": content, "kind": "fact"})
-    memory_id = remembered["memory"]["memory_id"]
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": content, "kind": "fact"})
+    )
     await service.index_once(active_tail_exchanges=10)
 
     async with pg_factory() as session:
@@ -435,11 +463,18 @@ async def test_delete_removes_live_payload_preserves_identity_and_rebuilds_redac
         assert "[Content deleted by owner]" in rendered
         assert "Torque note remains 420 Nm." in rendered
 
-        candidate = (await session.execute(select(MemoryCandidateRow))).scalar_one()
-        assert candidate.status == "invalidated"
-        assert candidate.content is None
-        assert candidate.fingerprint is None
-        assert candidate.evidence is None
+        candidates = list((await session.execute(select(MemoryCandidateRow))).scalars())
+        assert len(candidates) == 2
+        for candidate in candidates:
+            assert candidate.status == "invalidated"
+            assert candidate.content is None
+            assert candidate.fingerprint is None
+            assert candidate.evidence is None
+        obligation = (await session.execute(
+            select(MemoryObligationRow).where(MemoryObligationRow.kind == "explicit_remember")
+        )).scalar_one()
+        assert obligation.status == "resolved"
+        assert content not in str(obligation.resolution_json)
         evidence_turn = await session.get(TurnRow, provider_evidence_id)
         assert evidence_turn is not None
         assert "starling" not in str(evidence_turn.blocks).casefold()
@@ -474,9 +509,8 @@ async def test_delete_removes_live_payload_preserves_identity_and_rebuilds_redac
     await _append_owner_turn(
         pg_factory, transcript_id, f"Remember it again: {content}"
     )
-    reintroduced = await service.remember({"content": content})
-    assert reintroduced["result"] == "created"
-    assert reintroduced["memory"]["memory_id"] != memory_id
+    reintroduced_id = await _publish(pg_factory, await service.remember({"content": content}))
+    assert reintroduced_id != memory_id
 
 
 @pytest.mark.asyncio
@@ -485,8 +519,9 @@ async def test_delete_rolls_back_when_supporting_passage_cannot_be_isolated(pg_f
         pg_factory, "Remember that I live in London."
     )
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": "My current city is London."})
-    memory_id = remembered["memory"]["memory_id"]
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": "My current city is London."})
+    )
 
     with pytest.raises(MemoryMutationError):
         await service.delete({"memory_id": memory_id})
@@ -516,8 +551,7 @@ async def test_superseded_is_historical_but_retired_is_not_recallable(pg_factory
         pg_factory, "Remember that I live in London."
     )
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": "I live in London."})
-    old_id = remembered["memory"]["memory_id"]
+    old_id = await _publish(pg_factory, await service.remember({"content": "I live in London."}))
     await _append_owner_turn(pg_factory, transcript_id, "I moved and now live in Lisbon.")
 
     corrected = await service.correct({
@@ -525,7 +559,7 @@ async def test_superseded_is_historical_but_retired_is_not_recallable(pg_factory
         "content": "I live in Lisbon.",
         "change_type": "change_over_time",
     })
-    new_id = corrected["memory"]["memory_id"]
+    new_id = await _publish(pg_factory, corrected)
 
     current = await service.search({"query": "live", "limit": 5})
     assert any(item["memory_id"] == new_id for item in current["durable_memories"])
@@ -551,9 +585,12 @@ async def test_superseded_is_historical_but_retired_is_not_recallable(pg_factory
 async def test_owner_lifecycle_commands_advance_one_memory_revision(pg_factory) -> None:
     await _seed_transcript(pg_factory, "Remember the revision test fact.")
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": "The revision test fact."})
-    memory_id = remembered["memory"]["memory_id"]
-    assert remembered["memory_revision"] == 1
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": "The revision test fact."})
+    )
+    async with pg_factory() as session:
+        revision = await session.get(SharedResourceVersionRow, ("memory_state", "owner"))
+        assert revision is not None and revision.version == 1
 
     retired = await service.retire({"memory_id": memory_id})
     assert retired["memory_revision"] == 2
@@ -585,8 +622,10 @@ async def test_delete_rebuilds_from_start_of_invalidated_multi_turn_chunk(pg_fac
         assert chunks[0].end_sequence == 2
 
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": "The temporary code is ORBIT-7."})
-    deleted = await service.delete({"memory_id": remembered["memory"]["memory_id"]})
+    memory_id = await _publish(
+        pg_factory, await service.remember({"content": "The temporary code is ORBIT-7."})
+    )
+    deleted = await service.delete({"memory_id": memory_id})
     assert deleted["result"] == "deleted"
 
     async with pg_factory() as session:
@@ -602,17 +641,27 @@ async def test_delete_rebuilds_from_start_of_invalidated_multi_turn_chunk(pg_fac
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["correct", "retire", "delete"])
+@pytest.mark.parametrize("operation", ["retire", "delete"])
 async def test_id_selected_lifecycle_mutation_suppresses_old_context(pg_factory, operation) -> None:
     phrase = "The temporary signal is ORBIT-19."
     await _seed_transcript(pg_factory, f"Remember this: {phrase}")
     service = MemoryService(pg_factory)
-    remembered = await service.remember({"content": phrase})
-    arguments = {"memory_id": remembered["memory"]["memory_id"]}
-    if operation == "correct":
-        arguments["content"] = "The replacement signal is ORBIT-20."
-    result = await getattr(service, operation)(arguments)
+    memory_id = await _publish(pg_factory, await service.remember({"content": phrase}))
+    result = await getattr(service, operation)({"memory_id": memory_id})
     assert result["_context_suppression"]["contents"] == [phrase]
+
+
+@pytest.mark.asyncio
+async def test_queued_correct_does_not_suppress_context_before_publication(pg_factory) -> None:
+    phrase = "The temporary signal is ORBIT-19."
+    await _seed_transcript(pg_factory, f"Remember this: {phrase}")
+    service = MemoryService(pg_factory)
+    memory_id = await _publish(pg_factory, await service.remember({"content": phrase}))
+    result = await service.correct({
+        "memory_id": memory_id, "content": "The replacement signal is ORBIT-20.",
+    })
+    assert result["status"] == "queued"
+    assert "_context_suppression" not in result
 
 
 @pytest.mark.asyncio

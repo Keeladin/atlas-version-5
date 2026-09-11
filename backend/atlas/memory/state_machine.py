@@ -96,10 +96,13 @@ class RememberObligationState(StrEnum):
 
 class RememberObligationEvent(StrEnum):
     INTAKE_CREATED = "intake_created"
-    PERSIST_SUCCEEDS = "persist_succeeds"
-    PERSIST_FAILS_AFTER_INTAKE = "persist_fails_after_intake"
-    OWNER_RETRY = "owner_retry"
     INTAKE_FAILS_BEFORE_EVIDENCE = "intake_fails_before_evidence"
+    PERSIST_SUCCEEDS = "persist_succeeds"
+    PUBLICATION_TERMINALLY_FAILS = "publication_terminally_fails"
+    PERSIST_FAILS_AFTER_INTAKE = "persist_fails_after_intake"
+    AUTOMATIC_RETRY = "automatic_retry"
+    RETRY_BUDGET_EXHAUSTED = "retry_budget_exhausted"
+    OWNER_RETRY = "owner_retry"
     EVIDENCE_PURGED = "evidence_purged"
 
 
@@ -130,12 +133,24 @@ CANDIDATE_EVENT_PRODUCERS: dict[CandidateEvent, str] = {
 }
 
 
-REMEMBER_EVENT_PRODUCERS: dict[RememberObligationEvent, str | None] = {
-    RememberObligationEvent.INTAKE_CREATED: "MemoryLifecycleCommands._begin",
-    RememberObligationEvent.PERSIST_SUCCEEDS: "MemoryLifecycleCommands._apply_command",
-    RememberObligationEvent.PERSIST_FAILS_AFTER_INTAKE: "MemoryLifecycleCommands._fail",
-    # Deliberately None until an owner retry can re-enter from persisted evidence.
-    RememberObligationEvent.OWNER_RETRY: None,
-    RememberObligationEvent.INTAKE_FAILS_BEFORE_EVIDENCE: "MemoryLifecycleCommands.remember",
+REMEMBER_EVENT_PRODUCERS: dict[RememberObligationEvent, str] = {
+    RememberObligationEvent.INTAKE_CREATED: (
+        "MemoryLifecycleCommands._queue_explicit_content_command"
+    ),
+    RememberObligationEvent.INTAKE_FAILS_BEFORE_EVIDENCE: (
+        "MemoryLifecycleCommands._record_explicit_intake_failure"
+    ),
+    # Terminal candidate outcomes settle the obligation in the same transaction.
+    RememberObligationEvent.PERSIST_SUCCEEDS: "DerivedMemoryPublisher.publish",
+    RememberObligationEvent.PUBLICATION_TERMINALLY_FAILS: "DerivedMemoryPublisher.publish",
+    # A failed attempt requeues the candidate; the obligation stays pending.
+    RememberObligationEvent.PERSIST_FAILS_AFTER_INTAKE: (
+        "MemoryReconciliationService._release_failed"
+    ),
+    RememberObligationEvent.AUTOMATIC_RETRY: "MemoryCandidateLeaseRepository.claim_batch",
+    # Automatic attempts exhausted: the candidate fails and the obligation counts
+    # one owner-retry budget unit; the last unit terminates it visibly.
+    RememberObligationEvent.RETRY_BUDGET_EXHAUSTED: "settle_explicit_obligation",
+    RememberObligationEvent.OWNER_RETRY: "MemoryLifecycleCommands.resolve_obligation",
     RememberObligationEvent.EVIDENCE_PURGED: "MemoryLifecycleCommands.delete",
 }

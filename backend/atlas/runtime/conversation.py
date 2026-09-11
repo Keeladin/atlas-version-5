@@ -31,7 +31,7 @@ def build_model_instructions(
         "Preserve useful supported parts of an answer while qualifying unsupported parts. When exact chronology cannot be established, give the best-supported answer and state the uncertainty briefly rather than refusing to answer or inventing continuity. "
         "Owner-directed durable memory is explicit, not inferred: ordinary conversation must not be promoted automatically. Use memory.remember for an explicit request to retain information; memory.correct when a claim was wrong or changed over time; memory.retire when the owner wants Atlas to stop using information while retaining it for inspection/restoration; memory.restore to reactivate retired memory; and memory.delete when the owner explicitly wants information removed from Atlas live records. Questions such as 'do you remember' or 'remember when' are recall requests, not durable writes. "
         "The phrase 'forget that' is ambiguous between retirement and deletion. Ask one short clarification when retaining versus removing the content materially changes the outcome, unless the surrounding wording already makes the intent clear. Never describe retired information as forgotten or deleted: say it is retired from recall. Never imply deleted content is secretly retained in live memory. "
-        "For remember, persist a concise self-contained statement faithful to the owner's instruction. For correct, retire, or delete, use memory.search first when the target is unclear. Corrections preserve historical state; retirement is reversible; deletion is terminal for that memory identity and reintroducing the same information later creates a new memory ID. When the owner explicitly asks about a previous or superseded state, memory.search may use include_historical=true; never use that flag to bypass retirement or deletion. "
+        "memory.remember and memory.correct never persist immediately: they queue an explicit candidate for independent verification and return status=queued. Tell the owner the request is queued for verification; never say it is remembered, saved, or corrected until a later Atlas memory command outcome reports resolution_code=published. If the outcome reports a failure, say what failed and offer to retry through memory.obligations.resolve with decision=retry and the returned review_version. For remember, propose a concise self-contained statement faithful to the owner's instruction. For correct, retire, or delete, use memory.search first when the target is unclear. Corrections preserve historical state; retirement is reversible; deletion is terminal for that memory identity and reintroducing the same information later creates a new memory ID. When the owner explicitly asks about a previous or superseded state, memory.search may use include_historical=true; never use that flag to bypass retirement or deletion. "
         "Successful owner lifecycle commands outrank stale transcript/candidate/derived state. After retire or delete, acknowledge the result without repeating the affected content. A delete claim applies only to the live storage scope the runtime actually reports; backup retention is separate. Use memory.commands.list when the command lifecycle itself needs inspection. When the owner responds to a pending memory review or confirmation, inspect memory.obligations.list and resolve exactly one intended obligation with the returned review_version; if it is stale, re-render the current wording rather than confirming unseen text. Never bulk-confirm memory reviews. Memory conflicts require substantive owner clarification rather than a yes/no confirmation. "
         "Do not claim to have tools or capabilities that Atlas has not exposed to you. "
         f"Enabled capability families currently visible through Atlas are: {capability_text}. "
@@ -164,6 +164,27 @@ def memory_evidence_handle_map(turns: list[Turn]) -> dict[str, tuple[UUID, str]]
     return result
 
 
+def render_memory_outcomes(outcomes: list[dict[str, object]]) -> str | None:
+    """Compact developer-context lines for resolved explicit memory commands."""
+    lines: list[str] = []
+    for item in outcomes[:8]:
+        operation = str(item.get("operation") or "remember")
+        code = str(item.get("resolution_code") or "unknown")
+        content = item.get("content")
+        memory_id = item.get("memory_id")
+        reason = item.get("reason")
+        summary = f"- {operation}: {code}"
+        if code == "published" and memory_id:
+            summary += f" (memory_id={memory_id})"
+        elif reason and code != "published":
+            summary += f" ({reason})"
+        if content and code in {"published", "failed_retry_exhausted", "blocked", "discarded", "rejected", "expired"}:
+            summary += f' — "{content}"'
+        summary += f" [obligation_id={item.get('obligation_id')}]"
+        lines.append(summary)
+    return "\n".join(lines) if lines else None
+
+
 def turns_to_provider_messages(
     turns: list[Turn],
     *,
@@ -173,10 +194,21 @@ def turns_to_provider_messages(
     compact_tool_turn_ids: set[UUID] | None = None,
     suppressed_contents: list[str] | None = None,
     evidence_handles: dict[str, tuple[UUID, str]] | None = None,
+    memory_outcomes: str | None = None,
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     compact_ids = compact_tool_turn_ids or set()
     guards = suppressed_contents or []
+    if memory_outcomes:
+        messages.append({
+            "role": "developer",
+            "content": (
+                "Atlas memory command outcomes since your last reply. These are runtime facts about "
+                "explicit remember/correct requests from this chat; report them briefly to the owner "
+                "and do not restate content whose outcome is a purge or failure:\n"
+                + redact_guarded_text(memory_outcomes, guards)
+            ),
+        })
     if continuity_context:
         messages.append({
             "role": "developer",

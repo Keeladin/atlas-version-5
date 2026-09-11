@@ -80,6 +80,10 @@ def upgrade() -> None:
         "durable_memories",
         sa.Column("owner_assertion_turn_id", sa.UUID(), nullable=True),
     )
+    op.add_column(
+        "durable_memories",
+        sa.Column("originating_candidate_id", sa.UUID(), nullable=True),
+    )
     op.create_index(
         "ix_durable_memories_verification_record_id",
         "durable_memories",
@@ -89,6 +93,20 @@ def upgrade() -> None:
         "ix_durable_memories_owner_assertion_turn_id",
         "durable_memories",
         ["owner_assertion_turn_id"],
+    )
+    op.create_index(
+        "uq_durable_memories_originating_candidate_id",
+        "durable_memories",
+        ["originating_candidate_id"],
+        unique=True,
+        postgresql_where=sa.text("originating_candidate_id IS NOT NULL"),
+    )
+    op.create_foreign_key(
+        "fk_durable_memories_originating_candidate",
+        "durable_memories", "memory_candidates",
+        ["originating_candidate_id"], ["id"],
+        ondelete="RESTRICT",
+        use_alter=True,
     )
     op.create_foreign_key(
         "fk_durable_memories_owner_assertion_turn",
@@ -257,6 +275,7 @@ def upgrade() -> None:
         sa.Column("category", sa.String(length=64), nullable=True),
         sa.Column("scope", sa.String(length=32), nullable=True),
         sa.Column("durability", sa.String(length=32), nullable=True),
+        sa.Column("claim_principal", sa.String(length=32), nullable=True),
         sa.Column("event_valid_from", sa.DateTime(timezone=True), nullable=True),
         sa.Column("event_valid_to", sa.DateTime(timezone=True), nullable=True),
         sa.Column("verifier_model", sa.String(length=128), nullable=True),
@@ -284,7 +303,7 @@ def upgrade() -> None:
     )
     for column in (
         "candidate_id", "attempt_id", "evidence_set_hash", "category", "scope",
-        "durability", "event_valid_from", "event_valid_to", "tombstoned_at",
+        "durability", "claim_principal", "event_valid_from", "event_valid_to", "tombstoned_at",
         "tombstone_operation_id",
     ):
         op.create_index(
@@ -559,6 +578,11 @@ def downgrade() -> None:
         type_="foreignkey",
     )
     op.drop_constraint(
+        "fk_durable_memories_originating_candidate",
+        "durable_memories",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
         "ck_verified_memory_has_grounding_reference",
         "durable_memories",
         type_="check",
@@ -569,8 +593,12 @@ def downgrade() -> None:
     op.drop_index(
         "ix_durable_memories_owner_assertion_turn_id", table_name="durable_memories"
     )
+    op.drop_index(
+        "uq_durable_memories_originating_candidate_id", table_name="durable_memories"
+    )
     op.drop_column("durable_memories", "verification_record_id")
     op.drop_column("durable_memories", "owner_assertion_turn_id")
+    op.drop_column("durable_memories", "originating_candidate_id")
     op.drop_index(
         "ix_durable_memories_grounding_status", table_name="durable_memories"
     )
@@ -604,7 +632,7 @@ def downgrade() -> None:
         )),
         ("memory_independent_readings", (
             "tombstone_operation_id", "tombstoned_at", "event_valid_to",
-            "event_valid_from", "durability", "scope", "category",
+            "event_valid_from", "claim_principal", "durability", "scope", "category",
             "evidence_set_hash", "attempt_id", "candidate_id",
         )),
         ("memory_candidate_evidence", ("principal", "turn_id", "candidate_id")),

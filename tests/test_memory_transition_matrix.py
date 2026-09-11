@@ -138,11 +138,22 @@ REMEMBER_COVERAGE: dict[
     tuple[RememberObligationState, RememberObligationEvent], Coverage
 ] = {
     (RememberObligationState.ABSENT, RememberObligationEvent.INTAKE_CREATED): Coverage(
-        "test_failed_remember_transaction_rolls_back_memory_but_keeps_obligation_pending",
-        "pending",
+        "test_explicit_remember_queues_candidate_and_pending_obligation", "pending"
+    ),
+    (
+        RememberObligationState.ABSENT,
+        RememberObligationEvent.INTAKE_FAILS_BEFORE_EVIDENCE,
+    ): Coverage(
+        "test_explicit_remember_intake_failure_terminates_visibly", "resolved"
     ),
     (RememberObligationState.PENDING, RememberObligationEvent.PERSIST_SUCCEEDS): Coverage(
         "test_explicit_remember_obligation_resolves_with_memory_commit", "resolved"
+    ),
+    (
+        RememberObligationState.PENDING,
+        RememberObligationEvent.PUBLICATION_TERMINALLY_FAILS,
+    ): Coverage(
+        "test_explicit_remember_obligation_resolves_when_publication_is_blocked", "resolved"
     ),
     (
         RememberObligationState.PENDING,
@@ -151,14 +162,17 @@ REMEMBER_COVERAGE: dict[
         "test_failed_remember_transaction_rolls_back_memory_but_keeps_obligation_pending",
         "pending",
     ),
-    (RememberObligationState.PENDING, RememberObligationEvent.OWNER_RETRY): Coverage(
-        "test_failed_explicit_remember_retries_from_persisted_evidence", "pending"
+    (RememberObligationState.PENDING, RememberObligationEvent.AUTOMATIC_RETRY): Coverage(
+        "test_failed_remember_attempt_keeps_obligation_pending_for_automatic_retry", "pending"
     ),
     (
-        RememberObligationState.ABSENT,
-        RememberObligationEvent.INTAKE_FAILS_BEFORE_EVIDENCE,
+        RememberObligationState.PENDING,
+        RememberObligationEvent.RETRY_BUDGET_EXHAUSTED,
     ): Coverage(
-        "test_explicit_remember_intake_failure_terminates_visibly", "resolved"
+        "test_explicit_remember_failure_budget_terminates_obligation", "resolved"
+    ),
+    (RememberObligationState.PENDING, RememberObligationEvent.OWNER_RETRY): Coverage(
+        "test_failed_explicit_remember_retries_from_persisted_evidence", "pending"
     ),
     (RememberObligationState.PENDING, RememberObligationEvent.EVIDENCE_PURGED): Coverage(
         "test_explicit_remember_obligation_resolves_when_evidence_is_purged", "resolved"
@@ -205,7 +219,10 @@ REMEMBER_ALLOWED_EVENTS: dict[RememberObligationState, set[RememberObligationEve
     },
     RememberObligationState.PENDING: {
         RememberObligationEvent.PERSIST_SUCCEEDS,
+        RememberObligationEvent.PUBLICATION_TERMINALLY_FAILS,
         RememberObligationEvent.PERSIST_FAILS_AFTER_INTAKE,
+        RememberObligationEvent.AUTOMATIC_RETRY,
+        RememberObligationEvent.RETRY_BUDGET_EXHAUSTED,
         RememberObligationEvent.OWNER_RETRY,
         RememberObligationEvent.EVIDENCE_PURGED,
     },

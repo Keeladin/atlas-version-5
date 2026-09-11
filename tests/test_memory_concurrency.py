@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 from atlas.memory.candidates import MemoryCandidateIntake
-from atlas.memory.durable import DurableMemoryRepository, MemoryMutationError
+from atlas.memory.durable import DurableMemoryRepository
 from atlas.memory.lifecycle import MemoryLifecycleCommands
 from atlas.memory.reconciliation import (
     MemoryCandidateLeaseRepository,
@@ -17,7 +17,6 @@ from atlas.persistence.models import (
     DurableMemoryRow,
     MemoryCandidateEvidenceRow,
     MemoryCandidateRow,
-    MemoryCommandRow,
     MemoryConflictRow,
     MemoryObligationRow,
     MemoryProvenanceRow,
@@ -322,48 +321,6 @@ async def test_expired_lease_is_reclaimed_after_worker_disappears(pg_factory):
         assert attempts[0].status == "lease_expired"
         assert attempts[0].completed_at is not None
         assert attempts[1].status == "claimed"
-
-
-@pytest.mark.asyncio
-async def test_failed_remember_transaction_rolls_back_memory_but_keeps_obligation_pending(
-    pg_factory, monkeypatch
-):
-    async with pg_factory() as session:
-        transcript = TranscriptRow(kind="owner", next_turn_sequence=1, content_revision=1)
-        session.add(transcript)
-        await session.flush()
-        turn = TurnRow(
-            transcript_id=transcript.id, sequence=1, actor="owner",
-            blocks=[{"type": "text", "text": "Remember that I prefer strict rollback tests."}],
-        )
-        session.add(turn)
-        await session.commit()
-    commands = MemoryLifecycleCommands(pg_factory)
-
-    async def fail_after_mutation(*_args, **_kwargs):
-        raise RuntimeError("forced failure after memory mutation")
-
-    monkeypatch.setattr(commands, "_apply_command", fail_after_mutation)
-    with pytest.raises(MemoryMutationError):
-        await commands.remember({
-            "content": "Jaco prefers strict rollback tests.",
-            "kind": "preference",
-            "scope": "cross_chat",
-            "durability": "long_term",
-        })
-    async with pg_factory() as session:
-        assert (
-            await session.execute(
-                select(func.count()).select_from(DurableMemoryRow)
-            )
-        ).scalar_one() == 0
-        command = (await session.execute(select(MemoryCommandRow))).scalar_one()
-        obligation = (await session.execute(select(MemoryObligationRow))).scalar_one()
-        assert command.status == "failed"
-        assert obligation.kind == "explicit_remember"
-        assert obligation.status == "pending"
-        assert obligation.resolution_code is None
-        assert obligation.resolved_at is None
 
 
 @pytest.mark.asyncio
@@ -891,45 +848,3 @@ async def test_publication_serialization_failure_routes_to_reconciliation_retry(
             select(DurableMemoryRow).where(DurableMemoryRow.status == "active")
         )).scalars())
         assert len(memories) == 1
-
-
-@pytest.mark.asyncio
-async def test_explicit_remember_failure_budget_terminates_obligation(pg_factory, monkeypatch):
-    async with pg_factory() as session:
-        transcript = TranscriptRow(kind="owner", next_turn_sequence=1, content_revision=1)
-        session.add(transcript)
-        await session.flush()
-        turn = TurnRow(
-            transcript_id=transcript.id, sequence=1, actor="owner",
-            blocks=[{"type": "text", "text": "Remember my rollback preference."}],
-        )
-        session.add(turn)
-        await session.commit()
-    commands = MemoryLifecycleCommands(pg_factory)
-    async def fail_apply(*_args, **_kwargs):
-        raise RuntimeError("forced persistent remember failure")
-
-    monkeypatch.setattr(commands, "_apply_command", fail_apply)
-    with pytest.raises(MemoryMutationError):
-        await commands.remember({
-            "content": "Jaco prefers strict rollback tests.",
-            "kind": "preference", "scope": "cross_chat", "durability": "long_term",
-        })
-    async with pg_factory() as session:
-        command = (await session.execute(select(MemoryCommandRow))).scalar_one()
-        obligation = (await session.execute(select(MemoryObligationRow))).scalar_one()
-        assert obligation.status == "pending"
-        assert obligation.resolution_json["failure_count"] == 1
-        command_id, obligation_id = command.id, obligation.id
-    await commands._fail(command_id, RuntimeError("forced persistent remember failure"))
-    async with pg_factory() as session:
-        obligation = await session.get(MemoryObligationRow, obligation_id)
-        assert obligation.status == "pending"
-        assert obligation.resolution_json["failure_count"] == 2
-    await commands._fail(command_id, RuntimeError("forced persistent remember failure"))
-    async with pg_factory() as session:
-        obligation = await session.get(MemoryObligationRow, obligation_id)
-        assert obligation.status == "resolved"
-        assert obligation.resolution_code == "failed_retry_exhausted"
-        assert obligation.resolution_json["failure_count"] == 3
-        assert obligation.resolved_at is not None

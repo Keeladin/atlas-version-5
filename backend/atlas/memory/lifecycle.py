@@ -39,7 +39,11 @@ from atlas.runtime.invocation import current_transcript_id
 from atlas.transcript.models import Actor, TextBlock
 from atlas.transcript.repository import TranscriptRepository
 
-from .candidates import evidence_set_hash
+from .candidates import (
+    MemoryCandidate,
+    MemoryCandidateRepository,
+    evidence_set_hash,
+)
 from .durable import (
     ACTIVE,
     APPLIED,
@@ -54,11 +58,14 @@ from .durable import (
     memory_fingerprint,
     utcnow,
 )
+from .explicit import (
+    EXPLICIT_OBLIGATION_KINDS,
+    settle_explicit_obligation,
+)
 
 _MEMORY_RESOURCE_TYPE = "memory_state"
 _MEMORY_RESOURCE_ID = "owner"
 _DELETION_MARKER = "[Content deleted by owner]"
-_EXPLICIT_REMEMBER_FAILURE_BUDGET = 3
 _ALLOWED_KINDS = {
     "identity", "preference", "fact", "decision", "relationship",
     "procedure", "project_state", "intent",
@@ -158,61 +165,12 @@ class MemoryLifecycleCommands:
         content = clean_memory_content(arguments.get("content"))
         source = await self._latest_source()
         classification = _classification(arguments, source[0])
-        command_id = await self._begin(
-            "remember",
-            {
-                "kind": classification["memory_kind"],
-                "scope": classification["scope"],
-                "durability": classification["durability"],
-            },
-            source,
+        return await self._queue_explicit_content_command(
+            operation="remember",
+            content=content,
+            classification=classification,
+            source=source,
         )
-        fingerprint = memory_fingerprint(content)
-
-        async def mutate(session: AsyncSession, _version: int) -> SharedWriteMutation:
-            repository = DurableMemoryRepository(session)
-            active = await repository.active_by_fingerprint(fingerprint)
-            if active is not None:
-                await self._apply_command(session, command_id, replacement_memory_id=active.id)
-                return SharedWriteMutation(
-                    mutated=False,
-                    result={"result": "already_active", "memory_id": str(active.id)},
-                )
-
-            retired = await repository.retired_by_fingerprint(fingerprint)
-            if retired is not None:
-                conflict = await repository.active_by_fingerprint(fingerprint)
-                if conflict is not None and conflict.id != retired.id:
-                    raise ValueError("an active memory already owns this content")
-                retired.status = ACTIVE
-                retired.suppresses_recall = False
-                retired.retired_at = None
-                retired.updated_at = utcnow()
-                await repository.invalidate_continuity_capsules()
-                await self._apply_command(session, command_id, replacement_memory_id=retired.id)
-                return SharedWriteMutation(
-                    result={"result": "restored", "memory_id": str(retired.id)}
-                )
-
-            memory, _ = await repository.create_active(
-                content,
-                source_transcript_id=source[0],
-                source_turn_id=source[1],
-                record_kind="owner_directed",
-                origin="owner_statement",
-                grounding_status="verified",
-                **classification,
-            )
-            if source[1] is not None:
-                session.add(MemoryProvenanceRow(
-                    memory_id=memory.id,
-                    relationship="owner_source",
-                    source_turn_id=source[1],
-                ))
-            await self._apply_command(session, command_id, replacement_memory_id=memory.id)
-            return SharedWriteMutation(result={"result": "created", "memory_id": str(memory.id)})
-
-        return await self._run(command_id, source, "remember", mutate, private_content=content)
 
     async def correct(self, arguments: dict) -> dict[str, object]:
         new_content = clean_memory_content(arguments.get("content"))
@@ -225,111 +183,46 @@ class MemoryLifecycleCommands:
         if change_type not in {"correction", "change_over_time"}:
             raise ValueError("invalid change_type")
         source = await self._latest_source()
-        stored = {"change_type": change_type, "selector": "memory_id" if memory_raw else "legacy_content"}
-        if memory_raw is not None:
-            stored["memory_id"] = str(memory_raw)
-        command_id = await self._begin("correct", stored, source)
-        new_fingerprint = memory_fingerprint(new_content)
 
-        async def mutate(session: AsyncSession, _version: int) -> SharedWriteMutation:
-            nonlocal old_content
-            repository = DurableMemoryRepository(session)
-            target: DurableMemoryRow | None = None
-            if memory_raw is not None:
-                target = await repository.get(UUID(str(memory_raw)))
-                if target is None:
-                    raise ValueError("target memory does not exist")
-                if target.status == DELETED:
-                    raise ValueError("deleted memory is terminal and cannot be corrected")
-                if target.status != ACTIVE:
-                    raise ValueError("target memory is not active")
-                if old_content is not None and target.fingerprint != memory_fingerprint(old_content):
-                    raise ValueError("old_content does not match target memory")
-            elif old_content is not None:
-                target = await repository.active_by_fingerprint(memory_fingerprint(old_content))
-                if target is None:
-                    target, _ = await repository.create_guard(
-                        old_content,
-                        status=SUPERSEDED,
-                        record_kind="owner_correction_guard",
-                        source_transcript_id=source[0],
-                        source_turn_id=source[1],
+        target: DurableMemoryRow | None = None
+        if memory_raw is not None or old_content is not None:
+            async with self.factory() as session:
+                repository = DurableMemoryRepository(session)
+                if memory_raw is not None:
+                    target = await repository.get(UUID(str(memory_raw)))
+                    if target is None or target.status == DELETED:
+                        return await self._record_explicit_intake_failure(
+                            operation="correct",
+                            source=source,
+                            reason="target memory does not exist",
+                        )
+                    if target.status != ACTIVE:
+                        return await self._record_explicit_intake_failure(
+                            operation="correct",
+                            source=source,
+                            reason="target memory is not active",
+                        )
+                elif old_content is not None:
+                    target = await repository.active_by_fingerprint(
+                        memory_fingerprint(old_content)
                     )
 
-            assert target is not None
-            old_content = target.content
-            if target.status == ACTIVE and target.fingerprint == new_fingerprint:
-                await self._apply_command(
-                    session, command_id, target_memory_id=target.id, replacement_memory_id=target.id
-                )
-                return SharedWriteMutation(
-                    mutated=False,
-                    result={"result": "already_current", "memory_id": str(target.id), "target_memory_id": str(target.id)},
-                )
-
-            existing = await repository.active_by_fingerprint(new_fingerprint)
-            if existing is not None and existing.id != target.id:
-                raise ValueError("corrected content already exists as another active memory")
-
-            classification = {
-                "record_kind": "owner_directed",
-                "memory_kind": target.memory_kind or "fact",
-                "scope": target.scope,
-                "scope_key": target.scope_key,
-                "durability": target.durability,
-                "subject": target.subject,
-                "namespace": target.namespace,
-            }
-            now = utcnow()
-            replacement, _ = await repository.create_active(
-                new_content,
-                source_transcript_id=source[0],
-                source_turn_id=source[1],
-                supersedes_id=target.id,
-                valid_from=now if change_type == "change_over_time" else None,
-                origin="owner_statement",
-                grounding_status="verified",
-                **classification,
-            )
-            target.status = SUPERSEDED
-            target.suppresses_recall = True
-            target.superseded_by_id = replacement.id
-            if change_type == "change_over_time":
-                target.valid_to = now
-            _clear_embedding(target)
-            target.updated_at = now
-            if source[1] is not None:
-                session.add(MemoryProvenanceRow(
-                    memory_id=replacement.id,
-                    relationship="owner_source",
-                    source_turn_id=source[1],
-                ))
-            session.add(MemoryProvenanceRow(
-                memory_id=replacement.id,
-                relationship="supersedes",
-                source_memory_id=target.id,
-            ))
-            await self._invalidate_candidates(
-                session, command_id, turn_ids={target.source_turn_id} if target.source_turn_id else set(),
-                content=target.content, scrub=False,
-            )
-            await repository.invalidate_continuity_capsules()
-            await self._apply_command(
-                session,
-                command_id,
-                target_memory_id=target.id,
-                replacement_memory_id=replacement.id,
-            )
-            return SharedWriteMutation(result={
-                "result": "created",
-                "memory_id": str(replacement.id),
-                "target_memory_id": str(target.id),
-            })
-
-        return await self._run(
-            command_id, source, "correct", mutate,
-            private_content=lambda: old_content,
-            include_memory=True,
+        classification = {
+            "memory_kind": target.memory_kind if target and target.memory_kind else "fact",
+            "scope": target.scope if target else "cross_chat",
+            "scope_key": target.scope_key if target else "owner",
+            "durability": target.durability if target else "long_term",
+            "subject": target.subject if target else None,
+            "namespace": target.namespace if target else None,
+        }
+        return await self._queue_explicit_content_command(
+            operation="correct",
+            content=new_content,
+            classification=classification,
+            source=source,
+            target_memory_id=(target.id if target is not None else None),
+            change_type=change_type,
+            legacy_old_content=(old_content if target is None else None),
         )
 
     async def retire(self, arguments: dict) -> dict[str, object]:
@@ -559,6 +452,7 @@ class MemoryLifecycleCommands:
                 ),
                 scrub=True,
                 candidate_ids=source_candidate_ids,
+                redact_content=selected_content,
             )
 
             # Rebuild the cascade only after the shared resource lock is held and
@@ -740,6 +634,15 @@ class MemoryLifecycleCommands:
             if obligation.status != "pending":
                 return {"result": "already_resolved", **self._project_obligation(obligation)}
 
+            if obligation.kind in EXPLICIT_OBLIGATION_KINDS:
+                return await self._retry_explicit_obligation(
+                    session,
+                    obligation,
+                    decision=decision,
+                    review_version=review_version,
+                    source=source,
+                    now=now,
+                )
             if (
                 obligation.kind not in {"memory_confirmation", "memory_review"}
                 or obligation.subject_type != "memory_candidate"
@@ -782,6 +685,9 @@ class MemoryLifecycleCommands:
                 candidate.decision_json = {
                     "decision": "expired", "code": "owner_confirmation_expired"
                 }
+                await settle_explicit_obligation(
+                    session, candidate, now=now, code="owner_confirmation_expired"
+                )
                 return {"result": "expired", **self._project_obligation(obligation)}
 
             candidate.state_version = int(candidate.state_version or 0) + 1
@@ -846,6 +752,9 @@ class MemoryLifecycleCommands:
                     "code": "owner_rejected_confirmation",
                     "obligation_id": str(obligation.id),
                 }
+                await settle_explicit_obligation(
+                    session, candidate, now=now, code="owner_rejected_confirmation"
+                )
                 result = "rejected"
             await session.flush()
             return {
@@ -999,7 +908,7 @@ class MemoryLifecycleCommands:
         if (
             row.status != "pending"
             or row.subject_id is None
-            or row.kind not in {"memory_review", "memory_confirmation"}
+            or row.kind not in ({"memory_review", "memory_confirmation"} | EXPLICIT_OBLIGATION_KINDS)
         ):
             return {"proposed_assertion_text": None, "review_version": None}
         if row.subject_type == "durable_memory":
@@ -1032,6 +941,172 @@ class MemoryLifecycleCommands:
             ),
         }
 
+    async def _retry_explicit_obligation(
+        self,
+        session: AsyncSession,
+        obligation: MemoryObligationRow,
+        *,
+        decision: str,
+        review_version: str | None,
+        source: tuple[UUID | None, UUID | None],
+        now,
+    ) -> dict[str, object]:
+        if decision != "retry":
+            raise ValueError("explicit remember/correct obligations support only retry")
+        if obligation.subject_type != "memory_candidate" or obligation.subject_id is None:
+            raise ValueError("this explicit command obligation has no retryable candidate")
+        candidate = (await session.execute(
+            select(MemoryCandidateRow)
+            .where(MemoryCandidateRow.id == obligation.subject_id)
+            .with_for_update()
+        )).scalar_one_or_none()
+        if candidate is None:
+            raise LookupError("memory candidate for obligation not found")
+        projection = self._project_obligation(obligation)
+        if candidate.status in {"pending", "leased", "retained_short_term", "awaiting_owner"}:
+            return {"result": "already_queued", "candidate_id": str(candidate.id), **projection}
+        if candidate.status != "failed":
+            return {
+                "result": "not_retryable",
+                "candidate_id": str(candidate.id),
+                "candidate_status": candidate.status,
+                **projection,
+            }
+        current_text = clean_memory_content(candidate.content) if candidate.content else ""
+        current_review_version = _review_version(
+            subject_type="memory_candidate",
+            subject_id=candidate.id,
+            text=current_text,
+            state=(
+                f"{candidate.status}:{int(candidate.state_version or 0)}:"
+                f"{candidate.fingerprint or ''}:{candidate.evidence_set_hash or ''}"
+            ),
+        )
+        if review_version != current_review_version:
+            return {
+                "result": "stale_review",
+                "proposed_assertion_text": current_text or None,
+                "review_version": current_review_version,
+                **projection,
+            }
+        evidence_turn_ids = set((await session.execute(
+            select(MemoryCandidateEvidenceRow.turn_id).where(
+                MemoryCandidateEvidenceRow.candidate_id == candidate.id
+            )
+        )).scalars())
+        live_turns = 0
+        if evidence_turn_ids:
+            live_turns = int((await session.execute(
+                select(func.count()).select_from(TurnRow).where(
+                    TurnRow.id.in_(evidence_turn_ids), TurnRow.deleted_at.is_(None)
+                )
+            )).scalar_one())
+        if (
+            not evidence_turn_ids
+            or live_turns != len(evidence_turn_ids)
+            or candidate.content is None
+            or candidate.fingerprint is None
+        ):
+            candidate.state_version = int(candidate.state_version or 0) + 1
+            candidate.status = "invalidated"
+            candidate.invalidated_at = now
+            candidate.processed_at = now
+            candidate.decision_json = {
+                "decision": "invalidated", "code": "evidence_unavailable"
+            }
+            await settle_explicit_obligation(
+                session, candidate, now=now, code="evidence_unavailable"
+            )
+            return {
+                "result": "evidence_unavailable",
+                "candidate_id": str(candidate.id),
+                **self._project_obligation(obligation),
+            }
+        owner_retries = int((obligation.resolution_json or {}).get("owner_retries", 0)) + 1
+        # Owner retry re-enters the candidate pipeline from persisted evidence.
+        # The state_version bump is the CAS boundary: any stale lease holder or
+        # publish attempt keyed to the old version loses.
+        candidate.state_version = int(candidate.state_version or 0) + 1
+        candidate.status = "pending"
+        candidate.lease_token = None
+        candidate.leased_until = None
+        candidate.review_after = None
+        candidate.attempt_count = 0
+        candidate.processed_at = None
+        candidate.decision_json = {
+            "decision": "owner_retry",
+            "obligation_id": str(obligation.id),
+            "owner_retries": owner_retries,
+        }
+        obligation.resolution_json = {
+            **(obligation.resolution_json or {}),
+            "owner_retries": owner_retries,
+        }
+        obligation.resolution_source_transcript_id = source[0]
+        obligation.resolution_source_turn_id = source[1]
+        await session.flush()
+        return {
+            "result": "requeued_for_reconciliation",
+            "candidate_id": str(candidate.id),
+            **self._project_obligation(obligation),
+        }
+
+    async def explicit_outcomes_since(
+        self,
+        transcript_id: UUID,
+        *,
+        since=None,
+        limit: int = 8,
+    ) -> list[dict[str, object]]:
+        """Resolved explicit remember/correct obligations raised from this chat.
+
+        Used to surface publication outcomes into the next foreground inference
+        so the model can report them; nothing here is canonical evidence.
+        """
+        bounded = max(1, min(int(limit), 32))
+        async with self.factory() as session:
+            statement = (
+                select(MemoryObligationRow)
+                .where(
+                    MemoryObligationRow.kind.in_(EXPLICIT_OBLIGATION_KINDS),
+                    MemoryObligationRow.status == "resolved",
+                    MemoryObligationRow.source_transcript_id == transcript_id,
+                )
+                .order_by(MemoryObligationRow.resolved_at.desc(), MemoryObligationRow.id.desc())
+                .limit(bounded)
+            )
+            if since is not None:
+                statement = statement.where(MemoryObligationRow.resolved_at > since)
+            rows = list((await session.execute(statement)).scalars())
+            outcomes: list[dict[str, object]] = []
+            for row in rows:
+                resolution = dict(row.resolution_json or {})
+                content: str | None = None
+                if row.subject_type == "memory_candidate" and row.subject_id is not None:
+                    candidate = await session.get(MemoryCandidateRow, row.subject_id)
+                    if candidate is not None and candidate.content:
+                        content = clean_memory_content(candidate.content)
+                command = (
+                    await session.get(MemoryCommandRow, row.command_id)
+                    if row.command_id is not None else None
+                )
+                outcomes.append({
+                    "obligation_id": str(row.id),
+                    "operation": (
+                        command.operation if command is not None
+                        else ("remember" if row.kind == "explicit_remember" else "correct")
+                    ),
+                    "resolution_code": row.resolution_code,
+                    "content": content,
+                    "memory_id": resolution.get("memory_id"),
+                    "reason": (
+                        resolution.get("reason") or resolution.get("code")
+                        or resolution.get("last_error")
+                    ),
+                    "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+                })
+            return outcomes
+
     @staticmethod
     def _project_obligation(row: MemoryObligationRow) -> dict[str, object]:
         return {
@@ -1057,6 +1132,169 @@ class MemoryLifecycleCommands:
             "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
         }
 
+    async def _queue_explicit_content_command(
+        self,
+        *,
+        operation: str,
+        content: str,
+        classification: dict[str, object],
+        source: tuple[UUID | None, UUID | None],
+        target_memory_id: UUID | None = None,
+        change_type: str | None = None,
+        legacy_old_content: str | None = None,
+    ) -> dict[str, object]:
+        if operation not in {"remember", "correct"}:
+            raise ValueError("unsupported explicit content command")
+        if source[0] is None or source[1] is None:
+            return await self._record_explicit_intake_failure(
+                operation=operation,
+                source=source,
+                reason="no canonical owner turn is available for evidence",
+            )
+        origin = (
+            "explicit_owner_request" if operation == "remember"
+            else "explicit_owner_correction"
+        )
+        obligation_kind = (
+            "explicit_remember" if operation == "remember" else "explicit_correct"
+        )
+        stored_arguments: dict[str, object] = {
+            "kind": classification["memory_kind"],
+            "scope": classification["scope"],
+            "durability": classification["durability"],
+        }
+        if change_type is not None:
+            stored_arguments["change_type"] = change_type
+        try:
+            async with self.factory() as session, session.begin():
+                source_turn = await session.get(TurnRow, source[1])
+                if (
+                    source_turn is None
+                    or source_turn.deleted_at is not None
+                    or source_turn.actor != "owner"
+                    or source_turn.transcript_id != source[0]
+                ):
+                    raise ValueError("canonical owner evidence is unavailable")
+
+                command = MemoryCommandRow(
+                    operation=operation,
+                    status=PENDING,
+                    arguments_json=stored_arguments,
+                    source_transcript_id=source[0],
+                    source_turn_id=source[1],
+                    target_memory_id=target_memory_id,
+                )
+                session.add(command)
+                await session.flush()
+
+                candidate_model = MemoryCandidate.model_validate({
+                    "kind": classification["memory_kind"],
+                    "content": content,
+                    "scope": classification["scope"],
+                    "confidence": 1.0,
+                    "durability": classification["durability"],
+                    "proposed_action": "upsert",
+                    "subject": classification.get("subject"),
+                    "namespace": classification.get("namespace"),
+                    "evidence_refs": [{"turn_id": str(source[1]), "span_ref": ""}],
+                })
+                candidate, _created = await MemoryCandidateRepository(session).enqueue(
+                    candidate_model,
+                    source_transcript_id=source[0],
+                    source_turn_id=source[1],
+                    source_provider_evidence_id=None,
+                    allowed_evidence_turn_ids={source[1]},
+                    proposer_model=None,
+                    intake_path="explicit_command",
+                    origin=origin,
+                )
+
+                if operation == "correct" and legacy_old_content:
+                    await DurableMemoryRepository(session).create_guard(
+                        legacy_old_content,
+                        status=SUPERSEDED,
+                        record_kind="owner_correction_guard",
+                        source_transcript_id=source[0],
+                        source_turn_id=source[1],
+                    )
+
+                obligation = MemoryObligationRow(
+                    kind=obligation_kind,
+                    status="pending",
+                    subject_type="memory_candidate",
+                    subject_id=candidate.id,
+                    origin=origin,
+                    command_id=command.id,
+                    source_transcript_id=source[0],
+                    source_turn_id=source[1],
+                )
+                session.add(obligation)
+                await session.flush()
+                return {
+                    "command_id": str(command.id),
+                    "candidate_id": str(candidate.id),
+                    "obligation_id": str(obligation.id),
+                    "status": "queued",
+                    "operation": operation,
+                    "result": "queued_for_verification",
+                }
+        except Exception as exc:  # noqa: BLE001 - every intake failure must become a visible terminal obligation
+            return await self._record_explicit_intake_failure(
+                operation=operation,
+                source=source,
+                reason=f"{type(exc).__name__}: {exc}"[:500],
+            )
+
+    async def _record_explicit_intake_failure(
+        self,
+        *,
+        operation: str,
+        source: tuple[UUID | None, UUID | None],
+        reason: str,
+    ) -> dict[str, object]:
+        obligation_kind = (
+            "explicit_remember" if operation == "remember" else "explicit_correct"
+        )
+        now = utcnow()
+        async with self.factory() as session, session.begin():
+            command = MemoryCommandRow(
+                operation=operation,
+                status=FAILED,
+                arguments_json={},
+                source_transcript_id=source[0],
+                source_turn_id=source[1],
+                error=reason,
+                failed_at=now,
+            )
+            session.add(command)
+            await session.flush()
+            obligation = MemoryObligationRow(
+                kind=obligation_kind,
+                status="resolved",
+                subject_type="memory_command",
+                subject_id=command.id,
+                origin=(
+                    "explicit_owner_request" if operation == "remember"
+                    else "explicit_owner_correction"
+                ),
+                command_id=command.id,
+                source_transcript_id=source[0],
+                source_turn_id=source[1],
+                resolution_code="intake_failed",
+                resolution_json={"reason": reason},
+                resolved_at=now,
+            )
+            session.add(obligation)
+            await session.flush()
+            return {
+                "command_id": str(command.id),
+                "obligation_id": str(obligation.id),
+                "status": "failed",
+                "operation": operation,
+                "result": "intake_failed",
+                "reason": reason,
+            }
+
     async def _latest_source(self) -> tuple[UUID | None, UUID | None]:
         async with self.factory() as session:
             return await DurableMemoryRepository(session).latest_owner_source(
@@ -1079,19 +1317,6 @@ class MemoryLifecycleCommands:
             )
             session.add(command)
             await session.flush()
-            if operation == "remember":
-                session.add(
-                    MemoryObligationRow(
-                        kind="explicit_remember",
-                        status="pending",
-                        subject_type="memory_command",
-                        subject_id=command.id,
-                        origin="owner_statement",
-                        command_id=command.id,
-                        source_transcript_id=source[0],
-                        source_turn_id=source[1],
-                    )
-                )
             await session.commit()
             return command.id
 
@@ -1205,31 +1430,11 @@ class MemoryLifecycleCommands:
                     )
                 )
             ).scalar_one_or_none()
-            if obligation is not None and command.operation != "remember":
+            if obligation is not None:
                 obligation.status = "resolved"
                 obligation.resolution_code = "failed"
                 obligation.resolution_json = {}
                 obligation.resolved_at = now
-            elif obligation is not None:
-                failure_count = int(
-                    (obligation.resolution_json or {}).get("failure_count", 0)
-                ) + 1
-                error_code = f"{type(exc).__name__}: {exc}"[:500]
-                obligation.resolution_json = {
-                    "failure_count": failure_count,
-                    "failure_budget": _EXPLICIT_REMEMBER_FAILURE_BUDGET,
-                    "last_error": error_code,
-                }
-                if failure_count >= _EXPLICIT_REMEMBER_FAILURE_BUDGET:
-                    obligation.status = "resolved"
-                    obligation.resolution_code = "failed_retry_exhausted"
-                    obligation.resolved_at = now
-                else:
-                    # The write rolled back. Keep the owner obligation visible and
-                    # pending until retry succeeds or the bounded failure budget ends.
-                    obligation.status = "pending"
-                    obligation.resolution_code = None
-                    obligation.resolved_at = None
             await session.commit()
 
     async def _independent_owner_grounded_ids(
@@ -1480,6 +1685,7 @@ class MemoryLifecycleCommands:
         content: str | None,
         scrub: bool,
         candidate_ids: set[UUID] | None = None,
+        redact_content: str | None = None,
     ) -> tuple[set[UUID], set[UUID]]:
         selected: dict[UUID, MemoryCandidateRow] = {}
         selected_ids = set(candidate_ids or set())
@@ -1539,7 +1745,7 @@ class MemoryLifecycleCommands:
                     continue
                 redacted = deepcopy(evidence_turn.blocks or [])
                 changed = False
-                for value in (content, row.content, row.evidence):
+                for value in (content, redact_content, row.content, row.evidence):
                     if not value:
                         continue
                     redacted, value_changed = _redact_value(redacted, value)
@@ -1563,6 +1769,9 @@ class MemoryLifecycleCommands:
             row.processed_at = now
             row.invalidated_at = now
             row.invalidation_operation_id = operation_id
+            await settle_explicit_obligation(
+                session, row, now=now, code="evidence_purged", resolution="evidence_purged"
+            )
             if scrub:
                 row.content = None
                 row.fingerprint = None

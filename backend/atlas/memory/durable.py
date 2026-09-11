@@ -127,6 +127,7 @@ class DurableMemoryRepository:
         grounding_status: str = "legacy_unverified",
         verification_record_id: UUID | None = None,
         owner_assertion_turn_id: UUID | None = None,
+        originating_candidate_id: UUID | None = None,
     ) -> tuple[DurableMemoryRow, bool]:
         fingerprint = memory_fingerprint(content)
         existing = await self.active_by_fingerprint(fingerprint)
@@ -139,6 +140,7 @@ class DurableMemoryRepository:
             grounding_status=grounding_status,
             verification_record_id=verification_record_id,
             owner_assertion_turn_id=owner_assertion_turn_id,
+            originating_candidate_id=originating_candidate_id,
             memory_kind=memory_kind,
             scope=scope,
             scope_key=scope_key,

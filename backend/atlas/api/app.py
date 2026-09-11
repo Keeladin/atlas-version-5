@@ -54,6 +54,7 @@ from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.memory.candidates import MemoryCandidateIntake
 from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
+from atlas.memory.lifecycle import MemoryLifecycleCommands
 from atlas.memory.observability import MemoryObservabilityService
 from atlas.persistence.models import OwnerAttentionRow, RunRow
 from atlas.providers import OpenAIProvider
@@ -64,6 +65,7 @@ from atlas.runtime.conversation import (
     build_model_instructions,
     context_turns,
     memory_evidence_handle_map,
+    render_memory_outcomes,
     tool_observation_is_compactable,
     tool_observation_to_provider_message,
     tool_turn_exchange_ages,
@@ -757,6 +759,7 @@ async def _assemble_working_context(
     provider: OpenAIProvider, transcript, turns, *, suppressed_contents: list[str] | None = None,
     continuity_context: str | None = None, continuity_count: int = 0,
     evidence_handles: dict[str, tuple[UUID, str]] | None = None,
+    memory_outcomes: str | None = None,
 ):
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
     suppressed_contents = suppressed_contents or []
@@ -778,6 +781,7 @@ async def _assemble_working_context(
             compact_tool_turn_ids=compact_ids,
             suppressed_contents=suppressed_contents,
             evidence_handles=evidence_handles,
+            memory_outcomes=memory_outcomes,
         )
         task_message = active_task_provider_message(transcript.active_task_state)
         if task_message is not None:
@@ -864,17 +868,29 @@ async def _assemble_working_context(
     }
 
 
+async def _explicit_memory_outcomes(transcript, turns) -> str | None:
+    """Outcomes of explicit remember/correct requests resolved since Atlas last replied."""
+    last_reply = max(
+        (turn.created_at for turn in turns if turn.actor == Actor.ATLAS), default=None
+    )
+    outcomes = await MemoryLifecycleCommands(get_session_factory()).explicit_outcomes_since(
+        transcript.id, since=last_reply
+    )
+    return render_memory_outcomes(outcomes)
+
+
 async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns):
     async with get_session_factory()() as memory_session:
         suppressed_contents = await _active_memory_suppression_contents(memory_session)
         continuity_context, continuity_count = await recent_continuity_context(
             memory_session, transcript.id, limit=settings.memory_continuity_chats
         )
+    memory_outcomes = await _explicit_memory_outcomes(transcript, turns)
     handles = memory_evidence_handle_map(turns)
     messages, _ = await _assemble_working_context(
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
-        evidence_handles=handles,
+        evidence_handles=handles, memory_outcomes=memory_outcomes,
     )
     rendered = "\n".join(str(message.get("content") or "") for message in messages)
     visible_handles = {
@@ -1052,6 +1068,7 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
     _, policy = await _assemble_working_context(
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
+        memory_outcomes=await _explicit_memory_outcomes(transcript, turns),
     )
     input_tokens = int(policy["input_tokens"])
     limit_tokens = int(policy["token_budget"])
@@ -1088,6 +1105,7 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
     _, working_policy = await _assemble_working_context(
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
+        memory_outcomes=await _explicit_memory_outcomes(transcript, turns),
     )
     current_tokens = int(working_policy["input_tokens"])
     canonical_tokens = await provider.count_input_tokens(
