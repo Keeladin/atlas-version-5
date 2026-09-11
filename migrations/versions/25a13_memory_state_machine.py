@@ -670,6 +670,8 @@ def downgrade() -> None:
     op.drop_index("ix_memory_candidates_proposer_model", table_name="memory_candidates")
     op.drop_column("memory_candidates", "proposer_model")
     op.drop_column("memory_candidates", "evidence_set_hash")
+    op.drop_column("memory_candidates", "state_version")
+    op.drop_column("memory_reconciliation_attempts", "candidate_state_version")
     op.create_index(
         "uq_pending_memory_candidate_fingerprint",
         "memory_candidates",

@@ -183,6 +183,14 @@ install -o root -g atlas-v5 -m 0640 \
   "${ROOT_DIR}/uv.lock" "${APP_DIR}/uv.lock"
 install -o root -g atlas-v5 -m 0640 \
   "${ROOT_DIR}/alembic.ini" "${APP_DIR}/alembic.ini"
+# Record the deployed release so rehearsal and recovery reports can name it.
+if git -C "${ROOT_DIR}" rev-parse --verify HEAD >/dev/null 2>&1; then
+  git -C "${ROOT_DIR}" describe --always --dirty > "${APP_DIR}/RELEASE"
+else
+  date -u +%Y%m%dT%H%M%SZ > "${APP_DIR}/RELEASE"
+fi
+chown root:atlas-v5 "${APP_DIR}/RELEASE"
+chmod 0640 "${APP_DIR}/RELEASE"
 
 find "${APP_DIR}" -type d -exec chmod 0750 {} +
 find "${APP_DIR}" -type f -exec chmod 0640 {} +

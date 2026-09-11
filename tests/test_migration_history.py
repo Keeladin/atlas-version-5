@@ -96,6 +96,19 @@ async def test_25a13_marks_all_existing_memories_unverified_and_downgrades(pg_fa
         assert 'grounding_status' not in columns
         assert 'origin' not in columns
 
+    # The downgrade must leave a schema that 25a13 can be applied to again.
+    await migrate('upgrade', 'head')
+    async with engine.begin() as connection:
+        assert (
+            await connection.execute(text("SELECT version_num FROM alembic_version"))
+        ).scalar_one() == '25a13'
+        assert (
+            await connection.execute(text(
+                "SELECT count(*) FROM memory_obligations "
+                "WHERE kind='memory_review' AND status='pending'"
+            ))
+        ).scalar_one() == 2
+
 
 @pytest.mark.asyncio
 async def test_25a13_downgrade_refuses_after_review_resolution(pg_factory):
