@@ -319,6 +319,56 @@ async def test_genuinely_narrower_claim_merges(pg_factory):
         assert merged.source_memory_id == target_id
 
 
+@pytest.mark.asyncio
+async def test_narrowing_uses_effective_kind_for_target_validation(pg_factory):
+    existing = "Jaco has engineering experience with underground trackless mobile machinery."
+    narrower = (
+        "Jaco has engineering experience with underground trackless mobile machinery, "
+        "including fleet reliability and equipment availability."
+    )
+    target_id = await _create_verified_derived(
+        pg_factory, content=existing, memory_kind="identity"
+    )
+    candidate_id, _, _, _ = await _seed(
+        pg_factory, content=narrower, kind="fact", durability="long_term"
+    )
+    model = _IdentityModel(
+        narrower,
+        category="identity",
+        durability="long_term",
+        relation="narrows",
+        target_memory_id=target_id,
+        replacement_content=narrower,
+    )
+    result = await MemoryReconciliationService(pg_factory, model).run_once()
+    assert result.reconciled == 1
+    assert result.blocked == 0
+    candidate, attempt = await _candidate_and_attempt(pg_factory, candidate_id)
+    assert candidate.status == "reconciled"
+    assert attempt.result_json["result"] == "created"
+    async with pg_factory() as session:
+        target = await session.get(DurableMemoryRow, target_id)
+        assert target is not None
+        assert target.status == "superseded"
+        replacement = (
+            await session.execute(
+                select(DurableMemoryRow).where(DurableMemoryRow.status == "active")
+            )
+        ).scalar_one()
+        assert replacement.content == narrower
+        assert replacement.memory_kind == "identity"
+        merged = (
+            await session.execute(
+                select(MemoryProvenanceRow).where(
+                    MemoryProvenanceRow.memory_id == replacement.id,
+                    MemoryProvenanceRow.relationship == "merged_from",
+                    MemoryProvenanceRow.source_memory_id == target_id,
+                )
+            )
+        ).scalar_one()
+        assert merged.source_memory_id == target_id
+
+
 async def _create_owner_turn(pg_factory, texts: list[str]) -> tuple[UUID, UUID]:
     async with pg_factory() as session:
         transcript = TranscriptRow(kind="owner", next_turn_sequence=1, content_revision=1)

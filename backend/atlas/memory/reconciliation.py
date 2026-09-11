@@ -1468,7 +1468,7 @@ class DerivedMemoryPublisher:
                 )
                 or (
                     target.memory_kind is not None
-                    and target.memory_kind != candidate.kind
+                    and target.memory_kind != (decision.memory_kind or candidate.kind)
                 )
             ):
                 return self._block(
