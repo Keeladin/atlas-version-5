@@ -449,6 +449,27 @@ class _CurrentTargetModel(_PipelineModel):
         return await super().complete_text(instructions=instructions, messages=messages)
 
 
+class _ConfirmationPrincipalModel(_CurrentTargetModel):
+    """Confirmation changes the evidence principal even when wording is identical."""
+
+    async def complete_text(
+        self, *, instructions: str, messages: list[dict[str, str]]
+    ) -> str:
+        if "blind evidence-reading stage" in instructions:
+            self.calls["blind"] += 1
+            principal = "external" if self.calls["blind"] == 1 else "owner"
+            return json.dumps({
+                "extracted_claims": [self.content],
+                "category": self.category,
+                "scope": "cross_chat",
+                "durability": "long_term",
+                "claim_principal": principal,
+                "event_valid_from": None,
+                "event_valid_to": None,
+            })
+        return await super().complete_text(instructions=instructions, messages=messages)
+
+
 @pytest.mark.asyncio
 async def test_owner_confirmation_reconciles_again_against_current_graph(pg_factory):
     content = "Jaco prefers a private health reminder format."
@@ -457,7 +478,7 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
         pg_factory,
         content=content,
     )
-    model = _CurrentTargetModel(content=content, category="health")
+    model = _ConfirmationPrincipalModel(content=content, category="health")
     first = await MemoryReconciliationService(pg_factory, model).run_once()
     assert first.blocked == 1
     async with pg_factory() as session:
@@ -528,7 +549,7 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
     assert resolved["result"] == "requeued_for_reconciliation"
     second = await MemoryReconciliationService(pg_factory, model).run_once()
     assert second.reconciled == 1
-    assert model.calls == {"blind": 1, "compare": 1, "reconcile": 2}
+    assert model.calls == {"blind": 2, "compare": 2, "reconcile": 2}
     assert model.targets == [old_target_id, replacement_id]
     async with pg_factory() as session:
         candidate = await session.get(MemoryCandidateRow, candidate_id)
@@ -546,11 +567,17 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
         assert assertion_transcript.kind == "memory_review"
         assert assertion_transcript.retention_policy == "dependency_protected"
         assert assertion_transcript.closed_at is not None
-        assert (
+        readings = list((
             await session.execute(
-                select(func.count()).select_from(MemoryIndependentReadingRow)
+                select(MemoryIndependentReadingRow).order_by(
+                    MemoryIndependentReadingRow.created_at,
+                    MemoryIndependentReadingRow.id,
+                )
             )
-        ).scalar_one() == 2
+        ).scalars())
+        assert len(readings) == 2
+        assert [row.claim_principal for row in readings] == ["external", "owner"]
+        assert readings[0].evidence_set_hash != readings[1].evidence_set_hash
 
 
 @pytest.mark.asyncio

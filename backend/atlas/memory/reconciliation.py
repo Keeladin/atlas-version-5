@@ -1712,17 +1712,7 @@ class MemoryReconciliationService:
                         claim, reading_row, comparison
                     )
                 else:
-                    reading_row, reading, comparison_row, comparison, rebind = reusable
-                    if rebind:
-                        # Reused across an identical-text owner confirmation: the
-                        # model is not re-run, but the artifacts are re-recorded
-                        # against the evidence set that is actually reconciled.
-                        reading_row = await self._persist_reading(
-                            claim, snapshot, reading
-                        )
-                        comparison_row = await self._persist_comparison(
-                            claim, reading_row, comparison
-                        )
+                    reading_row, reading, comparison_row, comparison = reusable
 
                 if (
                     not reading.extracted_claims
@@ -1928,9 +1918,6 @@ class MemoryReconciliationService:
                 "temporal_horizon_at": candidate.temporal_horizon_at,
                 "owner_confirmation_granted": bool(
                     (candidate.decision_json or {}).get("owner_confirmation_granted")
-                ),
-                "prior_evidence_set_hash": (
-                    (candidate.decision_json or {}).get("prior_evidence_set_hash")
                 ),
                 **explicit_context,
             }
@@ -2301,15 +2288,10 @@ class MemoryReconciliationService:
         IndependentReading,
         MemoryComparisonVerdictRow,
         ComparisonVerdict,
-        bool,
     ] | None:
         evidence_hash = str(snapshot.evidence_refs.get("evidence_set_hash") or "")
         if not evidence_hash:
             return None
-        # An owner confirmation that asserts the identical text extends the
-        # evidence set without changing what was read; the prior reading stays valid.
-        prior_hash = str(snapshot.candidate.get("prior_evidence_set_hash") or "")
-        reusable_hashes = {value for value in (evidence_hash, prior_hash) if value}
         async with self.factory() as session:
             row = (
                 await session.execute(
@@ -2323,7 +2305,7 @@ class MemoryReconciliationService:
                         MemoryComparisonVerdictRow.candidate_id == snapshot.candidate_id,
                         MemoryComparisonVerdictRow.tombstoned_at.is_(None),
                         MemoryIndependentReadingRow.tombstoned_at.is_(None),
-                        MemoryIndependentReadingRow.evidence_set_hash.in_(reusable_hashes),
+                        MemoryIndependentReadingRow.evidence_set_hash == evidence_hash,
                         MemoryIndependentReadingRow.source_revision == snapshot.source_revision,
                     )
                     .order_by(MemoryComparisonVerdictRow.created_at.desc())
@@ -2349,8 +2331,7 @@ class MemoryReconciliationService:
                 scope=comparison_row.scope,
                 durability=comparison_row.durability,
             )
-            rebind = reading_row.evidence_set_hash != evidence_hash
-            return reading_row, reading, comparison_row, comparison, rebind
+            return reading_row, reading, comparison_row, comparison
 
     async def _reconcile_policy_publish(
         self,

@@ -716,11 +716,6 @@ class MemoryLifecycleCommands:
                     ordinal=next_ordinal,
                     span_ref="text:0",
                 ))
-                prior_evidence_set_hash = (
-                    candidate.evidence_set_hash
-                    if asserted == clean_memory_content(candidate.content)
-                    else None
-                )
                 candidate.evidence_set_hash = evidence_set_hash([
                     *((row.turn_id, row.span_ref) for row in evidence_rows),
                     (assertion_turn_id, "text:0"),
@@ -741,7 +736,6 @@ class MemoryLifecycleCommands:
                     "owner_assertion_turn_id": str(assertion_turn_id),
                     "owner_assertion_transcript_id": str(assertion_transcript_id),
                     "obligation_id": str(obligation.id),
-                    "prior_evidence_set_hash": prior_evidence_set_hash,
                 }
                 result = "requeued_for_reconciliation"
             else:
