@@ -41,7 +41,7 @@ async def test_candidate_intake_binds_runtime_provenance(pg_factory) -> None:
         source_provider_evidence_id=provider_id,
     )
 
-    assert result == {"accepted": 1, "duplicate": 0, "rejected": 0}
+    assert result == {"accepted": 1, "duplicate": 0, "rejected": 0, "rejections": {}}
     async with pg_factory() as session:
         row = (await session.execute(select(MemoryCandidateRow))).scalar_one()
         assert row.status == "pending"
@@ -86,8 +86,11 @@ async def test_candidate_intake_rejects_invalid_and_deduplicates_pending(pg_fact
         source_provider_evidence_id=None,
     )
 
-    assert first == {"accepted": 1, "duplicate": 0, "rejected": 2}
-    assert second == {"accepted": 0, "duplicate": 1, "rejected": 0}
+    assert first == {
+        "accepted": 1, "duplicate": 0, "rejected": 2,
+        "rejections": {"invalid_confidence": 1, "unexpected_field": 1},
+    }
+    assert second == {"accepted": 0, "duplicate": 1, "rejected": 0, "rejections": {}}
     async with pg_factory() as session:
         count = (
             await session.execute(select(func.count()).select_from(MemoryCandidateRow))

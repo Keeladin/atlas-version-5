@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import UUID
 
@@ -16,7 +16,7 @@ from atlas.runtime.conversation import memory_evidence_handle_map
 from atlas.transcript.models import Turn
 from atlas.transcript.repository import turn_from_row
 
-from .candidates import MemoryCandidate, MemoryCandidateIntake
+from .candidates import MemoryCandidateIntake
 from .durable import utcnow
 
 logger = logging.getLogger(__name__)
@@ -29,8 +29,11 @@ class DiscoveryModel(Protocol):
 
 
 class DiscoveryBatch(BaseModel):
+    """Container shape only. Items stay untyped here so that each proposal, including a
+    non-object item, is validated individually at intake and rejects only itself."""
+
     model_config = ConfigDict(extra="forbid")
-    memory_candidates: list[MemoryCandidate] = Field(default_factory=list, max_length=8)
+    memory_candidates: list[object] = Field(default_factory=list, max_length=8)
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,7 @@ class DiscoveryRunResult:
     rejected: int = 0
     failures: int = 0
     stale: int = 0
+    rejections: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -136,6 +140,7 @@ class MemoryBackgroundDiscoveryService:
             "failures": 0,
             "stale": 0,
         }
+        rejections: dict[str, int] = {}
         transcript_ids = await self._eligible_transcripts()
         for transcript_id in transcript_ids:
             stats["transcripts_seen"] += 1
@@ -156,7 +161,7 @@ class MemoryBackgroundDiscoveryService:
                     default=None,
                 )
                 intake = await self.intake.enqueue_many(
-                    [item.model_dump(mode="json") for item in batch.memory_candidates],
+                    list(batch.memory_candidates),
                     source_transcript_id=transcript_id,
                     source_turn_id=anchor.id,
                     source_provider_evidence_id=None,
@@ -169,6 +174,14 @@ class MemoryBackgroundDiscoveryService:
                 stats["accepted"] += intake["accepted"]
                 stats["duplicates"] += intake["duplicate"]
                 stats["rejected"] += intake["rejected"]
+                for category, count in (intake.get("rejections") or {}).items():
+                    rejections[category] = rejections.get(category, 0) + int(count)
+                if intake["rejected"]:
+                    logger.warning(
+                        "memory discovery rejected %d of %d proposals for transcript %s: %s",
+                        intake["rejected"], len(batch.memory_candidates), transcript_id,
+                        intake.get("rejections"),
+                    )
                 advanced = await self._advance(
                     transcript_id,
                     sequence=int(anchor.sequence),
@@ -186,7 +199,7 @@ class MemoryBackgroundDiscoveryService:
                     await self._touch(transcript_id)
                 except Exception:
                     logger.exception("could not record sweep attempt for %s", transcript_id)
-        return DiscoveryRunResult(**stats)
+        return DiscoveryRunResult(**stats, rejections=dict(sorted(rejections.items())))
 
     async def _eligible_transcripts(self) -> list[UUID]:
         cursor = func.coalesce(MemoryDiscoveryStateRow.last_scanned_sequence, 0)
@@ -281,7 +294,12 @@ class MemoryBackgroundDiscoveryService:
             "circumstances should be short_term. Do not use confidence as permission to store. "
             "Return exactly one JSON object with key memory_candidates. Candidate keys are kind, "
             "content, scope, confidence, durability, proposed_action, subject, namespace, and "
-            "evidence_refs. Each evidence_refs item contains only handle. proposed_action is always upsert. No markdown or explanation."
+            "evidence_refs. Each evidence_refs item contains only handle. proposed_action is always upsert. "
+            "Use only these exact values: kind is one of identity, preference, fact, decision, "
+            "relationship, procedure, project_state, intent (a place or a goal is a fact or an intent, "
+            "not a new kind); scope is one of chat, project, cross_chat (never global); durability is "
+            "one of short_term, long_term; confidence is a number between 0 and 1, never a word. "
+            "A candidate with any other value is rejected. No markdown or explanation."
         )
         raw = await self.model.complete_text(
             instructions=instructions,

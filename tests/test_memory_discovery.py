@@ -514,3 +514,79 @@ async def test_run_memory_index_once_reports_discovery_statuses(pg_factory, tmp_
     )
     assert degraded["discovery_status"] == "degraded"
     assert degraded["discovery_failures"] == 1
+
+
+class _LooseVocabularyModel(_HandleEchoModel):
+    """Returns the kinds of values the first production sweep actually emitted."""
+
+    async def complete_text(self, *, instructions: str, messages: list[dict[str, str]]) -> str:
+        assert "never global" in instructions and "never a word" in instructions
+        turns = json.loads(messages[0]["content"])["canonical_turns"]
+        self.calls += 1
+        self.payloads.append(turns)
+        items = [item for turn in turns if turn["actor"] == "owner" for item in turn["items"]]
+        handles = [item["handle"] for item in items]
+        base = {"proposed_action": "upsert", "subject": "Jaco", "durability": "long_term"}
+        return json.dumps({"memory_candidates": [
+            {**base, "kind": "preference", "content": "Valid strict candidate.", "scope": "cross_chat",
+             "confidence": 0.8, "evidence_refs": [{"handle": handles[0]}]},
+            {**base, "kind": "Project State", "content": "Spelling-variant candidate.", "scope": "global",
+             "confidence": 0.9, "durability": "long-term", "evidence_refs": [{"handle": handles[1]}]},
+            {**base, "kind": "location", "content": "Unknown kind candidate.", "scope": "cross_chat",
+             "confidence": 0.7, "evidence_refs": [{"handle": handles[2]}]},
+            {**base, "kind": "career_goal", "content": "Another unknown kind.", "scope": "chat",
+             "confidence": "high", "evidence_refs": [{"handle": handles[0]}]},
+            {**base, "kind": "fact", "content": "Word confidence candidate.", "scope": "cross_chat",
+             "confidence": "medium", "evidence_refs": [{"handle": handles[1]}]},
+            {**base, "kind": "fact", "content": "Semantic alias candidate.", "scope": "cross_chat",
+             "confidence": 0.5, "durability": "permanent", "evidence_refs": [{"handle": handles[2]}]},
+            "not an object at all",
+        ]})
+
+
+@pytest.mark.asyncio
+async def test_out_of_schema_proposals_reject_themselves_not_the_batch(pg_factory, caplog):
+    transcript_id, _ = await _seed_transcript(pg_factory, _texts(3))
+    model = _LooseVocabularyModel()
+    result = await _service(pg_factory, model).run_once()
+    assert (result.accepted, result.rejected, result.failures, result.duplicates) == (2, 5, 0, 0)
+    assert result.rejections == {
+        "invalid_candidate": 1,
+        "invalid_confidence": 1,
+        "invalid_durability": 1,
+        "invalid_kind": 2,
+    }
+    assert "rejected 5 of 7 proposals" in caplog.text
+    assert "candidate." not in caplog.text  # never proposal text
+
+    candidates = {candidate.content: candidate for candidate in await _candidates(pg_factory)}
+    assert set(candidates) == {"Valid strict candidate.", "Spelling-variant candidate."}
+    folded = candidates["Spelling-variant candidate."]
+    assert (folded.kind, folded.scope, folded.durability) == ("project_state", "cross_chat", "long_term")
+    assert await _cursor(pg_factory, transcript_id) == 3
+
+
+def test_candidate_normalization_is_syntax_only():
+    from atlas.memory.candidates import MemoryCandidate, normalize_candidate_payload
+
+    base = {"content": "x", "proposed_action": "upsert", "evidence_refs": [{"handle": "o1.0"}]}
+    folded = MemoryCandidate.model_validate({
+        **base, "kind": " Project  State ", "scope": "Global", "confidence": 0.75,
+        "durability": "Short-Term",
+    })
+    assert (folded.kind, folded.scope, folded.confidence, folded.durability) == (
+        "project_state", "cross_chat", 0.75, "short_term",
+    )
+    assert normalize_candidate_payload({"scope": "cross-chat"})["scope"] == "cross_chat"
+    assert normalize_candidate_payload("not a dict") == "not a dict"
+    # Meaning is never reinterpreted: words, synonyms and unknown kinds stay invalid.
+    for bad in (
+        {"kind": "location", "scope": "cross_chat", "confidence": 0.5, "durability": "long_term"},
+        {"kind": "fact", "scope": "owner", "confidence": 0.5, "durability": "long_term"},
+        {"kind": "fact", "scope": "all", "confidence": 0.5, "durability": "long_term"},
+        {"kind": "fact", "scope": "chat", "confidence": "high", "durability": "long_term"},
+        {"kind": "fact", "scope": "chat", "confidence": 0.5, "durability": "permanent"},
+        {"kind": "fact", "scope": "chat", "confidence": 0.5, "durability": "transient"},
+    ):
+        with pytest.raises(ValueError):
+            MemoryCandidate.model_validate({**base, **bad})

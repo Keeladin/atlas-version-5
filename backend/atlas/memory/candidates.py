@@ -5,7 +5,7 @@ import json
 from typing import Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,10 +33,60 @@ class CandidateEvidenceRef(BaseModel):
         return self
 
 
+def _token(value: str) -> str:
+    """Syntax-only normalization: case, surrounding/duplicate whitespace, hyphen and space."""
+    return "_".join(value.casefold().replace("-", " ").split())
+
+
+def normalize_candidate_payload(raw: object) -> object:
+    """Fold spelling variants of protocol tokens; never reinterpret meaning.
+
+    ``Project State`` becomes ``project_state`` and ``short-term`` becomes
+    ``short_term``. The single vocabulary alias is ``global`` for ``cross_chat``.
+    Confidence words, semantic synonyms and unknown kinds are left for validation
+    to reject, one candidate at a time.
+    """
+    if not isinstance(raw, dict):
+        return raw
+    data = dict(raw)
+    for key in ("kind", "scope", "durability"):
+        value = data.get(key)
+        if isinstance(value, str):
+            data[key] = _token(value)
+    if data.get("scope") == "global":
+        data["scope"] = "cross_chat"
+    return data
+
+
+def candidate_rejection_category(exc: BaseException) -> str:
+    """Content-free category for an intake rejection, suitable for aggregation."""
+    if isinstance(exc, ValidationError):
+        errors = exc.errors()
+        if not errors:
+            return "invalid_candidate"
+        error = errors[0]
+        location = [str(item) for item in (error.get("loc") or ()) if not isinstance(item, int)]
+        field = location[0] if location else "candidate"
+        kind = str(error.get("type") or "")
+        if kind == "missing":
+            return f"missing_{field}"
+        if kind == "extra_forbidden":
+            return "unexpected_field"
+        return f"invalid_{field}"
+    if isinstance(exc, ValueError):
+        return _token(str(exc))[:64] or "intake_error"
+    return "type_error"
+
+
 class MemoryCandidate(BaseModel):
     """A model-proposed memory item. It is a hint, never memory authority."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_token_spelling(cls, raw: object) -> object:
+        return normalize_candidate_payload(raw)
 
     kind: Literal[
         "identity",
@@ -277,6 +327,7 @@ class MemoryCandidateIntake:
         temporal_horizon_at=None,
     ) -> dict[str, int]:
         accepted = rejected = duplicate = 0
+        rejections: dict[str, int] = {}
         async with self.factory() as session:
             repository = MemoryCandidateRepository(session)
             for raw in raw_candidates[:8]:
@@ -298,7 +349,14 @@ class MemoryCandidateIntake:
                         accepted += 1
                     else:
                         duplicate += 1
-                except (TypeError, ValueError):
+                except (TypeError, ValueError) as exc:
                     rejected += 1
+                    category = candidate_rejection_category(exc)
+                    rejections[category] = rejections.get(category, 0) + 1
             await session.commit()
-        return {"accepted": accepted, "duplicate": duplicate, "rejected": rejected}
+        return {
+            "accepted": accepted,
+            "duplicate": duplicate,
+            "rejected": rejected,
+            "rejections": rejections,
+        }

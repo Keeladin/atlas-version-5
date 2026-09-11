@@ -94,6 +94,7 @@ async def run_memory_index_once(settings: Settings) -> dict[str, object]:
         discovery_rejected=discovery.rejected,
         discovery_failures=discovery.failures,
         discovery_stale=discovery.stale,
+        discovery_rejections=dict(discovery.rejections),
     )
 
     reconciliation = await MemoryReconciliationService(
