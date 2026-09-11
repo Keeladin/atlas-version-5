@@ -32,7 +32,7 @@ def build_model_instructions(
         "Owner-directed durable memory is explicit, not inferred: ordinary conversation must not be promoted automatically. Use memory.remember for an explicit request to retain information; memory.correct when a claim was wrong or changed over time; memory.retire when the owner wants Atlas to stop using information while retaining it for inspection/restoration; memory.restore to reactivate retired memory; and memory.delete when the owner explicitly wants information removed from Atlas live records. Questions such as 'do you remember' or 'remember when' are recall requests, not durable writes. "
         "The phrase 'forget that' is ambiguous between retirement and deletion. Ask one short clarification when retaining versus removing the content materially changes the outcome, unless the surrounding wording already makes the intent clear. Never describe retired information as forgotten or deleted: say it is retired from recall. Never imply deleted content is secretly retained in live memory. "
         "For remember, persist a concise self-contained statement faithful to the owner's instruction. For correct, retire, or delete, use memory.search first when the target is unclear. Corrections preserve historical state; retirement is reversible; deletion is terminal for that memory identity and reintroducing the same information later creates a new memory ID. When the owner explicitly asks about a previous or superseded state, memory.search may use include_historical=true; never use that flag to bypass retirement or deletion. "
-        "Successful owner lifecycle commands outrank stale transcript/candidate/derived state. After retire or delete, acknowledge the result without repeating the affected content. A delete claim applies only to the live storage scope the runtime actually reports; backup retention is separate. Use memory.commands.list when the command lifecycle itself needs inspection. "
+        "Successful owner lifecycle commands outrank stale transcript/candidate/derived state. After retire or delete, acknowledge the result without repeating the affected content. A delete claim applies only to the live storage scope the runtime actually reports; backup retention is separate. Use memory.commands.list when the command lifecycle itself needs inspection. When the owner responds to a pending memory confirmation, inspect memory.obligations.list and resolve the intended memory_confirmation with memory.obligations.resolve; do not guess if multiple pending confirmations are ambiguous. Memory conflicts require substantive owner clarification rather than a yes/no confirmation. "
         "Do not claim to have tools or capabilities that Atlas has not exposed to you. "
         f"Enabled capability families currently visible through Atlas are: {capability_text}. "
         "When a task needs environment access, search the capability registry rather than guessing operation names. "
@@ -46,10 +46,10 @@ def build_model_instructions(
         "When runtime metadata is needed, append exactly one <atlas_runtime>{json}</atlas_runtime> block at the very end of the response; it is never owner-visible prose. "
         "The JSON may contain task_state_delta and memory_candidates only. task_state_delta may contain objective, constraints, decisions, findings, open_questions, next_step, status, and replace; decisions are objects with text and optional rationale. "
         "If work must remain active beyond this response, set task_state_delta.status=active with a concise next_step. Use status=complete only when the current multi-step task is genuinely finished. Never put tool status, file hashes, resource IDs, action IDs, timestamps, or other runtime-derived facts in task_state_delta; runtime owns those facts. "
-        "memory_candidates is an optional array of at most eight non-authoritative proposals from ordinary conversation. Each candidate may contain only kind, content, scope, confidence, durability, proposed_action, subject, namespace, and evidence. "
-        "Candidate kind is one of identity, preference, fact, decision, relationship, procedure, project_state, or intent. Scope is chat, project, or cross_chat. Durability is short_term or long_term. proposed_action must be upsert. Confidence is 0..1 and means confidence that the owner conveyed the candidate, not permission to persist it. "
+        "memory_candidates is an optional array of at most eight non-authoritative proposals from ordinary conversation. Each candidate may contain only kind, content, scope, confidence, durability, proposed_action, subject, namespace, and evidence_refs. "
+        "Candidate kind is one of identity, preference, fact, decision, relationship, procedure, project_state, or intent. Scope is chat, project, or cross_chat. Durability is short_term or long_term. proposed_action must be upsert. Confidence is 0..1 and is ordering metadata only, never persistence authority. evidence_refs is a non-empty array of objects with handle copied exactly from compact ⟦handle⟧ markers in the supplied messages. Never quote evidence text into runtime metadata. "
         "Prefer compact self-contained candidates. Put stable identity or explicit durable interaction preferences in long_term/cross_chat; project implementation state usually belongs in project scope; temporary deployments, breakdowns, applications, travel, or other current circumstances belong in short_term state or transcript history rather than permanent identity. Never create one growing user-profile blob. "
-        "Do not emit a memory candidate for an explicit remember/correct/retire/restore/delete instruction because the memory command path already owns that mutation. Do not invent source_turn, timestamps, scope identities, or canonical provenance; runtime binds those. "
+        "Do not emit a memory candidate for an explicit remember/correct/retire/restore/delete instruction because the memory command path already owns that mutation. A candidate may cite only evidence handles actually supplied in this inference; never invent handles, turn IDs, timestamps, scope identities, or provenance. Do not mention evidence handles in owner-visible prose. "
         "Omit <atlas_runtime> entirely when neither task state nor memory candidates need to change."
     )
 
@@ -143,6 +143,27 @@ def tool_observation_to_provider_message(block, *, compact: bool = False) -> dic
     }
 
 
+def memory_evidence_handle_map(turns: list[Turn]) -> dict[str, tuple[UUID, str]]:
+    """Ephemeral model-visible handles mapped to canonical turn/span identities."""
+    result: dict[str, tuple[UUID, str]] = {}
+    for turn in turns:
+        prefix = (
+            "o" if turn.actor == Actor.OWNER
+            else "a" if turn.actor == Actor.ATLAS
+            else "t" if turn.actor == Actor.TOOL
+            else "x"
+        )
+        if turn.actor in (Actor.OWNER, Actor.ATLAS):
+            for index, block in enumerate(turn.blocks):
+                if getattr(block, "type", None) == "text":
+                    result[f"{prefix}{turn.sequence}.{index}"] = (turn.id, f"text:{index}")
+        elif turn.actor == Actor.TOOL and any(
+            getattr(block, "type", None) == "tool_observation" for block in turn.blocks
+        ):
+            result[f"{prefix}{turn.sequence}"] = (turn.id, "")
+    return result
+
+
 def turns_to_provider_messages(
     turns: list[Turn],
     *,
@@ -151,6 +172,7 @@ def turns_to_provider_messages(
     summarized_through_turn_id: UUID | None = None,
     compact_tool_turn_ids: set[UUID] | None = None,
     suppressed_contents: list[str] | None = None,
+    evidence_handles: dict[str, tuple[UUID, str]] | None = None,
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     compact_ids = compact_tool_turn_ids or set()
@@ -173,14 +195,23 @@ def turns_to_provider_messages(
         })
     for turn in context_turns(turns, summarized_through_turn_id):
         if turn.actor in (Actor.OWNER, Actor.ATLAS):
-            text = "\n".join(
-                block.text for block in turn.blocks if getattr(block, "type", None) == "text"
-            ).strip()
-            text = redact_guarded_text(text, guards)
-            if text:
+            reverse_handles = (
+                {value: key for key, value in evidence_handles.items()}
+                if evidence_handles else {}
+            )
+            parts: list[str] = []
+            for index, block in enumerate(turn.blocks):
+                if getattr(block, "type", None) != "text":
+                    continue
+                text = redact_guarded_text(block.text, guards).strip()
+                if not text:
+                    continue
+                handle = reverse_handles.get((turn.id, f"text:{index}"))
+                parts.append(f"⟦{handle}⟧ {text}" if handle else text)
+            if parts:
                 messages.append({
                     "role": "user" if turn.actor == Actor.OWNER else "assistant",
-                    "content": text,
+                    "content": "\n".join(parts),
                 })
             for block in turn.blocks:
                 if getattr(block, "type", None) == "artifact_ref":
@@ -194,6 +225,13 @@ def turns_to_provider_messages(
                 if getattr(block, "type", None) != "tool_observation":
                     continue
                 message = tool_observation_to_provider_message(block, compact=turn.id in compact_ids)
+                reverse_handles = (
+                    {value: key for key, value in evidence_handles.items()}
+                    if evidence_handles else {}
+                )
+                handle = reverse_handles.get((turn.id, ""))
+                if handle:
+                    message["content"] = f"⟦{handle}⟧ " + message["content"]
                 message["content"] += f" · evidence_id={turn.id} (exact read: evidence.read)"
                 message["content"] = redact_guarded_text(message["content"], guards)
                 messages.append(message)

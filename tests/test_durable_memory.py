@@ -390,7 +390,9 @@ async def test_delete_removes_live_payload_preserves_identity_and_rebuilds_redac
             "confidence": 0.9,
             "durability": "long_term",
             "proposed_action": "upsert",
-            "evidence": content,
+            "evidence_refs": [
+                {"turn_id": str(owner_turn_id), "span_ref": "text:0"}
+            ],
         }],
         source_transcript_id=transcript_id,
         source_turn_id=owner_turn_id,

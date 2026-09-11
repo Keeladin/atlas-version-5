@@ -5,6 +5,7 @@ from atlas.db import get_session_factory
 from atlas.providers.openai import OpenAIProvider
 
 from .continuity import ContinuityCapsuleService
+from .discovery import MemoryBackgroundDiscoveryService
 from .embeddings import OpenAIEmbeddingClient
 from .reconciliation import MemoryReconciliationService
 from .service import MemoryService
@@ -52,6 +53,9 @@ async def run_memory_index_once(settings: Settings) -> dict[str, object]:
     if api_key is None:
         result.update(
             continuity_status="unavailable",
+            discovery_status=(
+                "unavailable" if settings.memory_reconciliation_enabled else "disabled"
+            ),
             reconciliation_status=(
                 "unavailable" if settings.memory_reconciliation_enabled else "disabled"
             ),
@@ -72,15 +76,28 @@ async def run_memory_index_once(settings: Settings) -> dict[str, object]:
     )
 
     if not settings.memory_reconciliation_enabled:
-        result["reconciliation_status"] = "disabled"
+        result.update(discovery_status="disabled", reconciliation_status="disabled")
         return result
+
+    memory_model = _model(
+        settings, model=settings.memory_reconciliation_model or settings.openai_model
+    )
+    discovery = await MemoryBackgroundDiscoveryService(
+        factory, memory_model
+    ).run_once()
+    result.update(
+        discovery_status="ready" if discovery.failures == 0 else "degraded",
+        discovery_transcripts_seen=discovery.transcripts_seen,
+        discovery_turns_scanned=discovery.turns_scanned,
+        discovery_accepted=discovery.accepted,
+        discovery_duplicates=discovery.duplicates,
+        discovery_rejected=discovery.rejected,
+        discovery_failures=discovery.failures,
+    )
 
     reconciliation = await MemoryReconciliationService(
         factory,
-        _model(
-            settings,
-            model=settings.memory_reconciliation_model or settings.openai_model,
-        ),
+        memory_model,
         lease_seconds=settings.memory_reconciliation_lease_seconds,
         max_attempts=settings.memory_reconciliation_max_attempts,
         batch_size=settings.memory_reconciliation_batch_size,

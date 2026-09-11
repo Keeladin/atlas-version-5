@@ -56,6 +56,8 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     runtime.register_executor("memory.restore", memory.restore)
     runtime.register_executor("memory.delete", memory.delete)
     runtime.register_executor("memory.commands.list", memory.commands)
+    runtime.register_executor("memory.obligations.list", memory.obligations)
+    runtime.register_executor("memory.obligations.resolve", memory.resolve_obligation)
 
     async def policy_reader():
         try:

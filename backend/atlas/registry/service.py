@@ -54,6 +54,7 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             executable_operations=[
                 "memory.search", "memory.remember", "memory.correct",
                 "memory.retire", "memory.restore", "memory.delete", "memory.commands.list",
+                "memory.obligations.list", "memory.obligations.resolve",
             ],
         ),
         CapabilityEntry(
@@ -228,6 +229,23 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             "limit":{"type":"integer","minimum":1,"maximum":100}},
             "additionalProperties":False},
         effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.obligations.list", capability_id="atlas.memory", family="Memory",
+        description="List pending or resolved memory confirmation/conflict obligations without exposing hidden model reasoning.",
+        input_schema={"type":"object","properties":{
+            "status":{"type":"string","enum":["pending","resolved"]},
+            "kind":{"type":"string","enum":["memory_confirmation","memory_conflict","explicit_remember"]},
+            "limit":{"type":"integer","minimum":1,"maximum":100}},
+            "additionalProperties":False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
+    registry.register_operation(OperationDescriptor(
+        id="memory.obligations.resolve", capability_id="atlas.memory", family="Memory",
+        description="Resolve an owner confirmation obligation. Confirmation requeues the candidate for fresh memory-graph reconciliation; rejection terminates it. Conflict obligations require a substantive owner clarification instead.",
+        input_schema={"type":"object","properties":{
+            "obligation_id":{"type":"string","format":"uuid"},
+            "decision":{"type":"string","enum":["confirm","reject"]}},
+            "required":["obligation_id","decision"],"additionalProperties":False},
+        effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(
         id="storage.local.list",
         capability_id="atlas.local_storage",

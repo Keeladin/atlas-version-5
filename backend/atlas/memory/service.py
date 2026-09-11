@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from atlas.persistence.models import MemoryConflictRow, MemoryObligationRow
 
 from .durable import DurableMemoryRepository
 from .embeddings import (
@@ -68,6 +71,18 @@ class MemoryService:
                 query_embedding=query_embedding,
                 embedding_model=self.embedder.model if self.embedder is not None else None,
             )
+            memory_conflicts = await self._unresolved_conflicts(
+                session, durable_memories
+            )
+            conflicts_by_target: dict[str, list[dict[str, object]]] = {}
+            for conflict in memory_conflicts:
+                target_id = str(conflict["target_memory_id"])
+                conflicts_by_target.setdefault(target_id, []).append(conflict)
+            for memory in durable_memories:
+                target_conflicts = conflicts_by_target.get(str(memory.get("memory_id")), [])
+                if target_conflicts:
+                    memory["conflict_status"] = "unresolved"
+                    memory["conflicts"] = target_conflicts
             historical_memories = (
                 await durable_repository.search_historical(
                     query,
@@ -110,13 +125,86 @@ class MemoryService:
                 "authority": "owner_directed_precedes_derived; lifecycle_and_scope_apply_before_relevance",
                 "suppression": "superseded_retired_deleted_sources_are_ineligible_before_transcript_ranking",
                 "suppression_guards": int(memory_state["suppression_guards"]),
+                "unresolved_conflicts": len(memory_conflicts),
+                "conflict_rule": (
+                    "An unresolved memory conflict means neither competing claim is uniquely current. "
+                    "Do not silently choose one; surface the conflict when relevant."
+                ),
             },
             "memory_state": memory_state,
             "durable_memories": durable_memories,
+            "memory_conflicts": memory_conflicts,
             "historical_memories": historical_memories,
             "coverage": coverage,
             "results": results,
         }
+
+    @staticmethod
+    async def _unresolved_conflicts(
+        session: AsyncSession, durable_memories: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        target_ids = [
+            UUID(str(item["memory_id"]))
+            for item in durable_memories
+            if item.get("memory_id")
+        ]
+        if not target_ids:
+            return []
+        conflicts = list(
+            (
+                await session.execute(
+                    select(MemoryConflictRow)
+                    .where(
+                        MemoryConflictRow.target_memory_id.in_(target_ids),
+                        MemoryConflictRow.status.in_(["open", "expired_unresolved"]),
+                        MemoryConflictRow.tombstoned_at.is_(None),
+                    )
+                    .order_by(MemoryConflictRow.created_at.desc())
+                )
+            ).scalars()
+        )
+        if not conflicts:
+            return []
+        obligation_rows = list(
+            (
+                await session.execute(
+                    select(MemoryObligationRow).where(
+                        MemoryObligationRow.subject_type == "memory_conflict",
+                        MemoryObligationRow.subject_id.in_([row.id for row in conflicts]),
+                    )
+                )
+            ).scalars()
+        )
+        obligations = {row.subject_id: row for row in obligation_rows}
+        return [
+            {
+                "conflict_id": str(row.id),
+                "status": row.status,
+                "target_memory_id": str(row.target_memory_id),
+                "candidate_id": str(row.candidate_id),
+                "competing_claim": row.proposed_content,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "obligation": (
+                    {
+                        "obligation_id": str(obligations[row.id].id),
+                        "status": obligations[row.id].status,
+                        "resolution_code": obligations[row.id].resolution_code,
+                        "expires_at": (
+                            obligations[row.id].expires_at.isoformat()
+                            if obligations[row.id].expires_at
+                            else None
+                        ),
+                    }
+                    if row.id in obligations
+                    else None
+                ),
+                "retrieval_instruction": (
+                    "Treat neither the active target nor the competing claim as uniquely current "
+                    "until the owner resolves this conflict."
+                ),
+            }
+            for row in conflicts
+        ]
 
     async def remember(self, arguments: dict) -> dict[str, object]:
         return await self.lifecycle_commands.remember(arguments)
@@ -135,6 +223,12 @@ class MemoryService:
 
     async def commands(self, arguments: dict) -> dict[str, object]:
         return await self.lifecycle_commands.commands(arguments)
+
+    async def obligations(self, arguments: dict) -> dict[str, object]:
+        return await self.lifecycle_commands.obligations(arguments)
+
+    async def resolve_obligation(self, arguments: dict) -> dict[str, object]:
+        return await self.lifecycle_commands.resolve_obligation(arguments)
 
     async def index_once(self, *, active_tail_exchanges: int = 10) -> dict[str, object]:
         async with self.factory() as session:

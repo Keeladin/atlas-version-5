@@ -10,9 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas.persistence.models import (
     DurableMemoryRow,
+    MemoryCandidateEvidenceRow,
     MemoryCandidateRow,
+    MemoryComparisonVerdictRow,
+    MemoryConflictRow,
+    MemoryIndependentReadingRow,
+    MemoryObligationRow,
+    MemoryPolicyDecisionRow,
     MemoryProvenanceRow,
     MemoryReconciliationAttemptRow,
+    MemoryReconciliationRecordRow,
     TranscriptRow,
     TurnRow,
 )
@@ -70,6 +77,8 @@ def _candidate_projection(
         "subject": row.subject,
         "namespace": row.namespace,
         "evidence": row.evidence,
+        "proposer_model": row.proposer_model,
+        "intake_path": row.intake_path,
         "attempt_count": int(row.attempt_count or 0),
         "decision": row.decision_json or {},
         "review_after": row.review_after,
@@ -316,7 +325,7 @@ class MemoryObservabilityService:
             raise LookupError("Memory candidate not found")
 
         transcript = await self.session.get(TranscriptRow, candidate.source_transcript_id)
-        source_turn = await self.session.get(TurnRow, candidate.source_turn_id)
+        trigger_turn = await self.session.get(TurnRow, candidate.source_turn_id)
         attempts = list(
             (
                 await self.session.execute(
@@ -333,13 +342,111 @@ class MemoryObservabilityService:
                     select(MemoryProvenanceRow)
                     .where(MemoryProvenanceRow.source_candidate_id == candidate.id)
                     .order_by(MemoryProvenanceRow.created_at.desc())
-                    .limit(50)
+                    .limit(100)
                 )
             ).scalars()
         )
+
+        evidence_refs = list(
+            (
+                await self.session.execute(
+                    select(MemoryCandidateEvidenceRow)
+                    .where(MemoryCandidateEvidenceRow.candidate_id == candidate.id)
+                    .order_by(MemoryCandidateEvidenceRow.ordinal.asc())
+                )
+            ).scalars()
+        )
+        evidence_turn_ids = {row.turn_id for row in evidence_refs}
+        evidence_turns: dict[UUID, TurnRow] = {}
+        if evidence_turn_ids:
+            rows = list(
+                (
+                    await self.session.execute(
+                        select(TurnRow).where(TurnRow.id.in_(evidence_turn_ids))
+                    )
+                ).scalars()
+            )
+            evidence_turns = {row.id: row for row in rows}
+
+        readings = list(
+            (
+                await self.session.execute(
+                    select(MemoryIndependentReadingRow)
+                    .where(MemoryIndependentReadingRow.candidate_id == candidate.id)
+                    .order_by(MemoryIndependentReadingRow.created_at.desc())
+                )
+            ).scalars()
+        )
+        comparisons = list(
+            (
+                await self.session.execute(
+                    select(MemoryComparisonVerdictRow)
+                    .where(MemoryComparisonVerdictRow.candidate_id == candidate.id)
+                    .order_by(MemoryComparisonVerdictRow.created_at.desc())
+                )
+            ).scalars()
+        )
+        reconciliations = list(
+            (
+                await self.session.execute(
+                    select(MemoryReconciliationRecordRow)
+                    .where(MemoryReconciliationRecordRow.candidate_id == candidate.id)
+                    .order_by(MemoryReconciliationRecordRow.created_at.desc())
+                )
+            ).scalars()
+        )
+        policies = list(
+            (
+                await self.session.execute(
+                    select(MemoryPolicyDecisionRow)
+                    .where(MemoryPolicyDecisionRow.candidate_id == candidate.id)
+                    .order_by(MemoryPolicyDecisionRow.created_at.desc())
+                )
+            ).scalars()
+        )
+        conflicts = list(
+            (
+                await self.session.execute(
+                    select(MemoryConflictRow)
+                    .where(MemoryConflictRow.candidate_id == candidate.id)
+                    .order_by(MemoryConflictRow.created_at.desc())
+                )
+            ).scalars()
+        )
+        conflict_ids = {row.id for row in conflicts}
+        obligation_conditions = [
+            (MemoryObligationRow.subject_type == "memory_candidate")
+            & (MemoryObligationRow.subject_id == candidate.id)
+        ]
+        if conflict_ids:
+            obligation_conditions.append(
+                (MemoryObligationRow.subject_type == "memory_conflict")
+                & MemoryObligationRow.subject_id.in_(conflict_ids)
+            )
+        obligations = list(
+            (
+                await self.session.execute(
+                    select(MemoryObligationRow)
+                    .where(*[obligation_conditions[0] | item for item in obligation_conditions[1:]])
+                    .order_by(MemoryObligationRow.created_at.desc())
+                )
+            ).scalars()
+        ) if len(obligation_conditions) > 1 else list(
+            (
+                await self.session.execute(
+                    select(MemoryObligationRow)
+                    .where(obligation_conditions[0])
+                    .order_by(MemoryObligationRow.created_at.desc())
+                )
+            ).scalars()
+        )
+
         linked_memory_ids = {row.memory_id for row in provenance}
         linked_memory_ids.update(
             row.target_memory_id for row in attempts if row.target_memory_id is not None
+        )
+        linked_memory_ids.update(
+            row.target_memory_id for row in conflicts if row.target_memory_id is not None
         )
         linked_memories: list[DurableMemoryRow] = []
         if linked_memory_ids:
@@ -365,21 +472,124 @@ class MemoryObservabilityService:
                 }
             )
 
+        trigger = {
+            "chat_title": transcript.title if transcript else None,
+            "turn_id": str(trigger_turn.id) if trigger_turn else str(candidate.source_turn_id),
+            "sequence": int(trigger_turn.sequence) if trigger_turn else None,
+            "actor": trigger_turn.actor if trigger_turn else None,
+            "deleted": bool(trigger_turn and trigger_turn.deleted_at is not None),
+            "text": _turn_text(trigger_turn),
+        }
+        evidence_sources = []
+        for ref in evidence_refs:
+            turn = evidence_turns.get(ref.turn_id)
+            evidence_sources.append({
+                "turn_id": str(ref.turn_id),
+                "span_ref": ref.span_ref,
+                "principal": ref.principal,
+                "sequence": int(turn.sequence) if turn else None,
+                "actor": turn.actor if turn else None,
+                "deleted": bool(turn and turn.deleted_at is not None),
+                "text": _turn_text(turn),
+            })
+
         latest_attempt = attempts[0] if attempts else None
         return {
             "candidate": _candidate_projection(
                 candidate,
                 latest_attempt=latest_attempt,
                 transcript=transcript,
-                source_turn=source_turn,
+                source_turn=trigger_turn,
             ),
-            "source": {
-                "chat_title": transcript.title if transcript else None,
-                "turn_id": str(source_turn.id) if source_turn else str(candidate.source_turn_id),
-                "sequence": int(source_turn.sequence) if source_turn else None,
-                "actor": source_turn.actor if source_turn else None,
-                "deleted": bool(source_turn and source_turn.deleted_at is not None),
-                "text": _turn_text(source_turn),
+            "trigger": trigger,
+            # Backward-compatible alias for clients built before trigger/evidence separation.
+            "source": trigger,
+            "evidence_sources": evidence_sources,
+            "verification": {
+                "independent_readings": [
+                    {
+                        "id": str(row.id),
+                        "attempt_id": str(row.attempt_id),
+                        "evidence_set_hash": row.evidence_set_hash,
+                        "source_revision": int(row.source_revision),
+                        "extracted_claims": list(row.extracted_claims_json or []),
+                        "category": row.category,
+                        "scope": row.scope,
+                        "durability": row.durability,
+                        "event_valid_from": row.event_valid_from,
+                        "event_valid_to": row.event_valid_to,
+                        "verifier_model": row.verifier_model,
+                        "tombstoned": row.tombstoned_at is not None,
+                        "created_at": row.created_at,
+                    }
+                    for row in readings
+                ],
+                "comparisons": [
+                    {
+                        "id": str(row.id),
+                        "reading_id": str(row.reading_id),
+                        "verdict": row.verdict,
+                        "normalized_content": row.normalized_content,
+                        "category": row.category,
+                        "scope": row.scope,
+                        "durability": row.durability,
+                        "tombstoned": row.tombstoned_at is not None,
+                        "created_at": row.created_at,
+                    }
+                    for row in comparisons
+                ],
+                "reconciliations": [
+                    {
+                        "id": str(row.id),
+                        "comparison_id": str(row.comparison_id),
+                        "relation": row.relation,
+                        "target_memory_id": (
+                            str(row.target_memory_id) if row.target_memory_id else None
+                        ),
+                        "evaluated_memory_revision": int(row.evaluated_memory_revision),
+                        "replacement_content": row.replacement_content,
+                        "temporal_guard": row.temporal_guard,
+                        "tombstoned": row.tombstoned_at is not None,
+                        "created_at": row.created_at,
+                    }
+                    for row in reconciliations
+                ],
+                "policies": [
+                    {
+                        "id": str(row.id),
+                        "reconciliation_id": str(row.reconciliation_id),
+                        "decision": row.decision,
+                        "reason_code": row.reason_code,
+                        "created_at": row.created_at,
+                    }
+                    for row in policies
+                ],
+                "obligations": [
+                    {
+                        "id": str(row.id),
+                        "kind": row.kind,
+                        "status": row.status,
+                        "subject_type": row.subject_type,
+                        "subject_id": str(row.subject_id) if row.subject_id else None,
+                        "resolution_code": row.resolution_code,
+                        "expires_at": row.expires_at,
+                        "created_at": row.created_at,
+                        "resolved_at": row.resolved_at,
+                    }
+                    for row in obligations
+                ],
+                "conflicts": [
+                    {
+                        "id": str(row.id),
+                        "status": row.status,
+                        "target_memory_id": str(row.target_memory_id),
+                        "proposed_content": row.proposed_content,
+                        "tombstoned": row.tombstoned_at is not None,
+                        "created_at": row.created_at,
+                        "resolved_at": row.resolved_at,
+                    }
+                    for row in conflicts
+                ],
             },
             "attempts": [_attempt_projection(row) for row in attempts],
             "linked_memories": [

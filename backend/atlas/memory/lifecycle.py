@@ -13,10 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from atlas.persistence.models import (
     ContinuityCapsuleRow,
     DurableMemoryRow,
+    MemoryCandidateEvidenceRow,
     MemoryCandidateRow,
     MemoryCommandRow,
+    MemoryComparisonVerdictRow,
+    MemoryConflictRow,
     MemoryDeletionReceiptRow,
+    MemoryIndependentReadingRow,
+    MemoryObligationRow,
     MemoryProvenanceRow,
+    MemoryReconciliationRecordRow,
     TranscriptIndexChunkRow,
     TranscriptIndexStateRow,
     TranscriptRow,
@@ -585,6 +591,124 @@ class MemoryLifecycleCommands:
                 "state": await repository.state(),
             }
 
+    async def obligations(self, arguments: dict) -> dict[str, object]:
+        status = str(arguments.get("status") or "").strip() or None
+        kind = str(arguments.get("kind") or "").strip() or None
+        limit = max(1, min(int(arguments.get("limit") or 20), 100))
+        async with self.factory() as session:
+            statement = select(MemoryObligationRow)
+            if status is not None:
+                statement = statement.where(MemoryObligationRow.status == status)
+            if kind is not None:
+                statement = statement.where(MemoryObligationRow.kind == kind)
+            rows = list((await session.execute(
+                statement.order_by(
+                    MemoryObligationRow.created_at.desc(), MemoryObligationRow.id.desc()
+                ).limit(limit)
+            )).scalars())
+        return {"obligations": [self._project_obligation(row) for row in rows]}
+
+    async def resolve_obligation(self, arguments: dict) -> dict[str, object]:
+        obligation_id = UUID(str(arguments.get("obligation_id")))
+        decision = str(arguments.get("decision") or "").strip()
+        if decision not in {"confirm", "reject"}:
+            raise ValueError("decision must be confirm or reject")
+        source = await self._latest_source()
+        now = utcnow()
+        async with self.factory() as session, session.begin():
+            obligation = (await session.execute(
+                select(MemoryObligationRow)
+                .where(MemoryObligationRow.id == obligation_id)
+                .with_for_update()
+            )).scalar_one_or_none()
+            if obligation is None:
+                raise LookupError("memory obligation not found")
+            if obligation.status != "pending":
+                return {"result": "already_resolved", **self._project_obligation(obligation)}
+            if obligation.kind != "memory_confirmation" or obligation.subject_type != "memory_candidate":
+                raise ValueError("this obligation requires owner clarification, not confirmation")
+            candidate = (await session.execute(
+                select(MemoryCandidateRow)
+                .where(MemoryCandidateRow.id == obligation.subject_id)
+                .with_for_update()
+            )).scalar_one_or_none()
+            if candidate is None:
+                raise LookupError("memory candidate for obligation not found")
+            if obligation.expires_at is not None and obligation.expires_at <= now:
+                obligation.status = "resolved"
+                obligation.resolution_code = "expired_unconfirmed"
+                obligation.resolution_json = {}
+                obligation.resolved_at = now
+                candidate.status = "expired"
+                candidate.processed_at = now
+                candidate.decision_json = {
+                    "decision": "expired", "code": "owner_confirmation_expired"
+                }
+                return {"result": "expired", **self._project_obligation(obligation)}
+
+            obligation.status = "resolved"
+            obligation.resolution_source_transcript_id = source[0]
+            obligation.resolution_source_turn_id = source[1]
+            obligation.resolved_at = now
+            if decision == "confirm":
+                obligation.resolution_code = "confirmed"
+                obligation.resolution_json = {"candidate_id": str(candidate.id)}
+                candidate.status = "pending"
+                candidate.lease_token = None
+                candidate.leased_until = None
+                candidate.review_after = None
+                candidate.attempt_count = 0
+                candidate.processed_at = None
+                candidate.decision_json = {
+                    "decision": "owner_confirmed",
+                    "owner_confirmation_granted": True,
+                    "obligation_id": str(obligation.id),
+                }
+                result = "requeued_for_reconciliation"
+            else:
+                obligation.resolution_code = "rejected"
+                obligation.resolution_json = {"candidate_id": str(candidate.id)}
+                candidate.status = "rejected"
+                candidate.lease_token = None
+                candidate.leased_until = None
+                candidate.review_after = None
+                candidate.processed_at = now
+                candidate.decision_json = {
+                    "decision": "rejected",
+                    "code": "owner_rejected_confirmation",
+                    "obligation_id": str(obligation.id),
+                }
+                result = "rejected"
+            await session.flush()
+            return {
+                "result": result,
+                "candidate_id": str(candidate.id),
+                **self._project_obligation(obligation),
+            }
+
+    @staticmethod
+    def _project_obligation(row: MemoryObligationRow) -> dict[str, object]:
+        return {
+            "obligation_id": str(row.id),
+            "kind": row.kind,
+            "status": row.status,
+            "subject_type": row.subject_type,
+            "subject_id": str(row.subject_id) if row.subject_id else None,
+            "resolution_code": row.resolution_code,
+            "source_transcript_id": str(row.source_transcript_id) if row.source_transcript_id else None,
+            "source_turn_id": str(row.source_turn_id) if row.source_turn_id else None,
+            "resolution_source_transcript_id": (
+                str(row.resolution_source_transcript_id)
+                if row.resolution_source_transcript_id else None
+            ),
+            "resolution_source_turn_id": (
+                str(row.resolution_source_turn_id) if row.resolution_source_turn_id else None
+            ),
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+        }
+
     async def _latest_source(self) -> tuple[UUID | None, UUID | None]:
         async with self.factory() as session:
             return await DurableMemoryRepository(session).latest_owner_source(
@@ -606,6 +730,19 @@ class MemoryLifecycleCommands:
                 source_turn_id=source[1],
             )
             session.add(command)
+            await session.flush()
+            if operation == "remember":
+                session.add(
+                    MemoryObligationRow(
+                        kind="explicit_remember",
+                        status="pending",
+                        subject_type="memory_command",
+                        subject_id=command.id,
+                        command_id=command.id,
+                        source_transcript_id=source[0],
+                        source_turn_id=source[1],
+                    )
+                )
             await session.commit()
             return command.id
 
@@ -674,19 +811,56 @@ class MemoryLifecycleCommands:
     ) -> None:
         command = await session.get(MemoryCommandRow, command_id)
         assert command is not None
+        now = utcnow()
         command.status = APPLIED
         command.target_memory_id = target_memory_id
         command.replacement_memory_id = replacement_memory_id
-        command.applied_at = utcnow()
+        command.applied_at = now
+        obligation = (
+            await session.execute(
+                select(MemoryObligationRow).where(
+                    MemoryObligationRow.command_id == command_id,
+                    MemoryObligationRow.status == "pending",
+                )
+            )
+        ).scalar_one_or_none()
+        if obligation is not None:
+            obligation.status = "resolved"
+            obligation.resolution_code = "persisted"
+            obligation.resolution_json = {
+                "target_memory_id": (
+                    str(target_memory_id) if target_memory_id is not None else None
+                ),
+                "replacement_memory_id": (
+                    str(replacement_memory_id)
+                    if replacement_memory_id is not None
+                    else None
+                ),
+            }
+            obligation.resolved_at = now
 
     async def _fail(self, command_id: UUID, exc: Exception) -> None:
         async with self.factory() as session:
             command = await session.get(MemoryCommandRow, command_id)
             if command is None:
                 return
+            now = utcnow()
             command.status = FAILED
             command.error = f"{type(exc).__name__}: {exc}"[:2_000]
-            command.failed_at = utcnow()
+            command.failed_at = now
+            obligation = (
+                await session.execute(
+                    select(MemoryObligationRow).where(
+                        MemoryObligationRow.command_id == command_id,
+                        MemoryObligationRow.status == "pending",
+                    )
+                )
+            ).scalar_one_or_none()
+            if obligation is not None:
+                obligation.status = "resolved"
+                obligation.resolution_code = "failed"
+                obligation.resolution_json = {}
+                obligation.resolved_at = now
             await session.commit()
 
     async def _memory_descendants(
@@ -830,22 +1004,46 @@ class MemoryLifecycleCommands:
         candidate_ids: set[UUID] | None = None,
     ) -> tuple[set[UUID], set[UUID]]:
         selected: dict[UUID, MemoryCandidateRow] = {}
-        if turn_ids or candidate_ids:
-            conditions = []
-            if turn_ids:
-                conditions.append(MemoryCandidateRow.source_turn_id.in_(turn_ids))
-            if candidate_ids:
-                conditions.append(MemoryCandidateRow.id.in_(candidate_ids))
-            if conditions:
-                from sqlalchemy import or_
-                rows = list((await session.execute(
-                    select(MemoryCandidateRow).where(or_(*conditions))
-                )).scalars())
-                selected.update({row.id: row for row in rows})
+        selected_ids = set(candidate_ids or set())
+        if turn_ids:
+            evidence_candidate_ids = set(
+                (
+                    await session.execute(
+                        select(MemoryCandidateEvidenceRow.candidate_id).where(
+                            MemoryCandidateEvidenceRow.turn_id.in_(turn_ids)
+                        )
+                    )
+                ).scalars()
+            )
+            selected_ids.update(evidence_candidate_ids)
+
+        conditions = []
+        if turn_ids:
+            conditions.append(MemoryCandidateRow.source_turn_id.in_(turn_ids))
+        if selected_ids:
+            conditions.append(MemoryCandidateRow.id.in_(selected_ids))
+        if conditions:
+            from sqlalchemy import or_
+
+            rows = list(
+                (
+                    await session.execute(
+                        select(MemoryCandidateRow).where(or_(*conditions))
+                    )
+                ).scalars()
+            )
+            selected.update({row.id: row for row in rows})
+
         if content:
-            rows = list((await session.execute(
-                select(MemoryCandidateRow).where(MemoryCandidateRow.content.is_not(None))
-            )).scalars())
+            rows = list(
+                (
+                    await session.execute(
+                        select(MemoryCandidateRow).where(
+                            MemoryCandidateRow.content.is_not(None)
+                        )
+                    )
+                ).scalars()
+            )
             for row in rows:
                 if row.content and content.casefold() in row.content.casefold():
                     selected[row.id] = row
@@ -856,12 +1054,14 @@ class MemoryLifecycleCommands:
             for row in selected.values():
                 if row.source_provider_evidence_id is None:
                     continue
-                evidence_turn = await session.get(TurnRow, row.source_provider_evidence_id)
-                if evidence_turn is None:
+                evidence_turn = await session.get(
+                    TurnRow, row.source_provider_evidence_id
+                )
+                if evidence_turn is None or evidence_turn.deleted_at is not None:
                     continue
                 redacted = deepcopy(evidence_turn.blocks or [])
                 changed = False
-                for value in (row.content, row.evidence):
+                for value in (content, row.content, row.evidence):
                     if not value:
                         continue
                     redacted, value_changed = _redact_value(redacted, value)
@@ -872,8 +1072,14 @@ class MemoryLifecycleCommands:
                     evidence_turn.deletion_operation_id = operation_id
                     evidence_turn_ids.add(evidence_turn.id)
 
+        nonterminal = {
+            "pending",
+            "leased",
+            "retained_short_term",
+            "awaiting_owner",
+        }
         for row in selected.values():
-            if row.status in {"pending", "leased", "retained_short_term"}:
+            if row.status in nonterminal:
                 row.status = "invalidated"
                 row.lease_token = None
                 row.leased_until = None
@@ -886,7 +1092,119 @@ class MemoryLifecycleCommands:
                 row.fingerprint = None
                 row.evidence = None
                 row.decision_json = {}
-        return set(selected), evidence_turn_ids
+
+        ids = set(selected)
+        if scrub and ids:
+            await self._tombstone_candidate_derivatives(
+                session, operation_id, ids, now
+            )
+        return ids, evidence_turn_ids
+
+    @staticmethod
+    async def _tombstone_candidate_derivatives(
+        session: AsyncSession,
+        operation_id: UUID,
+        candidate_ids: set[UUID],
+        now,
+    ) -> None:
+        readings = list(
+            (
+                await session.execute(
+                    select(MemoryIndependentReadingRow).where(
+                        MemoryIndependentReadingRow.candidate_id.in_(candidate_ids)
+                    )
+                )
+            ).scalars()
+        )
+        for row in readings:
+            row.extracted_claims_json = []
+            row.category = None
+            row.scope = None
+            row.durability = None
+            row.event_valid_from = None
+            row.event_valid_to = None
+            row.tombstoned_at = now
+            row.tombstone_operation_id = operation_id
+
+        comparisons = list(
+            (
+                await session.execute(
+                    select(MemoryComparisonVerdictRow).where(
+                        MemoryComparisonVerdictRow.candidate_id.in_(candidate_ids)
+                    )
+                )
+            ).scalars()
+        )
+        for row in comparisons:
+            row.normalized_content = None
+            row.category = None
+            row.scope = None
+            row.durability = None
+            row.tombstoned_at = now
+            row.tombstone_operation_id = operation_id
+
+        reconciliations = list(
+            (
+                await session.execute(
+                    select(MemoryReconciliationRecordRow).where(
+                        MemoryReconciliationRecordRow.candidate_id.in_(candidate_ids)
+                    )
+                )
+            ).scalars()
+        )
+        for row in reconciliations:
+            row.replacement_content = None
+            row.tombstoned_at = now
+            row.tombstone_operation_id = operation_id
+
+        conflicts = list(
+            (
+                await session.execute(
+                    select(MemoryConflictRow).where(
+                        MemoryConflictRow.candidate_id.in_(candidate_ids)
+                    )
+                )
+            ).scalars()
+        )
+        conflict_ids = {row.id for row in conflicts}
+        for row in conflicts:
+            row.proposed_content = None
+            row.status = "evidence_purged"
+            row.tombstoned_at = now
+            row.tombstone_operation_id = operation_id
+            row.resolved_at = now
+
+        obligations = list(
+            (
+                await session.execute(
+                    select(MemoryObligationRow).where(
+                        (
+                            (MemoryObligationRow.subject_type == "memory_candidate")
+                            & MemoryObligationRow.subject_id.in_(candidate_ids)
+                        )
+                        | (
+                            (MemoryObligationRow.subject_type == "memory_conflict")
+                            & MemoryObligationRow.subject_id.in_(conflict_ids)
+                        )
+                    )
+                )
+            ).scalars()
+        ) if conflict_ids else list(
+            (
+                await session.execute(
+                    select(MemoryObligationRow).where(
+                        MemoryObligationRow.subject_type == "memory_candidate",
+                        MemoryObligationRow.subject_id.in_(candidate_ids),
+                    )
+                )
+            ).scalars()
+        )
+        for row in obligations:
+            if row.status == "pending":
+                row.status = "resolved"
+                row.resolution_code = "evidence_purged"
+                row.resolved_at = now
+            row.resolution_json = {}
 
     async def _scrub_command_payloads(
         self,

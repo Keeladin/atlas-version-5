@@ -557,6 +557,8 @@ export type MemoryCandidate = {
   subject: string | null
   namespace: string | null
   evidence: string | null
+  proposer_model: string | null
+  intake_path: string
   attempt_count: number
   decision: Record<string, unknown>
   review_after: string | null
@@ -620,15 +622,29 @@ export type MemoryObservability = {
   recent_memories: DurableMemoryInspection[]
 }
 
+export type MemoryTraceTurn = {
+  chat_title?: string | null
+  turn_id: string
+  span_ref?: string
+  principal?: string
+  sequence: number | null
+  actor: string | null
+  deleted: boolean
+  text: string | null
+}
+
 export type MemoryCandidateDetail = {
   candidate: MemoryCandidate
-  source: {
-    chat_title: string | null
-    turn_id: string
-    sequence: number | null
-    actor: string | null
-    deleted: boolean
-    text: string | null
+  trigger: MemoryTraceTurn
+  source: MemoryTraceTurn
+  evidence_sources: MemoryTraceTurn[]
+  verification: {
+    independent_readings: Array<Record<string, unknown>>
+    comparisons: Array<Record<string, unknown>>
+    reconciliations: Array<Record<string, unknown>>
+    policies: Array<Record<string, unknown>>
+    obligations: Array<Record<string, unknown>>
+    conflicts: Array<Record<string, unknown>>
   }
   attempts: MemoryReconciliationAttempt[]
   linked_memories: Array<DurableMemoryInspection & { provenance: Array<Record<string, unknown>> }>

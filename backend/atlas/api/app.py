@@ -63,6 +63,7 @@ from atlas.runtime.bootstrap import build_seat_bootstrap
 from atlas.runtime.conversation import (
     build_model_instructions,
     context_turns,
+    memory_evidence_handle_map,
     tool_observation_is_compactable,
     tool_observation_to_provider_message,
     tool_turn_exchange_ages,
@@ -754,7 +755,8 @@ async def _active_memory_suppression_contents(session: AsyncSession) -> list[str
 
 async def _assemble_working_context(
     provider: OpenAIProvider, transcript, turns, *, suppressed_contents: list[str] | None = None,
-    continuity_context: str | None = None, continuity_count: int = 0
+    continuity_context: str | None = None, continuity_count: int = 0,
+    evidence_handles: dict[str, tuple[UUID, str]] | None = None,
 ):
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
     suppressed_contents = suppressed_contents or []
@@ -775,6 +777,7 @@ async def _assemble_working_context(
             continuity_context=continuity_context if include_continuity else None,
             compact_tool_turn_ids=compact_ids,
             suppressed_contents=suppressed_contents,
+            evidence_handles=evidence_handles,
         )
         task_message = active_task_provider_message(transcript.active_task_state)
         if task_message is not None:
@@ -867,11 +870,17 @@ async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns
         continuity_context, continuity_count = await recent_continuity_context(
             memory_session, transcript.id, limit=settings.memory_continuity_chats
         )
+    handles = memory_evidence_handle_map(turns)
     messages, _ = await _assemble_working_context(
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
+        evidence_handles=handles,
     )
-    return messages
+    rendered = "\n".join(str(message.get("content") or "") for message in messages)
+    visible_handles = {
+        handle: ref for handle, ref in handles.items() if f"⟦{handle}⟧" in rendered
+    }
+    return messages, visible_handles
 
 
 def _context_pressure_state(input_tokens: int, limit_tokens: int) -> str:
@@ -1258,7 +1267,9 @@ async def stream_conversation(request: ChatRequest):
     try:
         provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
         async with maintain_heartbeat(factory, run_id):
-            messages = await _prepare_provider_messages(provider, transcript, turns)
+            messages, memory_evidence_handles = await _prepare_provider_messages(
+                provider, transcript, turns
+            )
     except BaseException:
         await asyncio.shield(interrupt_run(factory, artifact_store, run_id, reason="Context preparation was interrupted; task state was retained."))
         raise
@@ -1304,6 +1315,11 @@ async def stream_conversation(request: ChatRequest):
             source_transcript_id=transcript.id,
             source_turn_id=owner_turn.id,
             source_provider_evidence_id=provider_evidence_id,
+            allowed_evidence_turn_ids={
+                turn_id for turn_id, _span_ref in memory_evidence_handles.values()
+            },
+            evidence_handle_map=memory_evidence_handles,
+            proposer_model=settings.openai_model,
         )
 
     async def checkpoint_reader():

@@ -41,6 +41,62 @@ class _StaticModel:
         return json.dumps(self.payload)
 
 
+class _PipelineModel:
+    model = "test-pipeline"
+
+    def __init__(
+        self,
+        *,
+        content: str,
+        kind: str = "preference",
+        scope: str = "cross_chat",
+        durability: str = "long_term",
+        relation: str = "new",
+        target_memory_id: UUID | None = None,
+    ) -> None:
+        self.content = content
+        self.kind = kind
+        self.scope = scope
+        self.durability = durability
+        self.relation = relation
+        self.target_memory_id = target_memory_id
+
+    async def complete_text(
+        self, *, instructions: str, messages: list[dict[str, str]]
+    ) -> str:
+        if "blind evidence-reading stage" in instructions:
+            return json.dumps({
+                "extracted_claims": [self.content],
+                "category": self.kind,
+                "scope": self.scope,
+                "durability": self.durability,
+                "event_valid_from": None,
+                "event_valid_to": None,
+            })
+        if "Compare a foreground memory proposal" in instructions:
+            return json.dumps({
+                "verdict": "agree",
+                "normalized_content": self.content,
+                "category": self.kind,
+                "scope": self.scope,
+                "durability": self.durability,
+            })
+        if "Reconcile one independently verified claim" in instructions:
+            return json.dumps({
+                "relation": self.relation,
+                "target_memory_id": (
+                    str(self.target_memory_id) if self.target_memory_id else None
+                ),
+                "replacement_content": (
+                    self.content if self.relation in {
+                        "narrows", "supersedes", "historical_predecessor",
+                        "conflicts_with",
+                    } else None
+                ),
+            })
+        raise AssertionError("unexpected verification stage")
+
+
 async def _seed_candidate(
     pg_factory,
     *,
@@ -72,6 +128,7 @@ async def _seed_candidate(
         "durability": durability,
         "proposed_action": "upsert",
         "subject": subject,
+        "evidence_refs": [{"turn_id": str(turn_id), "span_ref": "text:0"}],
     }
     result = await MemoryCandidateIntake(pg_factory).enqueue_many(
         [raw],
@@ -664,13 +721,12 @@ async def test_end_to_end_candidate_reconciliation_creates_derived_memory(pg_fac
         kind="preference",
         subject="Jaco",
     )
-    model = _StaticModel(
-        {
-            "decision": "create",
-            "target_memory_id": None,
-            "content": None,
-            "reason": "stable cross-chat preference",
-        }
+    model = _PipelineModel(
+        content="Jaco prefers fresh topic-specific chats.",
+        kind="preference",
+        scope="cross_chat",
+        durability="long_term",
+        relation="new",
     )
     result = await MemoryReconciliationService(
         pg_factory,

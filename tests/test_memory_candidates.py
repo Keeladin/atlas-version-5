@@ -32,6 +32,7 @@ async def test_candidate_intake_binds_runtime_provenance(pg_factory) -> None:
             "confidence": 0.93,
             "durability": "long_term",
             "proposed_action": "upsert",
+            "evidence_refs": [{"turn_id": str(owner_id), "span_ref": "text:0"}],
             "subject": "Jaco",
             "namespace": "interaction_preferences",
         }],
@@ -67,6 +68,7 @@ async def test_candidate_intake_rejects_invalid_and_deduplicates_pending(pg_fact
         "kind": "preference", "content": "Stable preference.",
         "scope": "cross_chat", "confidence": 0.9,
         "durability": "long_term", "proposed_action": "upsert",
+        "evidence_refs": [{"turn_id": str(owner_id), "span_ref": "text:0"}],
     }
     intake = MemoryCandidateIntake(pg_factory)
     first = await intake.enqueue_many(
@@ -112,7 +114,8 @@ async def test_pending_candidate_has_no_memory_search_authority(pg_factory) -> N
     await MemoryCandidateIntake(pg_factory).enqueue_many(
         [{"kind": "preference", "content": "Prefers comet-shaped widgets.",
           "scope": "cross_chat", "confidence": 0.95,
-          "durability": "long_term", "proposed_action": "upsert"}],
+          "durability": "long_term", "proposed_action": "upsert",
+          "evidence_refs": [{"turn_id": str(owner_id), "span_ref": "text:0"}]}],
         source_transcript_id=transcript_id, source_turn_id=owner_id,
         source_provider_evidence_id=None,
     )
@@ -143,6 +146,7 @@ async def test_concurrent_duplicate_candidates_have_one_pending_winner(pg_factor
         "kind": "preference", "content": "Same stable preference.",
         "scope": "cross_chat", "confidence": 0.9,
         "durability": "long_term", "proposed_action": "upsert",
+        "evidence_refs": [{"turn_id": str(owner_id), "span_ref": "text:0"}],
     }]
     async def enqueue_once():
         return await MemoryCandidateIntake(pg_factory).enqueue_many(
@@ -179,16 +183,17 @@ async def test_chat_scoped_candidate_identity_is_bound_to_source_chat(pg_factory
             transcript.closed_at = func.now()
         await session.commit()
 
-    candidate = [{
-        "kind": "preference",
-        "content": "Use compact tables in this chat.",
-        "scope": "chat",
-        "confidence": 0.9,
-        "durability": "short_term",
-        "proposed_action": "upsert",
-    }]
     results = []
     for transcript_id, owner_id in sources:
+        candidate = [{
+            "kind": "preference",
+            "content": "Use compact tables in this chat.",
+            "scope": "chat",
+            "confidence": 0.9,
+            "durability": "short_term",
+            "proposed_action": "upsert",
+            "evidence_refs": [{"turn_id": str(owner_id), "span_ref": "text:0"}],
+        }]
         results.append(await intake.enqueue_many(
             candidate, source_transcript_id=transcript_id,
             source_turn_id=owner_id, source_provider_evidence_id=None,
@@ -224,25 +229,32 @@ async def test_cross_chat_candidate_identity_deduplicates_across_source_chats(pg
             transcript.closed_at = func.now()
         await session.commit()
 
-    candidate = [{
+    first_candidate = [{
         "kind": "preference",
         "content": "Jaco prefers fresh topic-specific chats.",
         "scope": "cross_chat",
         "confidence": 0.95,
         "durability": "long_term",
         "proposed_action": "upsert",
+        "evidence_refs": [{"turn_id": str(sources[0][1]), "span_ref": "text:0"}],
+    }]
+    second_candidate = [{
+        **first_candidate[0],
+        "evidence_refs": [{"turn_id": str(sources[1][1]), "span_ref": "text:0"}],
     }]
     first = await intake.enqueue_many(
-        candidate, source_transcript_id=sources[0][0], source_turn_id=sources[0][1],
+        first_candidate, source_transcript_id=sources[0][0], source_turn_id=sources[0][1],
         source_provider_evidence_id=None,
     )
     second = await intake.enqueue_many(
-        candidate, source_transcript_id=sources[1][0], source_turn_id=sources[1][1],
+        second_candidate, source_transcript_id=sources[1][0], source_turn_id=sources[1][1],
         source_provider_evidence_id=None,
     )
     assert first["accepted"] == 1
-    assert second["duplicate"] == 1
+    assert second["accepted"] == 1
 
     async with pg_factory() as session:
-        row = (await session.execute(select(MemoryCandidateRow))).scalar_one()
-        assert row.scope_key == "owner"
+        rows = list((await session.execute(select(MemoryCandidateRow))).scalars())
+        assert len(rows) == 2
+        assert all(row.scope_key == "owner" for row in rows)
+        assert rows[0].evidence_set_hash != rows[1].evidence_set_hash

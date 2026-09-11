@@ -237,13 +237,16 @@ class MemoryCandidateRow(Base):
     __tablename__ = "memory_candidates"
     __table_args__ = (
         Index(
-            "uq_pending_memory_candidate_fingerprint",
-            "fingerprint",
+            "uq_reconcilable_memory_candidate_evidence",
+            "evidence_set_hash",
             unique=True,
-            postgresql_where=text("status IN ('pending', 'leased', 'retained_short_term') AND fingerprint IS NOT NULL"),
+            postgresql_where=text(
+                "status IN ('pending', 'leased', 'retained_short_term', 'awaiting_owner') "
+                "AND evidence_set_hash IS NOT NULL"
+            ),
         ),
         CheckConstraint(
-            "status NOT IN ('pending', 'leased', 'retained_short_term') OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
+            "status NOT IN ('pending', 'leased', 'retained_short_term', 'awaiting_owner') OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
             name="ck_reconcilable_candidate_has_payload",
         ),
     )
@@ -261,6 +264,11 @@ class MemoryCandidateRow(Base):
     namespace: Mapped[str | None] = mapped_column(String(160), index=True)
     evidence: Mapped[str | None] = mapped_column(Text)
     fingerprint: Mapped[str | None] = mapped_column(String(64), index=True)
+    evidence_set_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    proposer_model: Mapped[str | None] = mapped_column(String(128), index=True)
+    intake_path: Mapped[str] = mapped_column(
+        String(32), default="foreground", server_default="foreground", index=True
+    )
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     invalidation_operation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
@@ -284,6 +292,47 @@ class MemoryCandidateRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryCandidateEvidenceRow(Base):
+    __tablename__ = "memory_candidate_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id", "turn_id", "span_ref",
+            name="uq_memory_candidate_evidence_ref",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    turn_id: Mapped[UUID] = mapped_column(
+        ForeignKey("turns.id", ondelete="CASCADE"), index=True
+    )
+    principal: Mapped[str] = mapped_column(String(32), index=True)
+    ordinal: Mapped[int] = mapped_column(BigInteger)
+    span_ref: Mapped[str] = mapped_column(String(160), default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MemoryDiscoveryStateRow(Base):
+    __tablename__ = "memory_discovery_state"
+
+    transcript_id: Mapped[UUID] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="CASCADE"), primary_key=True
+    )
+    last_scanned_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0"
+    )
+    source_revision: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class MemoryReconciliationAttemptRow(Base):
@@ -317,6 +366,171 @@ class MemoryReconciliationAttemptRow(Base):
     error: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class MemoryIndependentReadingRow(Base):
+    __tablename__ = "memory_independent_readings"
+    __table_args__ = (
+        UniqueConstraint("attempt_id", name="uq_memory_independent_reading_attempt"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    attempt_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_reconciliation_attempts.id", ondelete="CASCADE"), index=True
+    )
+    evidence_set_hash: Mapped[str] = mapped_column(String(64), index=True)
+    source_revision: Mapped[int] = mapped_column(BigInteger)
+    extracted_claims_json: Mapped[list] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    category: Mapped[str | None] = mapped_column(String(64), index=True)
+    scope: Mapped[str | None] = mapped_column(String(32), index=True)
+    durability: Mapped[str | None] = mapped_column(String(32), index=True)
+    event_valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    event_valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    verifier_model: Mapped[str | None] = mapped_column(String(128))
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    tombstone_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MemoryComparisonVerdictRow(Base):
+    __tablename__ = "memory_comparison_verdicts"
+    __table_args__ = (
+        UniqueConstraint("reading_id", name="uq_memory_comparison_reading"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    reading_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_independent_readings.id", ondelete="CASCADE"), index=True
+    )
+    verdict: Mapped[str] = mapped_column(String(32), index=True)
+    normalized_content: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(64), index=True)
+    scope: Mapped[str | None] = mapped_column(String(32), index=True)
+    durability: Mapped[str | None] = mapped_column(String(32), index=True)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    tombstone_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MemoryReconciliationRecordRow(Base):
+    __tablename__ = "memory_reconciliation_records"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    comparison_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_comparison_verdicts.id", ondelete="CASCADE"), index=True
+    )
+    relation: Mapped[str] = mapped_column(String(32), index=True)
+    target_memory_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="SET NULL"), index=True
+    )
+    evaluated_memory_revision: Mapped[int] = mapped_column(BigInteger, index=True)
+    replacement_content: Mapped[str | None] = mapped_column(Text)
+    temporal_guard: Mapped[str | None] = mapped_column(String(32), index=True)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    tombstone_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MemoryPolicyDecisionRow(Base):
+    __tablename__ = "memory_policy_decisions"
+    __table_args__ = (
+        UniqueConstraint("reconciliation_id", name="uq_memory_policy_reconciliation"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    reconciliation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_reconciliation_records.id", ondelete="CASCADE"), index=True
+    )
+    decision: Mapped[str] = mapped_column(String(32), index=True)
+    reason_code: Mapped[str | None] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MemoryObligationRow(Base):
+    __tablename__ = "memory_obligations"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    subject_type: Mapped[str] = mapped_column(String(32), index=True)
+    subject_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    command_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("memory_commands.id", ondelete="SET NULL"), index=True
+    )
+    source_transcript_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="SET NULL"), index=True
+    )
+    source_turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), index=True
+    )
+    resolution_source_transcript_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("transcripts.id", ondelete="SET NULL"), index=True
+    )
+    resolution_source_turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="SET NULL"), index=True
+    )
+    resolution_code: Mapped[str | None] = mapped_column(String(64), index=True)
+    resolution_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class MemoryConflictRow(Base):
+    __tablename__ = "memory_conflicts"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_candidates.id", ondelete="CASCADE"), index=True
+    )
+    reconciliation_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_reconciliation_records.id", ondelete="CASCADE"), index=True
+    )
+    target_memory_id: Mapped[UUID] = mapped_column(
+        ForeignKey("durable_memories.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    proposed_content: Mapped[str | None] = mapped_column(Text)
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    tombstone_operation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class MemoryProvenanceRow(Base):
