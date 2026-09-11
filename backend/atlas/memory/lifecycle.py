@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import deque
 from collections.abc import Callable
@@ -93,6 +94,24 @@ def _classification(arguments: dict, source_transcript_id: UUID | None) -> dict[
         "namespace": namespace,
     }
 
+
+
+
+def _review_version(*, subject_type: str, subject_id: UUID, text: str, state: str) -> str:
+    material = f"{subject_type}:{subject_id}:{state}:{text}".encode()
+    return hashlib.sha256(material).hexdigest()
+
+
+def _turn_text(row: TurnRow | None) -> str | None:
+    if row is None or row.deleted_at is not None:
+        return None
+    parts: list[str] = []
+    for block in row.blocks or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            value = clean_memory_content(block.get("text"))
+            if value:
+                parts.append(value)
+    return "\n".join(parts) if parts else None
 
 def _clear_embedding(row: DurableMemoryRow) -> None:
     row.embedding = None
@@ -671,15 +690,7 @@ class MemoryLifecycleCommands:
             projections: list[dict[str, object]] = []
             for row in rows:
                 projection = self._project_obligation(row)
-                assertion_text: str | None = None
-                if row.status == "pending" and row.subject_id is not None:
-                    if row.subject_type == "durable_memory":
-                        target = await session.get(DurableMemoryRow, row.subject_id)
-                        assertion_text = target.content if target is not None else None
-                    elif row.subject_type == "memory_candidate":
-                        candidate = await session.get(MemoryCandidateRow, row.subject_id)
-                        assertion_text = candidate.content if candidate is not None else None
-                projection["proposed_assertion_text"] = assertion_text
+                projection.update(await self._review_projection(session, row))
                 projections.append(projection)
         return {"obligations": projections}
 
@@ -688,13 +699,17 @@ class MemoryLifecycleCommands:
         decision = str(arguments.get("decision") or "").strip()
         if decision not in {"confirm", "reject", "retry"}:
             raise ValueError("decision must be confirm, reject, or retry")
+        review_version = str(arguments.get("review_version") or "").strip() or None
         async with self.factory() as preview_session:
             preview = await preview_session.get(MemoryObligationRow, obligation_id)
             if preview is None:
                 raise LookupError("memory obligation not found")
             if preview.kind == "memory_review" and preview.subject_type == "durable_memory":
                 return await self._resolve_memory_review(
-                    obligation_id, decision=decision, edited_content=arguments.get("content")
+                    obligation_id,
+                    decision=decision,
+                    edited_content=arguments.get("content"),
+                    review_version=review_version,
                 )
 
         source = await self._latest_source()
@@ -724,6 +739,23 @@ class MemoryLifecycleCommands:
             )).scalar_one_or_none()
             if candidate is None:
                 raise LookupError("memory candidate for obligation not found")
+            current_text = clean_memory_content(candidate.content)
+            current_review_version = _review_version(
+                subject_type="memory_candidate",
+                subject_id=candidate.id,
+                text=current_text,
+                state=(
+                    f"{candidate.status}:{int(candidate.state_version or 0)}:"
+                    f"{candidate.fingerprint or ''}:{candidate.evidence_set_hash or ''}"
+                ),
+            )
+            if decision in {"confirm", "reject"} and review_version != current_review_version:
+                return {
+                    "result": "stale_review",
+                    "proposed_assertion_text": current_text,
+                    "review_version": current_review_version,
+                    **self._project_obligation(obligation),
+                }
             if obligation.expires_at is not None and obligation.expires_at <= now:
                 candidate.state_version = int(candidate.state_version or 0) + 1
                 obligation.status = "resolved"
@@ -813,6 +845,7 @@ class MemoryLifecycleCommands:
         *,
         decision: str,
         edited_content: object | None,
+        review_version: str | None,
     ) -> dict[str, object]:
         if decision not in {"confirm", "reject"}:
             raise ValueError("memory review requires confirm or reject")
@@ -851,6 +884,25 @@ class MemoryLifecycleCommands:
             )).scalar_one_or_none()
             if target is None:
                 raise LookupError("memory review target not found")
+            current_text = clean_memory_content(target.content)
+            current_review_version = _review_version(
+                subject_type="durable_memory",
+                subject_id=target.id,
+                text=current_text,
+                state=(
+                    f"{target.status}:{target.grounding_status}:"
+                    f"{target.fingerprint or ''}:{target.updated_at.isoformat() if target.updated_at else ''}"
+                ),
+            )
+            if review_version != current_review_version:
+                return SharedWriteMutation(
+                    mutated=False,
+                    result={
+                        "result": "stale_review",
+                        "proposed_assertion_text": current_text,
+                        "review_version": current_review_version,
+                    },
+                )
             now = utcnow()
             obligation.status = "resolved"
             obligation.resolved_at = now
@@ -924,6 +976,46 @@ class MemoryLifecycleCommands:
         transcript_row.closed_at = utcnow()
         transcript_row.updated_at = utcnow()
         return transcript.id, turn.id
+
+    @staticmethod
+    async def _review_projection(
+        session: AsyncSession, row: MemoryObligationRow
+    ) -> dict[str, object]:
+        if (
+            row.status != "pending"
+            or row.subject_id is None
+            or row.kind not in {"memory_review", "memory_confirmation"}
+        ):
+            return {"proposed_assertion_text": None, "review_version": None}
+        if row.subject_type == "durable_memory":
+            target = await session.get(DurableMemoryRow, row.subject_id)
+            if target is None or target.content is None:
+                return {"proposed_assertion_text": None, "review_version": None}
+            text = clean_memory_content(target.content)
+            state = (
+                f"{target.status}:{target.grounding_status}:"
+                f"{target.fingerprint or ''}:{target.updated_at.isoformat() if target.updated_at else ''}"
+            )
+        elif row.subject_type == "memory_candidate":
+            candidate = await session.get(MemoryCandidateRow, row.subject_id)
+            if candidate is None or candidate.content is None:
+                return {"proposed_assertion_text": None, "review_version": None}
+            text = clean_memory_content(candidate.content)
+            state = (
+                f"{candidate.status}:{int(candidate.state_version or 0)}:"
+                f"{candidate.fingerprint or ''}:{candidate.evidence_set_hash or ''}"
+            )
+        else:
+            return {"proposed_assertion_text": None, "review_version": None}
+        return {
+            "proposed_assertion_text": text,
+            "review_version": _review_version(
+                subject_type=row.subject_type,
+                subject_id=row.subject_id,
+                text=text,
+                state=state,
+            ),
+        }
 
     @staticmethod
     def _project_obligation(row: MemoryObligationRow) -> dict[str, object]:

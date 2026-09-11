@@ -58,9 +58,19 @@ class TranscriptRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def create(self, *, kind: str = "owner", title: str | None = None) -> Transcript:
+    async def create(
+        self, *, kind: str = "owner", title: str | None = None,
+        retention_policy: str | None = None,
+    ) -> Transcript:
+        effective_retention = (
+            retention_policy
+            or ("dependency_protected" if kind == "memory_review" else "standard")
+        )
+        if kind == "memory_review" and effective_retention != "dependency_protected":
+            raise ValueError("memory_review transcripts must be dependency protected")
         row = TranscriptRow(
             kind=kind,
+            retention_policy=effective_retention,
             title=_clean_title(title) if kind == "owner" else title,
         )
         self.session.add(row)

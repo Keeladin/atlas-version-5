@@ -32,6 +32,23 @@ def _json_array() -> sa.TextClause:
 
 def upgrade() -> None:
     op.add_column(
+        "transcripts",
+        sa.Column(
+            "retention_policy", sa.String(length=32),
+            server_default="standard", nullable=False,
+        ),
+    )
+    op.create_index(
+        "ix_transcripts_retention_policy",
+        "transcripts",
+        ["retention_policy"],
+    )
+    op.create_check_constraint(
+        "ck_memory_review_dependency_protected",
+        "transcripts",
+        "kind <> 'memory_review' OR retention_policy = 'dependency_protected'",
+    )
+    op.add_column(
         "durable_memories",
         sa.Column(
             "origin", sa.String(length=64),
@@ -522,6 +539,14 @@ def downgrade() -> None:
         raise RuntimeError(
             "25a13 downgrade refused: memory review decisions have already changed grounding state"
         )
+
+    op.drop_constraint(
+        "ck_memory_review_dependency_protected",
+        "transcripts",
+        type_="check",
+    )
+    op.drop_index("ix_transcripts_retention_policy", table_name="transcripts")
+    op.drop_column("transcripts", "retention_policy")
 
     op.drop_constraint(
         "fk_durable_memories_verification_record",

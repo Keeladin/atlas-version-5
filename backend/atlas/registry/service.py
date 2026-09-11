@@ -234,16 +234,18 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         description="List pending or resolved memory confirmation/conflict obligations without exposing hidden model reasoning.",
         input_schema={"type":"object","properties":{
             "status":{"type":"string","enum":["pending","resolved"]},
-            "kind":{"type":"string","enum":["memory_confirmation","memory_conflict","explicit_remember"]},
+            "kind":{"type":"string","enum":["memory_confirmation","memory_review","memory_conflict","explicit_remember"]},
             "limit":{"type":"integer","minimum":1,"maximum":100}},
             "additionalProperties":False},
         effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(
         id="memory.obligations.resolve", capability_id="atlas.memory", family="Memory",
-        description="Resolve an owner confirmation obligation. Confirmation requeues the candidate for fresh memory-graph reconciliation; rejection terminates it. Conflict obligations require a substantive owner clarification instead.",
+        description="Resolve exactly one owner memory review/confirmation. Use the review_version returned by memory.obligations.list; stale versions are rejected and must be re-rendered. Optional content is edited assertion text and becomes fresh canonical owner evidence. Conflict obligations require substantive clarification instead.",
         input_schema={"type":"object","properties":{
             "obligation_id":{"type":"string","format":"uuid"},
-            "decision":{"type":"string","enum":["confirm","reject"]}},
+            "decision":{"type":"string","enum":["confirm","reject","retry"]},
+            "review_version":{"type":"string","minLength":1,"maxLength":128},
+            "content":{"type":"string","minLength":1,"maxLength":4000}},
             "required":["obligation_id","decision"],"additionalProperties":False},
         effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(

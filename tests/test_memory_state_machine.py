@@ -6,7 +6,7 @@ from uuid import UUID
 
 import pytest
 from atlas.memory.candidates import MemoryCandidateIntake
-from atlas.memory.durable import DurableMemoryRepository
+from atlas.memory.durable import DurableMemoryRepository, memory_fingerprint
 from atlas.memory.lifecycle import MemoryLifecycleCommands
 from atlas.memory.observability import MemoryObservabilityService
 from atlas.memory.reconciliation import (
@@ -245,7 +245,7 @@ async def test_cas_conflict_reconciles_again_without_rerunning_blind_read(pg_fac
     result = await MemoryReconciliationService(pg_factory, model).run_once()
     assert result.reconciled == 1
     assert result.version_conflicts == 1
-    assert model.calls == {"blind": 1, "compare": 1, "reconcile": 2}
+    assert model.calls == {"blind": 2, "compare": 2, "reconcile": 2}
     async with pg_factory() as session:
         assert (
             await session.execute(
@@ -511,8 +511,17 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
         version.version = int(version.version) + 1
         await session.commit()
         replacement_id = replacement.id
-    resolved = await MemoryLifecycleCommands(pg_factory).resolve_obligation({
-        "obligation_id": str(obligation_id), "decision": "confirm"
+    lifecycle = MemoryLifecycleCommands(pg_factory)
+    pending = await lifecycle.obligations({"status": "pending"})
+    review = next(
+        item for item in pending["obligations"]
+        if item["obligation_id"] == str(obligation_id)
+    )
+    assert review["proposed_assertion_text"] == content
+    resolved = await lifecycle.resolve_obligation({
+        "obligation_id": str(obligation_id),
+        "decision": "confirm",
+        "review_version": review["review_version"],
     })
     assert resolved["result"] == "requeued_for_reconciliation"
     second = await MemoryReconciliationService(pg_factory, model).run_once()
@@ -533,12 +542,13 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
         assertion_transcript = await session.get(TranscriptRow, assertion_turn.transcript_id)
         assert assertion_transcript is not None
         assert assertion_transcript.kind == "memory_review"
+        assert assertion_transcript.retention_policy == "dependency_protected"
         assert assertion_transcript.closed_at is not None
         assert (
             await session.execute(
                 select(func.count()).select_from(MemoryIndependentReadingRow)
             )
-        ).scalar_one() == 1
+        ).scalar_one() == 2
 
 
 @pytest.mark.asyncio
@@ -558,8 +568,16 @@ async def test_owner_rejection_terminates_confirmation_obligation(pg_factory):
             )
         ).scalar_one()
         obligation_id = obligation.id
-    resolved = await MemoryLifecycleCommands(pg_factory).resolve_obligation({
-        "obligation_id": str(obligation_id), "decision": "reject"
+    lifecycle = MemoryLifecycleCommands(pg_factory)
+    pending = await lifecycle.obligations({"status": "pending"})
+    review = next(
+        item for item in pending["obligations"]
+        if item["obligation_id"] == str(obligation_id)
+    )
+    resolved = await lifecycle.resolve_obligation({
+        "obligation_id": str(obligation_id),
+        "decision": "reject",
+        "review_version": review["review_version"],
     })
     assert resolved["result"] == "rejected"
     async with pg_factory() as session:
@@ -789,3 +807,119 @@ async def test_purge_invalidates_candidate_from_every_persisted_state(
         assert candidate.content is None
         assert candidate.invalidated_at is not None
         assert turn.deleted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_memory_review_confirmation_rejects_stale_displayed_text(pg_factory):
+    original = "Jaco prefers concise review wording."
+    changed = "Jaco prefers detailed review wording."
+    async with pg_factory() as session:
+        memory, _ = await DurableMemoryRepository(session).create_active(
+            original,
+            source_transcript_id=None,
+            source_turn_id=None,
+            record_kind="owner_directed",
+            origin="legacy_pre25a13",
+            grounding_status="legacy_unverified",
+            memory_kind="preference",
+            scope="cross_chat",
+            scope_key="owner",
+            durability="long_term",
+            subject="Jaco",
+        )
+        obligation = MemoryObligationRow(
+            kind="memory_review",
+            status="pending",
+            subject_type="durable_memory",
+            subject_id=memory.id,
+            origin="legacy_pre25a13",
+        )
+        session.add(obligation)
+        await session.commit()
+        obligation_id = obligation.id
+        memory_id = memory.id
+
+    lifecycle = MemoryLifecycleCommands(pg_factory)
+    listed = await lifecycle.obligations({"status": "pending", "kind": "memory_review"})
+    review = next(item for item in listed["obligations"] if item["obligation_id"] == str(obligation_id))
+    assert review["proposed_assertion_text"] == original
+    displayed_version = review["review_version"]
+
+    async with pg_factory() as session:
+        memory = await session.get(DurableMemoryRow, memory_id)
+        memory.content = changed
+        memory.fingerprint = memory_fingerprint(changed)
+        memory.updated_at = datetime.now(UTC)
+        await session.commit()
+
+    result = await lifecycle.resolve_obligation({
+        "obligation_id": str(obligation_id),
+        "decision": "confirm",
+        "review_version": displayed_version,
+    })
+    assert result["result"] == "stale_review"
+    assert result["proposed_assertion_text"] == changed
+    assert result["review_version"] != displayed_version
+
+    async with pg_factory() as session:
+        obligation = await session.get(MemoryObligationRow, obligation_id)
+        memory = await session.get(DurableMemoryRow, memory_id)
+        assert obligation.status == "pending"
+        assert memory.grounding_status == "legacy_unverified"
+        review_turns = int((await session.execute(
+            select(func.count()).select_from(TranscriptRow).where(TranscriptRow.kind == "memory_review")
+        )).scalar_one() or 0)
+        assert review_turns == 0
+
+
+@pytest.mark.asyncio
+async def test_memory_review_edit_becomes_exact_owner_assertion(pg_factory):
+    proposed = "Jaco likes compact reports."
+    edited = "I prefer compact engineering reports."
+    async with pg_factory() as session:
+        memory, _ = await DurableMemoryRepository(session).create_active(
+            proposed,
+            source_transcript_id=None,
+            source_turn_id=None,
+            record_kind="owner_directed",
+            origin="legacy_pre25a13",
+            grounding_status="legacy_unverified",
+            memory_kind="preference",
+            scope="cross_chat",
+            scope_key="owner",
+            durability="long_term",
+            subject="Jaco",
+        )
+        obligation = MemoryObligationRow(
+            kind="memory_review", status="pending",
+            subject_type="durable_memory", subject_id=memory.id,
+            origin="legacy_pre25a13",
+        )
+        session.add(obligation)
+        await session.commit()
+        obligation_id = obligation.id
+        memory_id = memory.id
+
+    lifecycle = MemoryLifecycleCommands(pg_factory)
+    listed = await lifecycle.obligations({"status": "pending", "kind": "memory_review"})
+    review = next(item for item in listed["obligations"] if item["obligation_id"] == str(obligation_id))
+    result = await lifecycle.resolve_obligation({
+        "obligation_id": str(obligation_id),
+        "decision": "confirm",
+        "review_version": review["review_version"],
+        "content": edited,
+    })
+    assert result["result"] == "confirmed"
+
+    async with pg_factory() as session:
+        memory = await session.get(DurableMemoryRow, memory_id)
+        assert memory.content == edited
+        assert memory.grounding_status == "verified"
+        assertion = await session.get(TurnRow, memory.owner_assertion_turn_id)
+        assert assertion is not None
+        assert assertion.actor == "owner"
+        assert assertion.blocks == [{"type": "text", "text": edited}]
+        transcript = await session.get(TranscriptRow, assertion.transcript_id)
+        assert transcript is not None
+        assert transcript.kind == "memory_review"
+        assert transcript.retention_policy == "dependency_protected"
