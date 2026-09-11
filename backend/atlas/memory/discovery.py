@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from atlas.persistence.models import MemoryDiscoveryStateRow, TranscriptRow, TurnRow
 from atlas.runtime.conversation import memory_evidence_handle_map
+from atlas.transcript.models import Turn
+from atlas.transcript.repository import turn_from_row
 
 from .candidates import MemoryCandidate, MemoryCandidateIntake
+from .durable import utcnow
+
+logger = logging.getLogger(__name__)
 
 
 class DiscoveryModel(Protocol):
@@ -34,6 +41,17 @@ class DiscoveryRunResult:
     duplicates: int = 0
     rejected: int = 0
     failures: int = 0
+    stale: int = 0
+
+
+@dataclass(frozen=True)
+class DiscoverySnapshot:
+    """One bounded scan window read under the cursor it was taken at."""
+
+    cursor: int
+    scan_turns: list[TurnRow]
+    visible_turns: list[TurnRow]
+    content_revision: int
 
 
 def _turn_projection(
@@ -67,8 +85,31 @@ def _turn_projection(
     }
 
 
+def _domain_turns(rows: list[TurnRow]) -> list[Turn]:
+    """Evidence handles are minted from domain turns, exactly as in the foreground.
+
+    A malformed legacy row simply gets no handles; it must not sink the sweep.
+    """
+    turns: list[Turn] = []
+    for row in rows:
+        try:
+            turns.append(turn_from_row(row))
+        except ValidationError:
+            continue
+    return turns
+
+
 class MemoryBackgroundDiscoveryService:
-    """Bounded recall sweep. Foreground proposals remain hints, never the only intake path."""
+    """Bounded recall sweep. Foreground proposals remain hints, never the only intake path.
+
+    Cursor semantics: one ``memory_discovery_state`` row per owner transcript holds the
+    last scanned turn sequence. Each run scans at most ``max_turns_per_transcript`` live
+    turns after the cursor, shows up to ``context_turns`` earlier turns as citeable context,
+    anchors every candidate on the last scanned turn, and advances the cursor only if it is
+    still where the snapshot read it and no scanned turn was purged meanwhile. Concurrent
+    runs are not leased; the loser of that check re-scans and intake deduplicates.
+    """
+
     def __init__(
         self,
         factory: async_sessionmaker,
@@ -93,6 +134,7 @@ class MemoryBackgroundDiscoveryService:
             "duplicates": 0,
             "rejected": 0,
             "failures": 0,
+            "stale": 0,
         }
         transcript_ids = await self._eligible_transcripts()
         for transcript_id in transcript_ids:
@@ -101,13 +143,16 @@ class MemoryBackgroundDiscoveryService:
                 snapshot = await self._snapshot(transcript_id)
                 if snapshot is None:
                     continue
-                scan_turns, visible_turns, source_revision = snapshot
-                stats["turns_scanned"] += len(scan_turns)
-                handle_map = memory_evidence_handle_map(visible_turns)
-                batch = await self._discover(visible_turns, handle_map)
-                anchor = scan_turns[-1]
+                stats["turns_scanned"] += len(snapshot.scan_turns)
+                handle_map = memory_evidence_handle_map(_domain_turns(snapshot.visible_turns))
+                batch = await self._discover(snapshot.visible_turns, handle_map)
+                anchor = snapshot.scan_turns[-1]
                 sweep_horizon = max(
-                    (turn.created_at for turn in scan_turns if turn.created_at is not None),
+                    (
+                        turn.created_at
+                        for turn in snapshot.scan_turns
+                        if turn.created_at is not None
+                    ),
                     default=None,
                 )
                 intake = await self.intake.enqueue_many(
@@ -115,7 +160,7 @@ class MemoryBackgroundDiscoveryService:
                     source_transcript_id=transcript_id,
                     source_turn_id=anchor.id,
                     source_provider_evidence_id=None,
-                    allowed_evidence_turn_ids={turn.id for turn in visible_turns},
+                    allowed_evidence_turn_ids={turn.id for turn in snapshot.visible_turns},
                     evidence_handle_map=handle_map,
                     proposer_model=str(getattr(self.model, "model", "") or "") or None,
                     intake_path="sweep",
@@ -124,16 +169,36 @@ class MemoryBackgroundDiscoveryService:
                 stats["accepted"] += intake["accepted"]
                 stats["duplicates"] += intake["duplicate"]
                 stats["rejected"] += intake["rejected"]
-                await self._advance(
+                advanced = await self._advance(
                     transcript_id,
                     sequence=int(anchor.sequence),
-                    source_revision=source_revision,
+                    expected_cursor=snapshot.cursor,
+                    window_turn_ids={turn.id for turn in snapshot.scan_turns},
+                    source_revision=snapshot.content_revision,
                 )
-            except Exception:  # noqa: BLE001 - one transcript must not stop the sweep
+                if not advanced:
+                    stats["stale"] += 1
+                    await self._touch(transcript_id)
+            except Exception:
+                logger.exception("memory discovery sweep failed for transcript %s", transcript_id)
                 stats["failures"] += 1
+                try:
+                    await self._touch(transcript_id)
+                except Exception:
+                    logger.exception("could not record sweep attempt for %s", transcript_id)
         return DiscoveryRunResult(**stats)
 
     async def _eligible_transcripts(self) -> list[UUID]:
+        cursor = func.coalesce(MemoryDiscoveryStateRow.last_scanned_sequence, 0)
+        unscanned_live_turn = (
+            select(TurnRow.id)
+            .where(
+                TurnRow.transcript_id == TranscriptRow.id,
+                TurnRow.sequence > cursor,
+                TurnRow.deleted_at.is_(None),
+            )
+            .exists()
+        )
         async with self.factory() as session:
             rows = list(
                 (
@@ -143,23 +208,20 @@ class MemoryBackgroundDiscoveryService:
                             MemoryDiscoveryStateRow,
                             MemoryDiscoveryStateRow.transcript_id == TranscriptRow.id,
                         )
-                        .where(
-                            TranscriptRow.kind == "owner",
-                            TranscriptRow.next_turn_sequence
-                            > func.coalesce(
-                                MemoryDiscoveryStateRow.last_scanned_sequence, 0
-                            ),
+                        .where(TranscriptRow.kind == "owner", unscanned_live_turn)
+                        .order_by(
+                            # Never-swept first, then least recently attempted.
+                            MemoryDiscoveryStateRow.updated_at.asc().nulls_first(),
+                            TranscriptRow.updated_at.asc(),
+                            TranscriptRow.id.asc(),
                         )
-                        .order_by(TranscriptRow.updated_at.asc(), TranscriptRow.id.asc())
                         .limit(self.max_transcripts)
                     )
                 ).scalars()
             )
         return rows
 
-    async def _snapshot(
-        self, transcript_id: UUID
-    ) -> tuple[list[TurnRow], list[TurnRow], int] | None:
+    async def _snapshot(self, transcript_id: UUID) -> DiscoverySnapshot | None:
         async with self.factory() as session:
             transcript = await session.get(TranscriptRow, transcript_id)
             if transcript is None:
@@ -198,7 +260,12 @@ class MemoryBackgroundDiscoveryService:
                     )
                 ).scalars()
             )
-            return scan_turns, visible_turns, int(transcript.content_revision or 0)
+            return DiscoverySnapshot(
+                cursor=last_sequence,
+                scan_turns=scan_turns,
+                visible_turns=visible_turns,
+                content_revision=int(transcript.content_revision or 0),
+            )
 
     async def _discover(
         self, turns: list[TurnRow], handle_map: dict[str, tuple[UUID, str]]
@@ -240,25 +307,58 @@ class MemoryBackgroundDiscoveryService:
             raise ValueError("memory discovery model did not return one JSON object")
         return DiscoveryBatch.model_validate(json.loads(text))
 
+    @staticmethod
+    async def _locked_state(session, transcript_id: UUID) -> MemoryDiscoveryStateRow:
+        # Guarantee a row to lock so concurrent first sweeps serialize on it.
+        await session.execute(
+            pg_insert(MemoryDiscoveryStateRow)
+            .values(transcript_id=transcript_id, last_scanned_sequence=0, source_revision=0)
+            .on_conflict_do_nothing(index_elements=[MemoryDiscoveryStateRow.transcript_id])
+        )
+        return (
+            await session.execute(
+                select(MemoryDiscoveryStateRow)
+                .where(MemoryDiscoveryStateRow.transcript_id == transcript_id)
+                .with_for_update()
+            )
+        ).scalar_one()
+
     async def _advance(
-        self, transcript_id: UUID, *, sequence: int, source_revision: int
-    ) -> None:
+        self,
+        transcript_id: UUID,
+        *,
+        sequence: int,
+        expected_cursor: int,
+        window_turn_ids: set[UUID],
+        source_revision: int,
+    ) -> bool:
+        """Compare-and-set the cursor.
+
+        Refuses when the cursor moved since the snapshot (a concurrent run or a purge
+        rewind) or when any scanned turn was purged meanwhile; the window is then
+        re-scanned next run with the redacted turns excluded.
+        """
         async with self.factory() as session, session.begin():
-            transcript = await session.get(TranscriptRow, transcript_id)
-            if transcript is None:
-                return
-            state = await session.get(MemoryDiscoveryStateRow, transcript_id)
-            if state is None:
-                state = MemoryDiscoveryStateRow(
-                    transcript_id=transcript_id,
-                    last_scanned_sequence=sequence,
-                    source_revision=source_revision,
-                )
-                session.add(state)
-                return
-            state.last_scanned_sequence = max(
-                int(state.last_scanned_sequence or 0), sequence
-            )
-            state.source_revision = max(
-                int(state.source_revision or 0), source_revision
-            )
+            state = await self._locked_state(session, transcript_id)
+            if int(state.last_scanned_sequence or 0) != int(expected_cursor):
+                return False
+            if window_turn_ids:
+                live = int((await session.execute(
+                    select(func.count()).select_from(TurnRow).where(
+                        TurnRow.id.in_(window_turn_ids),
+                        TurnRow.deleted_at.is_(None),
+                    )
+                )).scalar_one())
+                if live != len(window_turn_ids):
+                    return False
+            state.last_scanned_sequence = int(sequence)
+            # Informational: the content revision the last successful sweep observed.
+            state.source_revision = int(source_revision)
+            state.updated_at = utcnow()
+            return True
+
+    async def _touch(self, transcript_id: UUID) -> None:
+        """Record an attempt without moving the cursor so the transcript rotates back."""
+        async with self.factory() as session, session.begin():
+            state = await self._locked_state(session, transcript_id)
+            state.updated_at = utcnow()

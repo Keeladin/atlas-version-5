@@ -39,6 +39,18 @@ def _suggest_title(blocks: list[ContentBlock]) -> str | None:
     return None
 
 
+def turn_from_row(row: TurnRow) -> Turn:
+    """Domain view of a persisted turn; JSONB block dicts are validated into blocks."""
+    return Turn(
+        id=row.id,
+        transcript_id=row.transcript_id,
+        sequence=row.sequence,
+        actor=Actor(row.actor),
+        blocks=row.blocks,
+        created_at=row.created_at or datetime.now(UTC),
+    )
+
+
 def _to_transcript(row: TranscriptRow) -> Transcript:
     created_at = row.created_at or datetime.now(UTC)
     return Transcript(
@@ -270,14 +282,7 @@ class TranscriptRepository:
                     .values(title=suggested)
                 )
         await self.session.flush()
-        return Turn(
-            id=row.id,
-            transcript_id=row.transcript_id,
-            sequence=row.sequence,
-            actor=Actor(row.actor),
-            blocks=row.blocks,
-            created_at=row.created_at,
-        )
+        return turn_from_row(row)
 
     async def list_recent_turns(self, transcript_id: UUID, *, exchanges: int = 20, limit: int = 500) -> list[Turn]:
         owner_sequences = list((await self.session.execute(select(TurnRow.sequence).where(
@@ -299,14 +304,4 @@ class TranscriptRepository:
                 TurnRow.sequence > after_sequence if after_sequence is not None else True)
             .order_by(TurnRow.sequence.desc()).limit(max(1, min(limit, 500)))
         )
-        return list(reversed([
-            Turn(
-                id=row.id,
-                transcript_id=row.transcript_id,
-                sequence=row.sequence,
-                actor=Actor(row.actor),
-                blocks=row.blocks,
-                created_at=row.created_at,
-            )
-            for row in result.scalars()
-        ]))
+        return list(reversed([turn_from_row(row) for row in result.scalars()]))

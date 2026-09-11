@@ -20,6 +20,7 @@ from atlas.persistence.models import (
     MemoryComparisonVerdictRow,
     MemoryConflictRow,
     MemoryDeletionReceiptRow,
+    MemoryDiscoveryStateRow,
     MemoryIndependentReadingRow,
     MemoryObligationRow,
     MemoryProvenanceRow,
@@ -1675,6 +1676,14 @@ class MemoryLifecycleCommands:
                 state.last_indexed_sequence = min(
                     int(state.last_indexed_sequence or 0), max(0, rebuild_from - 1)
                 )
+            # The discovery sweep must re-read from the earliest redacted turn so
+            # its window and horizon never rest on content the owner removed.
+            discovery = await session.get(MemoryDiscoveryStateRow, transcript_id)
+            if discovery is not None:
+                discovery.last_scanned_sequence = min(
+                    int(discovery.last_scanned_sequence or 0), max(0, sequence - 1)
+                )
+                discovery.updated_at = utcnow()
             transcript = await session.get(TranscriptRow, transcript_id)
             if transcript is not None:
                 transcript.content_revision = int(transcript.content_revision or 0) + 1
