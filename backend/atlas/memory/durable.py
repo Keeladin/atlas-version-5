@@ -125,6 +125,8 @@ class DurableMemoryRepository:
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
         grounding_status: str = "legacy_unverified",
+        verification_record_id: UUID | None = None,
+        owner_assertion_turn_id: UUID | None = None,
     ) -> tuple[DurableMemoryRow, bool]:
         fingerprint = memory_fingerprint(content)
         existing = await self.active_by_fingerprint(fingerprint)
@@ -135,6 +137,8 @@ class DurableMemoryRepository:
             record_kind=record_kind,
             origin=origin,
             grounding_status=grounding_status,
+            verification_record_id=verification_record_id,
+            owner_assertion_turn_id=owner_assertion_turn_id,
             memory_kind=memory_kind,
             scope=scope,
             scope_key=scope_key,
@@ -184,7 +188,8 @@ class DurableMemoryRepository:
             status=status,
             record_kind=record_kind,
             origin="owner_lifecycle",
-            grounding_status="verified",
+            grounding_status=("verified" if source_turn_id is not None else "legacy_unverified"),
+            owner_assertion_turn_id=source_turn_id,
             scope="cross_chat",
             durability="long_term",
             content=content,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum, StrEnum
 
 
 class CandidateState(StrEnum):
@@ -42,6 +42,50 @@ class CandidateEvent(StrEnum):
     OWNER_REJECTS = "owner_rejects"
     OBLIGATION_EXPIRES = "obligation_expires"
     ATTEMPT_LIMIT_REACHED = "attempt_limit_reached"
+
+class PublicationBucket(StrEnum):
+    RECONCILED = "reconciled"
+    RETAINED_SHORT_TERM = "retained_short_term"
+    DISCARDED = "discarded"
+    BLOCKED = "blocked"
+    SOURCE_CONFLICT = "source_conflict"
+    LEASE_CONFLICT = "lease_conflict"
+    VERSION_CONFLICT = "version_conflict"
+
+
+class PublicationTerminality(StrEnum):
+    TERMINAL_SUCCESS = "terminal_success"
+    TERMINAL_FAILURE = "terminal_failure"
+    NONTERMINAL = "nonterminal"
+    RETRY = "retry"
+
+
+class PublicationOutcome(str, Enum):
+    CREATED = ("created", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    MERGE = ("merge", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    SUPERSEDE = ("supersede", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    HISTORICAL_PREDECESSOR = ("historical_predecessor", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    HISTORICAL_LINEAGE_ADDED = ("historical_lineage_added", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    HISTORICAL_ALREADY_REPRESENTED = ("historical_already_represented", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    LEGACY_GROUNDED = ("legacy_grounded", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    LINEAGE_ADDED = ("lineage_added", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    ALREADY_REPRESENTED = ("already_represented", PublicationBucket.RECONCILED, PublicationTerminality.TERMINAL_SUCCESS)
+    RETAINED_SHORT_TERM = ("retained_short_term", PublicationBucket.RETAINED_SHORT_TERM, PublicationTerminality.NONTERMINAL)
+    DISCARDED = ("discarded", PublicationBucket.DISCARDED, PublicationTerminality.TERMINAL_SUCCESS)
+    BLOCKED = ("blocked", PublicationBucket.BLOCKED, PublicationTerminality.TERMINAL_FAILURE)
+    INVALIDATED = ("invalidated", PublicationBucket.BLOCKED, PublicationTerminality.TERMINAL_FAILURE)
+    AWAITING_OWNER = ("awaiting_owner", PublicationBucket.BLOCKED, PublicationTerminality.NONTERMINAL)
+    CONFLICT = ("conflict", PublicationBucket.BLOCKED, PublicationTerminality.NONTERMINAL)
+    SOURCE_CONFLICT = ("source_conflict", PublicationBucket.SOURCE_CONFLICT, PublicationTerminality.RETRY)
+    LEASE_CONFLICT = ("lease_conflict", PublicationBucket.LEASE_CONFLICT, PublicationTerminality.RETRY)
+    VERSION_CONFLICT = ("version_conflict", PublicationBucket.VERSION_CONFLICT, PublicationTerminality.RETRY)
+
+    def __new__(cls, value: str, bucket: PublicationBucket, terminality: PublicationTerminality):
+        obj = str.__new__(cls, value)
+        obj._value_ = value
+        obj.bucket = bucket
+        obj.terminality = terminality
+        return obj
 
 
 class RememberObligationState(StrEnum):

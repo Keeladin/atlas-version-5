@@ -5,9 +5,9 @@ from collections import deque
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas.persistence.models import (
@@ -35,7 +35,10 @@ from atlas.persistence.shared_writes import (
     SharedWriteMutation,
 )
 from atlas.runtime.invocation import current_transcript_id
+from atlas.transcript.models import Actor, TextBlock
+from atlas.transcript.repository import TranscriptRepository
 
+from .candidates import evidence_set_hash
 from .durable import (
     ACTIVE,
     APPLIED,
@@ -478,6 +481,11 @@ class MemoryLifecycleCommands:
             source_turn_ids: set[UUID] = {
                 row.source_turn_id for row in affected_rows if row.source_turn_id is not None
             }
+            source_turn_ids.update(
+                row.owner_assertion_turn_id
+                for row in affected_rows
+                if row.owner_assertion_turn_id is not None
+            )
             provenance = []
             if affected_memory_ids:
                 provenance = list((await session.execute(
@@ -539,7 +547,10 @@ class MemoryLifecycleCommands:
                     (
                         await session.execute(
                             select(DurableMemoryRow.id).where(
-                                DurableMemoryRow.source_turn_id.in_(dependency_turn_ids),
+                                or_(
+                                    DurableMemoryRow.source_turn_id.in_(dependency_turn_ids),
+                                    DurableMemoryRow.owner_assertion_turn_id.in_(dependency_turn_ids),
+                                ),
                                 DurableMemoryRow.status != DELETED,
                             )
                         )
@@ -657,13 +668,35 @@ class MemoryLifecycleCommands:
                     MemoryObligationRow.created_at.desc(), MemoryObligationRow.id.desc()
                 ).limit(limit)
             )).scalars())
-        return {"obligations": [self._project_obligation(row) for row in rows]}
+            projections: list[dict[str, object]] = []
+            for row in rows:
+                projection = self._project_obligation(row)
+                assertion_text: str | None = None
+                if row.status == "pending" and row.subject_id is not None:
+                    if row.subject_type == "durable_memory":
+                        target = await session.get(DurableMemoryRow, row.subject_id)
+                        assertion_text = target.content if target is not None else None
+                    elif row.subject_type == "memory_candidate":
+                        candidate = await session.get(MemoryCandidateRow, row.subject_id)
+                        assertion_text = candidate.content if candidate is not None else None
+                projection["proposed_assertion_text"] = assertion_text
+                projections.append(projection)
+        return {"obligations": projections}
 
     async def resolve_obligation(self, arguments: dict) -> dict[str, object]:
         obligation_id = UUID(str(arguments.get("obligation_id")))
         decision = str(arguments.get("decision") or "").strip()
         if decision not in {"confirm", "reject", "retry"}:
             raise ValueError("decision must be confirm, reject, or retry")
+        async with self.factory() as preview_session:
+            preview = await preview_session.get(MemoryObligationRow, obligation_id)
+            if preview is None:
+                raise LookupError("memory obligation not found")
+            if preview.kind == "memory_review" and preview.subject_type == "durable_memory":
+                return await self._resolve_memory_review(
+                    obligation_id, decision=decision, edited_content=arguments.get("content")
+                )
+
         source = await self._latest_source()
         now = utcnow()
         async with self.factory() as session, session.begin():
@@ -677,57 +710,10 @@ class MemoryLifecycleCommands:
             if obligation.status != "pending":
                 return {"result": "already_resolved", **self._project_obligation(obligation)}
 
-            if obligation.kind == "memory_review" and obligation.subject_type == "durable_memory":
-                if decision not in {"confirm", "reject"}:
-                    raise ValueError("memory review requires confirm or reject")
-                if obligation.subject_id is None:
-                    raise LookupError("memory review target is missing")
-                target = (
-                    await session.execute(
-                        select(DurableMemoryRow)
-                        .where(DurableMemoryRow.id == obligation.subject_id)
-                        .with_for_update()
-                    )
-                ).scalar_one_or_none()
-                if target is None:
-                    raise LookupError("memory review target not found")
-                obligation.status = "resolved"
-                obligation.resolution_source_transcript_id = source[0]
-                obligation.resolution_source_turn_id = source[1]
-                obligation.resolved_at = now
-                if decision == "confirm":
-                    if source[1] is None:
-                        raise ValueError("memory review confirmation requires canonical owner evidence")
-                    target.grounding_status = "verified"
-                    target.updated_at = now
-                    session.add(
-                        MemoryProvenanceRow(
-                            memory_id=target.id,
-                            relationship="owner_review_confirmed",
-                            source_turn_id=source[1],
-                        )
-                    )
-                    obligation.resolution_code = "confirmed"
-                    obligation.resolution_json = {"memory_id": str(target.id)}
-                    result = "confirmed"
-                else:
-                    if target.status == ACTIVE:
-                        target.status = RETIRED
-                        target.suppresses_recall = True
-                        target.retired_at = now
-                        target.updated_at = now
-                        _clear_embedding(target)
-                    obligation.resolution_code = "rejected"
-                    obligation.resolution_json = {"memory_id": str(target.id)}
-                    result = "rejected"
-                await session.flush()
-                return {
-                    "result": result,
-                    "memory_id": str(target.id),
-                    **self._project_obligation(obligation),
-                }
-
-            if obligation.kind != "memory_confirmation" or obligation.subject_type != "memory_candidate":
+            if (
+                obligation.kind not in {"memory_confirmation", "memory_review"}
+                or obligation.subject_type != "memory_candidate"
+            ):
                 raise ValueError("this obligation requires a different resolution flow")
             if decision == "retry":
                 raise ValueError("candidate confirmation does not support retry")
@@ -753,10 +739,35 @@ class MemoryLifecycleCommands:
 
             candidate.state_version = int(candidate.state_version or 0) + 1
             obligation.status = "resolved"
-            obligation.resolution_source_transcript_id = source[0]
-            obligation.resolution_source_turn_id = source[1]
             obligation.resolved_at = now
             if decision == "confirm":
+                asserted = clean_memory_content(
+                    arguments.get("content")
+                    if arguments.get("content") is not None
+                    else candidate.content
+                )
+                assertion_transcript_id, assertion_turn_id = await self._append_owner_assertion_turn(
+                    session, asserted
+                )
+                evidence_rows = list((await session.execute(
+                    select(MemoryCandidateEvidenceRow)
+                    .where(MemoryCandidateEvidenceRow.candidate_id == candidate.id)
+                    .order_by(MemoryCandidateEvidenceRow.ordinal, MemoryCandidateEvidenceRow.id)
+                )).scalars())
+                next_ordinal = max((int(row.ordinal) for row in evidence_rows), default=-1) + 1
+                session.add(MemoryCandidateEvidenceRow(
+                    candidate_id=candidate.id,
+                    turn_id=assertion_turn_id,
+                    principal="owner",
+                    ordinal=next_ordinal,
+                    span_ref="text:0",
+                ))
+                candidate.evidence_set_hash = evidence_set_hash([
+                    *((row.turn_id, row.span_ref) for row in evidence_rows),
+                    (assertion_turn_id, "text:0"),
+                ])
+                obligation.resolution_source_transcript_id = assertion_transcript_id
+                obligation.resolution_source_turn_id = assertion_turn_id
                 obligation.resolution_code = "confirmed"
                 obligation.resolution_json = {"candidate_id": str(candidate.id)}
                 candidate.status = "pending"
@@ -768,10 +779,14 @@ class MemoryLifecycleCommands:
                 candidate.decision_json = {
                     "decision": "owner_confirmed",
                     "owner_confirmation_granted": True,
+                    "owner_assertion_turn_id": str(assertion_turn_id),
+                    "owner_assertion_transcript_id": str(assertion_transcript_id),
                     "obligation_id": str(obligation.id),
                 }
                 result = "requeued_for_reconciliation"
             else:
+                obligation.resolution_source_transcript_id = source[0]
+                obligation.resolution_source_turn_id = source[1]
                 obligation.resolution_code = "rejected"
                 obligation.resolution_json = {"candidate_id": str(candidate.id)}
                 candidate.status = "rejected"
@@ -791,6 +806,124 @@ class MemoryLifecycleCommands:
                 "candidate_id": str(candidate.id),
                 **self._project_obligation(obligation),
             }
+
+    async def _resolve_memory_review(
+        self,
+        obligation_id: UUID,
+        *,
+        decision: str,
+        edited_content: object | None,
+    ) -> dict[str, object]:
+        if decision not in {"confirm", "reject"}:
+            raise ValueError("memory review requires confirm or reject")
+        operation_id = uuid4()
+        envelope = SharedWriteEnvelope(
+            operation_id=operation_id,
+            resource_type=_MEMORY_RESOURCE_TYPE,
+            resource_id=_MEMORY_RESOURCE_ID,
+            operation=f"memory_review_{decision}",
+            expected_version=None,
+            payload={"obligation_id": str(obligation_id), "decision": decision},
+            actor="owner",
+        )
+
+        async def mutate(session: AsyncSession, _version: int) -> SharedWriteMutation:
+            obligation = (await session.execute(
+                select(MemoryObligationRow)
+                .where(MemoryObligationRow.id == obligation_id)
+                .with_for_update()
+            )).scalar_one_or_none()
+            if obligation is None:
+                raise LookupError("memory obligation not found")
+            if obligation.status != "pending":
+                return SharedWriteMutation(
+                    mutated=False,
+                    result={"result": "already_resolved", **self._project_obligation(obligation)},
+                )
+            if obligation.kind != "memory_review" or obligation.subject_type != "durable_memory":
+                raise ValueError("obligation is not a durable-memory review")
+            if obligation.subject_id is None:
+                raise LookupError("memory review target is missing")
+            target = (await session.execute(
+                select(DurableMemoryRow)
+                .where(DurableMemoryRow.id == obligation.subject_id)
+                .with_for_update()
+            )).scalar_one_or_none()
+            if target is None:
+                raise LookupError("memory review target not found")
+            now = utcnow()
+            obligation.status = "resolved"
+            obligation.resolved_at = now
+            if decision == "reject":
+                if target.status == ACTIVE:
+                    target.status = RETIRED
+                    target.suppresses_recall = True
+                    target.retired_at = now
+                    target.updated_at = now
+                    _clear_embedding(target)
+                obligation.resolution_code = "rejected"
+                obligation.resolution_json = {"memory_id": str(target.id)}
+                return SharedWriteMutation(
+                    result={"result": "rejected", "memory_id": str(target.id)}
+                )
+
+            asserted = clean_memory_content(
+                edited_content if edited_content is not None else target.content
+            )
+            fingerprint = memory_fingerprint(asserted)
+            existing = await DurableMemoryRepository(session).active_by_fingerprint(fingerprint)
+            if existing is not None and existing.id != target.id:
+                raise ValueError("confirmed review wording already exists as another active memory")
+            assertion_transcript_id, assertion_turn_id = await self._append_owner_assertion_turn(
+                session, asserted
+            )
+            target.content = asserted
+            target.fingerprint = fingerprint
+            target.grounding_status = "verified"
+            target.verification_record_id = None
+            target.owner_assertion_turn_id = assertion_turn_id
+            target.source_transcript_id = assertion_transcript_id
+            target.source_turn_id = assertion_turn_id
+            target.updated_at = now
+            _clear_embedding(target)
+            session.add(MemoryProvenanceRow(
+                memory_id=target.id,
+                relationship="owner_review_confirmed",
+                source_turn_id=assertion_turn_id,
+            ))
+            obligation.resolution_source_transcript_id = assertion_transcript_id
+            obligation.resolution_source_turn_id = assertion_turn_id
+            obligation.resolution_code = "confirmed"
+            obligation.resolution_json = {"memory_id": str(target.id)}
+            return SharedWriteMutation(
+                result={
+                    "result": "confirmed",
+                    "memory_id": str(target.id),
+                    "owner_assertion_turn_id": str(assertion_turn_id),
+                }
+            )
+
+        receipt = await self.writer.execute(envelope, mutate)
+        return {
+            "operation_id": str(operation_id),
+            "memory_revision": receipt.committed_version,
+            **receipt.result,
+        }
+
+    @staticmethod
+    async def _append_owner_assertion_turn(
+        session: AsyncSession, content: str
+    ) -> tuple[UUID, UUID]:
+        transcript_repository = TranscriptRepository(session)
+        transcript = await transcript_repository.create(kind="memory_review")
+        turn = await transcript_repository.append_turn(
+            transcript.id, Actor.OWNER, [TextBlock(text=content)]
+        )
+        transcript_row = await session.get(TranscriptRow, transcript.id)
+        assert transcript_row is not None
+        transcript_row.closed_at = utcnow()
+        transcript_row.updated_at = utcnow()
+        return transcript.id, turn.id
 
     @staticmethod
     def _project_obligation(row: MemoryObligationRow) -> dict[str, object]:

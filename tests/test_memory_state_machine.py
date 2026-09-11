@@ -81,6 +81,50 @@ async def _seed(
     return candidate.id, transcript_id, turn_id, raw
 
 
+async def _create_verified_derived(
+    pg_factory,
+    *,
+    content: str,
+    memory_kind: str = "preference",
+    subject: str = "Jaco",
+    valid_from: datetime | None = None,
+):
+    async with pg_factory() as session:
+        assertion_transcript = TranscriptRow(
+            kind="memory_review",
+            next_turn_sequence=1,
+            content_revision=1,
+            closed_at=datetime.now(UTC),
+        )
+        session.add(assertion_transcript)
+        await session.flush()
+        assertion = TurnRow(
+            transcript_id=assertion_transcript.id,
+            sequence=1,
+            actor="owner",
+            blocks=[{"type": "text", "text": content}],
+        )
+        session.add(assertion)
+        await session.flush()
+        memory, _ = await DurableMemoryRepository(session).create_active(
+            content,
+            source_transcript_id=assertion_transcript.id,
+            source_turn_id=assertion.id,
+            record_kind="derived",
+            origin="test_owner_assertion",
+            grounding_status="verified",
+            owner_assertion_turn_id=assertion.id,
+            memory_kind=memory_kind,
+            scope="cross_chat",
+            scope_key="owner",
+            durability="long_term",
+            subject=subject,
+            valid_from=valid_from,
+        )
+        await session.commit()
+        return memory.id
+
+
 class _PipelineModel:
     model = "verifier-test"
 
@@ -345,21 +389,11 @@ async def test_older_event_discovered_late_becomes_historical_predecessor(pg_fac
     candidate_id, _, _, _ = await _seed(
         pg_factory, content=old_content, created_at=old_time
     )
-    async with pg_factory() as session:
-        target, _ = await DurableMemoryRepository(session).create_active(
-            "Jaco now prefers detailed reports.",
-            source_transcript_id=None,
-            source_turn_id=None,
-            record_kind="derived",
-            memory_kind="preference",
-            scope="cross_chat",
-            scope_key="owner",
-            durability="long_term",
-            subject="Jaco",
-            valid_from=new_time,
-        )
-        await session.commit()
-        target_id = target.id
+    target_id = await _create_verified_derived(
+        pg_factory,
+        content="Jaco now prefers detailed reports.",
+        valid_from=new_time,
+    )
     model = _PipelineModel(
         content=old_content,
         relation="supersedes",
@@ -417,20 +451,10 @@ class _CurrentTargetModel(_PipelineModel):
 async def test_owner_confirmation_reconciles_again_against_current_graph(pg_factory):
     content = "Jaco prefers a private health reminder format."
     candidate_id, _, turn_id, _ = await _seed(pg_factory, content=content)
-    async with pg_factory() as session:
-        old_target, _ = await DurableMemoryRepository(session).create_active(
-            content,
-            source_transcript_id=None,
-            source_turn_id=None,
-            record_kind="derived",
-            memory_kind="preference",
-            scope="cross_chat",
-            scope_key="owner",
-            durability="long_term",
-            subject="Jaco",
-        )
-        await session.commit()
-        old_target_id = old_target.id
+    old_target_id = await _create_verified_derived(
+        pg_factory,
+        content=content,
+    )
     model = _CurrentTargetModel(content=content, category="health")
     first = await MemoryReconciliationService(pg_factory, model).run_once()
     assert first.blocked == 1
@@ -449,11 +473,30 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
         old_target = await session.get(DurableMemoryRow, old_target_id)
         old_target.status = "superseded"
         old_target.suppresses_recall = True
+        replacement_assertion_transcript = TranscriptRow(
+            kind="memory_review",
+            next_turn_sequence=1,
+            content_revision=1,
+            closed_at=datetime.now(UTC),
+        )
+        session.add(replacement_assertion_transcript)
+        await session.flush()
+        replacement_assertion = TurnRow(
+            transcript_id=replacement_assertion_transcript.id,
+            sequence=1,
+            actor="owner",
+            blocks=[{"type": "text", "text": content}],
+        )
+        session.add(replacement_assertion)
+        await session.flush()
         replacement, created = await DurableMemoryRepository(session).create_active(
             content,
-            source_transcript_id=None,
-            source_turn_id=None,
+            source_transcript_id=replacement_assertion_transcript.id,
+            source_turn_id=replacement_assertion.id,
             record_kind="derived",
+            origin="test_owner_assertion",
+            grounding_status="verified",
+            owner_assertion_turn_id=replacement_assertion.id,
             memory_kind="preference",
             scope="cross_chat",
             scope_key="owner",
@@ -482,7 +525,15 @@ async def test_owner_confirmation_reconciles_again_against_current_graph(pg_fact
         assert candidate.status == "reconciled"
         assert obligation.status == "resolved"
         assert obligation.resolution_code == "confirmed"
-        assert obligation.resolution_source_turn_id == turn_id
+        assert obligation.resolution_source_turn_id != turn_id
+        assertion_turn = await session.get(TurnRow, obligation.resolution_source_turn_id)
+        assert assertion_turn is not None
+        assert assertion_turn.actor == "owner"
+        assert assertion_turn.blocks == [{"type": "text", "text": content}]
+        assertion_transcript = await session.get(TranscriptRow, assertion_turn.transcript_id)
+        assert assertion_transcript is not None
+        assert assertion_transcript.kind == "memory_review"
+        assert assertion_transcript.closed_at is not None
         assert (
             await session.execute(
                 select(func.count()).select_from(MemoryIndependentReadingRow)
@@ -554,20 +605,10 @@ async def test_conflict_is_visible_in_retrieval_and_expiry_does_not_hide_it(pg_f
     current = "Jaco prefers detailed shift reports."
     competing = "Jaco prefers compact shift reports."
     candidate_id, _, _, _ = await _seed(pg_factory, content=competing)
-    async with pg_factory() as session:
-        target, _ = await DurableMemoryRepository(session).create_active(
-            current,
-            source_transcript_id=None,
-            source_turn_id=None,
-            record_kind="derived",
-            memory_kind="preference",
-            scope="cross_chat",
-            scope_key="owner",
-            durability="long_term",
-            subject="Jaco",
-        )
-        await session.commit()
-        target_id = target.id
+    target_id = await _create_verified_derived(
+        pg_factory,
+        content=current,
+    )
     model = _PipelineModel(
         content=competing,
         relation="conflicts_with",

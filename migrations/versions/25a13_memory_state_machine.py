@@ -55,6 +55,35 @@ def upgrade() -> None:
         "durable_memories",
         ["grounding_status"],
     )
+    op.add_column(
+        "durable_memories",
+        sa.Column("verification_record_id", sa.UUID(), nullable=True),
+    )
+    op.add_column(
+        "durable_memories",
+        sa.Column("owner_assertion_turn_id", sa.UUID(), nullable=True),
+    )
+    op.create_index(
+        "ix_durable_memories_verification_record_id",
+        "durable_memories",
+        ["verification_record_id"],
+    )
+    op.create_index(
+        "ix_durable_memories_owner_assertion_turn_id",
+        "durable_memories",
+        ["owner_assertion_turn_id"],
+    )
+    op.create_foreign_key(
+        "fk_durable_memories_owner_assertion_turn",
+        "durable_memories", "turns",
+        ["owner_assertion_turn_id"], ["id"],
+        ondelete="RESTRICT",
+    )
+    op.create_check_constraint(
+        "ck_verified_memory_has_grounding_reference",
+        "durable_memories",
+        "grounding_status <> 'verified' OR verification_record_id IS NOT NULL OR owner_assertion_turn_id IS NOT NULL",
+    )
     # Every durable row that predates the evidence graph is unverified, regardless
     # of record_kind. Owner submission/import ownership must not bootstrap claim
     # authority. Only an explicit publication/review path may set verified later.
@@ -334,6 +363,13 @@ def upgrade() -> None:
             [column],
         )
 
+    op.create_foreign_key(
+        "fk_durable_memories_verification_record",
+        "durable_memories", "memory_reconciliation_records",
+        ["verification_record_id"], ["id"],
+        ondelete="RESTRICT",
+    )
+
     op.create_table(
         "memory_policy_decisions",
         sa.Column("id", sa.UUID(), nullable=False),
@@ -477,6 +513,39 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    resolved_reviews = bind.execute(sa.text(
+        "SELECT count(*) FROM memory_obligations "
+        "WHERE kind = 'memory_review' AND status <> 'pending'"
+    )).scalar_one()
+    if resolved_reviews:
+        raise RuntimeError(
+            "25a13 downgrade refused: memory review decisions have already changed grounding state"
+        )
+
+    op.drop_constraint(
+        "fk_durable_memories_verification_record",
+        "durable_memories",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "fk_durable_memories_owner_assertion_turn",
+        "durable_memories",
+        type_="foreignkey",
+    )
+    op.drop_constraint(
+        "ck_verified_memory_has_grounding_reference",
+        "durable_memories",
+        type_="check",
+    )
+    op.drop_index(
+        "ix_durable_memories_verification_record_id", table_name="durable_memories"
+    )
+    op.drop_index(
+        "ix_durable_memories_owner_assertion_turn_id", table_name="durable_memories"
+    )
+    op.drop_column("durable_memories", "verification_record_id")
+    op.drop_column("durable_memories", "owner_assertion_turn_id")
     op.drop_index(
         "ix_durable_memories_grounding_status", table_name="durable_memories"
     )

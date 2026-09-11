@@ -161,6 +161,10 @@ class DurableMemoryRow(Base):
             "status = 'deleted' OR (content IS NOT NULL AND fingerprint IS NOT NULL)",
             name="ck_nondeleted_memory_has_payload",
         ),
+        CheckConstraint(
+            "grounding_status <> 'verified' OR verification_record_id IS NOT NULL OR owner_assertion_turn_id IS NOT NULL",
+            name="ck_verified_memory_has_grounding_reference",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -172,6 +176,18 @@ class DurableMemoryRow(Base):
     )
     grounding_status: Mapped[str] = mapped_column(
         String(32), default="legacy_unverified", server_default="legacy_unverified", index=True
+    )
+    verification_record_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "memory_reconciliation_records.id",
+            name="fk_durable_memories_verification_record",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
+        index=True,
+    )
+    owner_assertion_turn_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("turns.id", ondelete="RESTRICT"), index=True
     )
     memory_kind: Mapped[str | None] = mapped_column(String(32), index=True)
     scope: Mapped[str] = mapped_column(String(32), default="cross_chat", server_default="cross_chat", index=True)

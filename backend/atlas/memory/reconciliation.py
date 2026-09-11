@@ -44,6 +44,7 @@ from .durable import (
     memory_fingerprint,
     utcnow,
 )
+from .state_machine import PublicationBucket, PublicationOutcome
 
 _MEMORY_RESOURCE_TYPE = "memory_state"
 _MEMORY_RESOURCE_ID = "owner"
@@ -832,17 +833,42 @@ class DerivedMemoryPublisher:
                 UUID(str(item))
                 for item in snapshot.evidence_refs.get("legacy_unverified_target_ids", [])
             }
+            reconciliation_record_raw = snapshot.evidence_refs.get("reconciliation_record_id")
+            verification_record_id = (
+                UUID(str(reconciliation_record_raw))
+                if reconciliation_record_raw is not None
+                else None
+            )
+            owner_assertion_raw = (candidate.decision_json or {}).get(
+                "owner_assertion_turn_id"
+            )
+            owner_assertion_turn_id = (
+                UUID(str(owner_assertion_raw)) if owner_assertion_raw else None
+            )
+            if owner_assertion_turn_id is not None:
+                owner_assertion = await session.get(TurnRow, owner_assertion_turn_id)
+                if (
+                    owner_assertion is None
+                    or owner_assertion.deleted_at is not None
+                    or owner_assertion.actor != "owner"
+                ):
+                    return self._block(
+                        candidate, attempt, now, "owner_assertion_evidence_invalid"
+                    )
 
             if decision.decision == "await_owner":
+                imported_review = candidate.origin not in {
+                    "conversation", "owner_statement", "owner_review_confirmation"
+                }
                 obligation = MemoryObligationRow(
-                    kind="memory_confirmation",
+                    kind=("memory_review" if imported_review else "memory_confirmation"),
                     status="pending",
                     subject_type="memory_candidate",
                     subject_id=candidate.id,
                     source_transcript_id=candidate.source_transcript_id,
                     source_turn_id=candidate.source_turn_id,
                     origin=candidate.origin,
-                    expires_at=now + timedelta(days=7),
+                    expires_at=(None if imported_review else now + timedelta(days=7)),
                 )
                 session.add(obligation)
                 await session.flush()
@@ -950,6 +976,14 @@ class DerivedMemoryPublisher:
                 lineage_added = await self._add_candidate_lineage(
                     session, target.id, candidate
                 )
+                if owner_assertion_turn_id is not None:
+                    target.owner_assertion_turn_id = owner_assertion_turn_id
+                    session.add(MemoryProvenanceRow(
+                        memory_id=target.id,
+                        relationship="owner_confirmation",
+                        source_turn_id=owner_assertion_turn_id,
+                    ))
+                    lineage_added = True
                 self._complete_candidate(
                     candidate,
                     attempt,
@@ -1045,6 +1079,8 @@ class DerivedMemoryPublisher:
                 target.content = proposed_content
                 target.fingerprint = proposed_fingerprint
                 target.grounding_status = "verified"
+                target.verification_record_id = verification_record_id
+                target.owner_assertion_turn_id = owner_assertion_turn_id
                 target.memory_kind = classification["memory_kind"]
                 target.scope = classification["scope"]
                 target.scope_key = classification["scope_key"]
@@ -1150,6 +1186,8 @@ class DerivedMemoryPublisher:
                     status=SUPERSEDED,
                     record_kind="derived",
                     grounding_status="verified",
+                    verification_record_id=verification_record_id,
+                    owner_assertion_turn_id=owner_assertion_turn_id,
                     origin="conversation_verification",
                     memory_kind=classification["memory_kind"],
                     scope=classification["scope"],
@@ -1208,6 +1246,8 @@ class DerivedMemoryPublisher:
                     valid_to=decision.event_valid_to,
                     origin="conversation_verification",
                     grounding_status="verified",
+                    verification_record_id=verification_record_id,
+                    owner_assertion_turn_id=owner_assertion_turn_id,
                     **classification,
                 )
                 if not created or memory.record_kind != "derived":
@@ -1269,6 +1309,8 @@ class DerivedMemoryPublisher:
                 valid_to=decision.event_valid_to,
                 origin="conversation_verification",
                 grounding_status="verified",
+                verification_record_id=verification_record_id,
+                owner_assertion_turn_id=owner_assertion_turn_id,
                 **classification,
             )
             if not created or replacement.id == target.id:
@@ -1564,35 +1606,29 @@ class MemoryReconciliationService:
                     comparison,
                 )
                 stats["version_conflicts"] += conflicts
-                if result in {
-                    "created",
-                    "merge",
-                    "supersede",
-                    "historical_predecessor",
-                    "historical_lineage_added",
-                    "historical_already_represented",
-                    "legacy_grounded",
-                    "lineage_added",
-                    "already_represented",
-                }:
-                    stats["reconciled"] += 1
-                elif result == "retained_short_term":
-                    stats["retained_short_term"] += 1
-                elif result in {"blocked", "invalidated", "awaiting_owner", "conflict"}:
-                    stats["blocked"] += 1
-                elif result == "source_conflict":
-                    stats["source_conflicts"] += 1
-                elif result == "lease_conflict":
-                    stats["lease_conflicts"] += 1
-                elif result == "version_conflict":
-                    # Bounded CAS retries were exhausted; candidate is requeued with
-                    # its persisted reading/verdict reusable on the next lease.
-                    pass
-                else:
+                try:
+                    outcome = PublicationOutcome(result)
+                except ValueError:
                     stats["failures"] += 1
                     await self._release_failed(
                         claim, code="unknown_publish_result"
                     )
+                    continue
+                if outcome.bucket == PublicationBucket.RECONCILED:
+                    stats["reconciled"] += 1
+                elif outcome.bucket == PublicationBucket.RETAINED_SHORT_TERM:
+                    stats["retained_short_term"] += 1
+                elif outcome.bucket == PublicationBucket.DISCARDED:
+                    stats["discarded"] += 1
+                elif outcome.bucket == PublicationBucket.BLOCKED:
+                    stats["blocked"] += 1
+                elif outcome.bucket == PublicationBucket.SOURCE_CONFLICT:
+                    stats["source_conflicts"] += 1
+                elif outcome.bucket == PublicationBucket.LEASE_CONFLICT:
+                    stats["lease_conflicts"] += 1
+                elif outcome.bucket == PublicationBucket.VERSION_CONFLICT:
+                    # Bounded CAS retries were exhausted; the candidate was requeued.
+                    pass
             except CandidateSnapshotError:
                 stats["failures"] += 1
                 await self._release_failed(claim, code="snapshot_stale")
