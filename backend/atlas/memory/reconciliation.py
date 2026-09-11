@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, Literal, Protocol
 from uuid import UUID, uuid4
@@ -37,6 +37,7 @@ from atlas.persistence.shared_writes import (
     SharedWriteReceipt,
 )
 
+from .candidates import protocol_token
 from .durable import (
     ACTIVE,
     RETIRED,
@@ -151,6 +152,90 @@ class IndependentReading(BaseModel):
     event_valid_to: datetime | None = None
 
 
+_READING_TOKENS: dict[str, frozenset[str]] = {
+    "scope": frozenset({"chat", "project", "cross_chat"}),
+    "durability": frozenset({"short_term", "long_term"}),
+    "claim_principal": frozenset({"owner", "external", "mixed", "unknown"}),
+}
+_MAX_READING_CLAIMS = 8
+
+
+def _fold_optional_token(
+    data: dict[str, object], key: str, allowed: frozenset[str], notes: dict[str, int]
+) -> None:
+    """Syntax-only folding of an optional classification hint.
+
+    A spelling variant of an allowed value is folded; ``global`` means ``cross_chat``.
+    Any other value is dropped to null and counted, so a bad hint never sinks the
+    stage output it decorates. Meaning is never reinterpreted.
+    """
+    value = data.get(key)
+    if value is None:
+        return
+    if not isinstance(value, str):
+        data[key] = None
+        notes[f"invalid_{key}"] = notes.get(f"invalid_{key}", 0) + 1
+        return
+    token = protocol_token(value)
+    if key == "scope" and token == "global":
+        token = "cross_chat"
+    if token in allowed:
+        data[key] = token
+    elif token in {"", "null", "none"}:
+        data[key] = None
+    else:
+        data[key] = None
+        notes[f"invalid_{key}"] = notes.get(f"invalid_{key}", 0) + 1
+
+
+def _fold_required_token(data: dict[str, object], key: str) -> None:
+    """Spelling variants of a required protocol token fold; unknown values stay and fail."""
+    value = data.get(key)
+    if isinstance(value, str):
+        data[key] = protocol_token(value)
+
+
+def normalize_reading_payload(raw: object) -> tuple[object, dict[str, int]]:
+    notes: dict[str, int] = {}
+    if not isinstance(raw, dict):
+        return raw, notes
+    data = dict(raw)
+    claims = data.get("extracted_claims")
+    if isinstance(claims, list):
+        kept = [item for item in claims if isinstance(item, str) and item.strip()]
+        dropped = len(claims) - len(kept)
+        if dropped:
+            notes["claim_dropped"] = dropped
+        if len(kept) > _MAX_READING_CLAIMS:
+            # Over-extraction: the retained claims are still individually supported;
+            # the comparison stage judges the proposal against what remains.
+            notes["claims_truncated"] = len(kept) - _MAX_READING_CLAIMS
+            kept = kept[:_MAX_READING_CLAIMS]
+        data["extracted_claims"] = kept
+    for key, allowed in _READING_TOKENS.items():
+        _fold_optional_token(data, key, allowed, notes)
+    return data, notes
+
+
+def normalize_comparison_payload(raw: object) -> tuple[object, dict[str, int]]:
+    notes: dict[str, int] = {}
+    if not isinstance(raw, dict):
+        return raw, notes
+    data = dict(raw)
+    _fold_required_token(data, "verdict")
+    for key in ("scope", "durability"):
+        _fold_optional_token(data, key, _READING_TOKENS[key], notes)
+    return data, notes
+
+
+def normalize_relation_payload(raw: object) -> tuple[object, dict[str, int]]:
+    if not isinstance(raw, dict):
+        return raw, {}
+    data = dict(raw)
+    _fold_required_token(data, "relation")
+    return data, {}
+
+
 class ComparisonVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -238,9 +323,11 @@ class ReconciliationRunResult:
     lease_conflicts: int = 0
     failures: int = 0
     expired: int = 0
+    contract_notes: dict[str, int] = field(default_factory=dict)
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, object]:
         return {
+            "reconciliation_contract_notes": dict(self.contract_notes),
             "reconciliation_claimed": self.claimed,
             "reconciliation_reconciled": self.reconciled,
             "reconciliation_retained_short_term": self.retained_short_term,
@@ -1703,6 +1790,7 @@ class MemoryReconciliationService:
             "failures": 0,
             "expired": expired,
         }
+        self._contract_notes = {}
         for claim in claims:
             try:
                 snapshot = await self._load_snapshot(claim)
@@ -1779,7 +1867,19 @@ class MemoryReconciliationService:
                 await self._release_failed(
                     claim, code="model_or_publish_error"
                 )
-        return ReconciliationRunResult(**stats)
+        return ReconciliationRunResult(
+            **stats, contract_notes=dict(sorted(self._contract_notes.items()))
+        )
+
+    def _note_contract(self, stage: str, notes: dict[str, int]) -> None:
+        if not notes:
+            return
+        store = getattr(self, "_contract_notes", None)
+        if store is None:
+            store = self._contract_notes = {}
+        for key, count in notes.items():
+            store[f"{stage}.{key}"] = store.get(f"{stage}.{key}", 0) + int(count)
+        logger.warning("memory verifier %s output folded: %s", stage, notes)
 
     @staticmethod
     async def _explicit_command_context(
@@ -2151,8 +2251,14 @@ class MemoryReconciliationService:
             "mixed when both are materially required, or unknown when authority cannot be resolved. "
             "Do not treat an owner's storage request as evidence that an external claim is an owner fact. "
             "Return exactly one JSON object with keys extracted_claims, category, scope, durability, "
-            "claim_principal, event_valid_from, event_valid_to. No proposal comparison, policy judgment, "
-            "or markdown."
+            "claim_principal, event_valid_from, event_valid_to. Use only these exact values: "
+            "extracted_claims is a list of at most eight strings (if more claims are supported, return "
+            "the eight most memory-worthy); scope is chat, project, cross_chat, or null (never owner, "
+            "personal, or global); durability is short_term, long_term, or null (never episodic or "
+            "permanent); claim_principal is owner, external, mixed, unknown, or null; category is one "
+            "short lowercase word such as preference, fact, identity, decision, relationship, "
+            "procedure, project_state, or intent; event times are ISO-8601 or null. Any other value "
+            "is discarded. No proposal comparison, policy judgment, or markdown."
         )
         raw = await self.model.complete_text(
             instructions=instructions,
@@ -2166,7 +2272,9 @@ class MemoryReconciliationService:
                 ),
             }],
         )
-        return IndependentReading.model_validate(self._json_object(raw, "blind reading"))
+        payload, notes = normalize_reading_payload(self._json_object(raw, "blind reading"))
+        self._note_contract("blind_reading", notes)
+        return IndependentReading.model_validate(payload)
 
     async def _persist_reading(
         self,
@@ -2220,7 +2328,10 @@ class MemoryReconciliationService:
             "different_category. normalized_content must contain only what the blind reading "
             "supports; category/scope/durability may narrow or correct the proposal but are not "
             "authority decisions. Return exactly one JSON object with keys verdict, "
-            "normalized_content, category, scope, durability."
+            "normalized_content, category, scope, durability. Use only these exact values: verdict "
+            "is agree, narrow_scope, contradicted, insufficient_evidence, or different_category; "
+            "scope is chat, project, cross_chat, or null; durability is short_term, long_term, or "
+            "null. Any other verdict fails the comparison."
         )
         payload = {
             "independent_reading_id": str(reading_row.id),
@@ -2239,9 +2350,11 @@ class MemoryReconciliationService:
                 ),
             }],
         )
-        verdict = ComparisonVerdict.model_validate(
+        payload, notes = normalize_comparison_payload(
             self._json_object(raw, "proposal comparison")
         )
+        self._note_contract("comparison", notes)
+        verdict = ComparisonVerdict.model_validate(payload)
         if (
             verdict.verdict not in {"contradicted", "insufficient_evidence"}
             and not (verdict.normalized_content or "").strip()
@@ -2506,7 +2619,8 @@ class MemoryReconciliationService:
             "a supported replacement should normally supersede it. If the target is only a lifecycle-"
             "restricted correction guard, return new when the claim is otherwise new; publication "
             "will preserve the historical link. Do not use discovery/write order as chronology. "
-            "Return exactly one JSON object with keys relation, target_memory_id, replacement_content."
+            "Return exactly one JSON object with keys relation, target_memory_id, replacement_content. "
+            "relation must be exactly one of the seven values above; any other relation fails."
         )
         payload = {
             "verified_claim": {
@@ -2538,9 +2652,10 @@ class MemoryReconciliationService:
                 ),
             }],
         )
-        relation = MemoryRelationDecision.model_validate(
+        payload, _notes = normalize_relation_payload(
             self._json_object(raw, "memory reconciliation")
         )
+        relation = MemoryRelationDecision.model_validate(payload)
         active_ids = {
             UUID(str(item["memory_id"])) for item in snapshot.active_memories
         }

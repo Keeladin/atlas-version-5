@@ -33,7 +33,7 @@ class CandidateEvidenceRef(BaseModel):
         return self
 
 
-def _token(value: str) -> str:
+def protocol_token(value: str) -> str:
     """Syntax-only normalization: case, surrounding/duplicate whitespace, hyphen and space."""
     return "_".join(value.casefold().replace("-", " ").split())
 
@@ -52,7 +52,7 @@ def normalize_candidate_payload(raw: object) -> object:
     for key in ("kind", "scope", "durability"):
         value = data.get(key)
         if isinstance(value, str):
-            data[key] = _token(value)
+            data[key] = protocol_token(value)
     if data.get("scope") == "global":
         data["scope"] = "cross_chat"
     return data
@@ -74,7 +74,7 @@ def candidate_rejection_category(exc: BaseException) -> str:
             return "unexpected_field"
         return f"invalid_{field}"
     if isinstance(exc, ValueError):
-        return _token(str(exc))[:64] or "intake_error"
+        return protocol_token(str(exc))[:64] or "intake_error"
     return "type_error"
 
 
