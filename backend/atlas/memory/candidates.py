@@ -132,6 +132,7 @@ class MemoryCandidateRepository:
         evidence_handle_map: dict[str, tuple[UUID, str]] | None = None,
         proposer_model: str | None = None,
         intake_path: str = "foreground",
+        origin: str = "conversation",
         temporal_horizon_at=None,
     ) -> tuple[MemoryCandidateRow, bool]:
         candidate = candidate.normalized()
@@ -208,6 +209,7 @@ class MemoryCandidateRepository:
                 evidence_set_hash=evidence_hash,
                 proposer_model=(" ".join(str(proposer_model or "").split())[:128] or None),
                 intake_path=(" ".join(str(intake_path or "foreground").split())[:32] or "foreground"),
+                origin=(" ".join(str(origin or "conversation").split())[:64] or "conversation"),
                 temporal_horizon_at=temporal_horizon_at,
                 source_transcript_id=source_transcript_id,
                 source_turn_id=source_turn_id,
@@ -271,6 +273,7 @@ class MemoryCandidateIntake:
         evidence_handle_map: dict[str, tuple[UUID, str]] | None = None,
         proposer_model: str | None = None,
         intake_path: str = "foreground",
+        origin: str = "conversation",
         temporal_horizon_at=None,
     ) -> dict[str, int]:
         accepted = rejected = duplicate = 0
@@ -288,6 +291,7 @@ class MemoryCandidateIntake:
                         evidence_handle_map=evidence_handle_map,
                         proposer_model=proposer_model,
                         intake_path=intake_path,
+                        origin=origin,
                         temporal_horizon_at=temporal_horizon_at,
                     )
                     if created:

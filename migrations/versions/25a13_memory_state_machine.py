@@ -34,8 +34,20 @@ def upgrade() -> None:
     op.add_column(
         "durable_memories",
         sa.Column(
+            "origin", sa.String(length=64),
+            server_default="legacy_pre25a13", nullable=False,
+        ),
+    )
+    op.create_index(
+        "ix_durable_memories_origin",
+        "durable_memories",
+        ["origin"],
+    )
+    op.add_column(
+        "durable_memories",
+        sa.Column(
             "grounding_status", sa.String(length=32),
-            server_default="verified", nullable=False,
+            server_default="legacy_unverified", nullable=False,
         ),
     )
     op.create_index(
@@ -43,13 +55,17 @@ def upgrade() -> None:
         "durable_memories",
         ["grounding_status"],
     )
-    # Derived memories created before the evidence graph existed cannot satisfy
-    # the V1 grounding invariant. Preserve them for owner inspection/history but
-    # exclude them from ordinary recall until a future grounding pass verifies them.
+    # Every durable row that predates the evidence graph is unverified, regardless
+    # of record_kind. Owner submission/import ownership must not bootstrap claim
+    # authority. Only an explicit publication/review path may set verified later.
     op.execute(
         "UPDATE durable_memories "
-        "SET grounding_status = 'legacy_unverified' "
-        "WHERE record_kind = 'derived'"
+        "SET grounding_status = 'legacy_unverified', origin = 'legacy_pre25a13'"
+    )
+    op.alter_column(
+        "durable_memories",
+        "origin",
+        server_default="runtime_unclassified",
     )
 
     op.drop_index("uq_pending_memory_candidate_fingerprint", table_name="memory_candidates")
@@ -81,6 +97,17 @@ def upgrade() -> None:
         "ix_memory_candidates_intake_path",
         "memory_candidates",
         ["intake_path"],
+    )
+    op.add_column(
+        "memory_candidates",
+        sa.Column(
+            "origin", sa.String(length=64), server_default="conversation", nullable=False
+        ),
+    )
+    op.create_index(
+        "ix_memory_candidates_origin",
+        "memory_candidates",
+        ["origin"],
     )
     op.add_column(
         "memory_candidates",
@@ -345,6 +372,9 @@ def upgrade() -> None:
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("subject_type", sa.String(length=32), nullable=False),
         sa.Column("subject_id", sa.UUID(), nullable=True),
+        sa.Column(
+            "origin", sa.String(length=64), server_default="runtime", nullable=False
+        ),
         sa.Column("command_id", sa.UUID(), nullable=True),
         sa.Column("source_transcript_id", sa.UUID(), nullable=True),
         sa.Column("source_turn_id", sa.UUID(), nullable=True),
@@ -383,13 +413,25 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     for column in (
-        "kind", "status", "subject_type", "subject_id", "command_id",
+        "kind", "status", "subject_type", "subject_id", "origin", "command_id",
         "source_transcript_id", "source_turn_id", "resolution_source_transcript_id",
         "resolution_source_turn_id", "resolution_code", "expires_at", "resolved_at",
     ):
         op.create_index(
             f"ix_memory_obligations_{column}", "memory_obligations", [column]
         )
+
+    # Every active pre-25a13 memory becomes an explicit review obligation.
+    # Migration ownership is not evidence; review confirmation later supplies
+    # fresh canonical owner evidence or grounding can resolve it independently.
+    op.execute(sa.text(
+        "INSERT INTO memory_obligations "
+        "(id, kind, status, subject_type, subject_id, origin, resolution_json) "
+        "SELECT gen_random_uuid(), 'memory_review', 'pending', 'durable_memory', "
+        "id, origin, jsonb_build_object('grounding_status', grounding_status) "
+        "FROM durable_memories "
+        "WHERE status = 'active' AND grounding_status = 'legacy_unverified'"
+    ))
 
     op.create_table(
         "memory_conflicts",
@@ -439,6 +481,8 @@ def downgrade() -> None:
         "ix_durable_memories_grounding_status", table_name="durable_memories"
     )
     op.drop_column("durable_memories", "grounding_status")
+    op.drop_index("ix_durable_memories_origin", table_name="durable_memories")
+    op.drop_column("durable_memories", "origin")
     op.drop_table("memory_discovery_state")
 
     for table, columns in (
@@ -449,7 +493,7 @@ def downgrade() -> None:
         ("memory_obligations", (
             "resolved_at", "expires_at", "resolution_code",
             "resolution_source_turn_id", "resolution_source_transcript_id", "source_turn_id",
-            "source_transcript_id", "command_id", "subject_id", "subject_type",
+            "source_transcript_id", "command_id", "origin", "subject_id", "subject_type",
             "status", "kind",
         )),
         ("memory_policy_decisions", (
@@ -497,6 +541,8 @@ def downgrade() -> None:
     )
     op.drop_index("ix_memory_candidates_temporal_horizon_at", table_name="memory_candidates")
     op.drop_column("memory_candidates", "temporal_horizon_at")
+    op.drop_index("ix_memory_candidates_origin", table_name="memory_candidates")
+    op.drop_column("memory_candidates", "origin")
     op.drop_index("ix_memory_candidates_intake_path", table_name="memory_candidates")
     op.drop_column("memory_candidates", "intake_path")
     op.drop_index("ix_memory_candidates_proposer_model", table_name="memory_candidates")

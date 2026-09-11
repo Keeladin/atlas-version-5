@@ -87,6 +87,7 @@ class ReconciliationDecision(BaseModel):
         "merge",
         "supersede",
         "historical_predecessor",
+        "ground_legacy",
         "conflict",
         "await_owner",
     ]
@@ -102,13 +103,13 @@ class ReconciliationDecision(BaseModel):
     @model_validator(mode="after")
     def validate_shape(self) -> ReconciliationDecision:
         targeted = {
-            "equivalent", "merge", "supersede", "historical_predecessor", "conflict"
+            "equivalent", "merge", "supersede", "historical_predecessor", "ground_legacy", "conflict"
         }
         if self.decision in targeted and self.target_memory_id is None:
             raise ValueError(f"{self.decision} requires target_memory_id")
         if self.decision not in targeted and self.target_memory_id is not None:
             raise ValueError(f"{self.decision} must not select target_memory_id")
-        if self.decision in {"merge", "supersede", "historical_predecessor"} and not (self.content or "").strip():
+        if self.decision in {"merge", "supersede", "historical_predecessor", "ground_legacy"} and not (self.content or "").strip():
             raise ValueError(f"{self.decision} requires replacement content")
         return self
 
@@ -149,6 +150,7 @@ class MemoryRelationDecision(BaseModel):
         "narrows",
         "supersedes",
         "historical_predecessor",
+        "grounds_legacy",
         "conflicts_with",
     ]
     target_memory_id: UUID | None = None
@@ -162,6 +164,7 @@ class MemoryRelationDecision(BaseModel):
             "narrows",
             "supersedes",
             "historical_predecessor",
+            "grounds_legacy",
             "conflicts_with",
         }
         if self.relation in targeted and self.target_memory_id is None:
@@ -192,6 +195,7 @@ class EvaluationSnapshot:
     evidence_items: list[dict[str, object]]
     active_memories: list[dict[str, object]]
     restricted_memories: list[dict[str, object]]
+    legacy_unverified_targets: list[dict[str, object]]
     evidence_refs: dict[str, object]
     publication_allowed: bool
 
@@ -277,6 +281,8 @@ def _project_for_model(row: DurableMemoryRow) -> dict[str, object]:
         "memory_id": str(row.id),
         "authority": "owner_directed" if _owner_directed(row) else "derived",
         "status": row.status,
+        "grounding_status": row.grounding_status,
+        "origin": row.origin,
         "kind": row.memory_kind,
         "scope": row.scope,
         "scope_key": row.scope_key,
@@ -822,6 +828,10 @@ class DerivedMemoryPublisher:
             evaluated_active_ids = {
                 UUID(str(item)) for item in snapshot.evidence_refs.get("active_memory_ids", [])
             }
+            evaluated_legacy_ids = {
+                UUID(str(item))
+                for item in snapshot.evidence_refs.get("legacy_unverified_target_ids", [])
+            }
 
             if decision.decision == "await_owner":
                 obligation = MemoryObligationRow(
@@ -831,6 +841,7 @@ class DerivedMemoryPublisher:
                     subject_id=candidate.id,
                     source_transcript_id=candidate.source_transcript_id,
                     source_turn_id=candidate.source_turn_id,
+                    origin=candidate.origin,
                     expires_at=now + timedelta(days=7),
                 )
                 session.add(obligation)
@@ -887,6 +898,7 @@ class DerivedMemoryPublisher:
                     subject_id=conflict.id,
                     source_transcript_id=candidate.source_transcript_id,
                     source_turn_id=candidate.source_turn_id,
+                    origin=candidate.origin,
                     resolution_json=(
                         {"trigger_reason": decision.reason} if decision.reason else {}
                     ),
@@ -1006,6 +1018,73 @@ class DerivedMemoryPublisher:
                 "namespace": candidate.namespace,
             }
 
+            if decision.decision == "ground_legacy":
+                if decision.target_memory_id not in evaluated_legacy_ids:
+                    return self._block(
+                        candidate, attempt, now, "legacy_target_not_in_evaluated_snapshot"
+                    )
+                target = await session.get(DurableMemoryRow, decision.target_memory_id)
+                if (
+                    target is None
+                    or target.status != ACTIVE
+                    or target.grounding_status != "legacy_unverified"
+                    or _owner_directed(target)
+                    or not target.record_kind.startswith("derived")
+                    or not self._same_scope(
+                        target, candidate, decision_scope=decision.scope
+                    )
+                ):
+                    return self._block(
+                        candidate, attempt, now, "legacy_grounding_target_invalid"
+                    )
+                existing = await repository.active_by_fingerprint(proposed_fingerprint)
+                if existing is not None and existing.id != target.id:
+                    return self._block(
+                        candidate, attempt, now, "legacy_grounding_duplicate_exists"
+                    )
+                target.content = proposed_content
+                target.fingerprint = proposed_fingerprint
+                target.grounding_status = "verified"
+                target.memory_kind = classification["memory_kind"]
+                target.scope = classification["scope"]
+                target.scope_key = classification["scope_key"]
+                target.durability = classification["durability"]
+                target.subject = candidate.subject
+                target.namespace = candidate.namespace
+                target.source_transcript_id = candidate.source_transcript_id
+                target.source_turn_id = primary_evidence_turn_id
+                target.valid_from = decision.event_valid_from
+                target.valid_to = decision.event_valid_to
+                target.updated_at = now
+                _clear_embedding(target)
+                await self._add_candidate_lineage(session, target.id, candidate)
+                review = (
+                    await session.execute(
+                        select(MemoryObligationRow).where(
+                            MemoryObligationRow.kind == "memory_review",
+                            MemoryObligationRow.status == "pending",
+                            MemoryObligationRow.subject_type == "durable_memory",
+                            MemoryObligationRow.subject_id == target.id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if review is not None:
+                    review.status = "resolved"
+                    review.resolution_code = "grounded_by_evidence"
+                    review.resolution_json = {"candidate_id": str(candidate.id)}
+                    review.resolved_at = now
+                self._complete_candidate(
+                    candidate, attempt, now,
+                    decision="ground_legacy", result="legacy_grounded"
+                )
+                attempt.target_memory_id = target.id
+                return SharedWriteMutation(
+                    result={
+                        "result": "legacy_grounded",
+                        "memory_id": str(target.id),
+                    }
+                )
+
             if decision.decision == "historical_predecessor":
                 if decision.target_memory_id not in evaluated_active_ids:
                     return self._block(
@@ -1070,6 +1149,8 @@ class DerivedMemoryPublisher:
                 historical = DurableMemoryRow(
                     status=SUPERSEDED,
                     record_kind="derived",
+                    grounding_status="verified",
+                    origin="conversation_verification",
                     memory_kind=classification["memory_kind"],
                     scope=classification["scope"],
                     scope_key=classification["scope_key"],
@@ -1116,42 +1197,6 @@ class DerivedMemoryPublisher:
                     proposed_fingerprint
                 )
                 if existing is not None:
-                    if (
-                        existing.grounding_status == "legacy_unverified"
-                        and existing.record_kind.startswith("derived")
-                        and self._same_scope(
-                            existing, candidate, decision_scope=decision.scope
-                        )
-                        and (
-                            existing.memory_kind is None
-                            or existing.memory_kind == classification["memory_kind"]
-                        )
-                    ):
-                        lineage_added = await self._add_candidate_lineage(
-                            session, existing.id, candidate
-                        )
-                        existing.grounding_status = "verified"
-                        existing.memory_kind = (
-                            existing.memory_kind or classification["memory_kind"]
-                        )
-                        if existing.source_transcript_id is None:
-                            existing.source_transcript_id = candidate.source_transcript_id
-                        if existing.source_turn_id is None:
-                            existing.source_turn_id = primary_evidence_turn_id
-                        existing.updated_at = now
-                        self._complete_candidate(
-                            candidate, attempt, now,
-                            decision="create", result="legacy_grounded"
-                        )
-                        attempt.target_memory_id = existing.id
-                        return SharedWriteMutation(
-                            mutated=True,
-                            result={
-                                "result": "legacy_grounded",
-                                "memory_id": str(existing.id),
-                                "lineage_added": lineage_added,
-                            },
-                        )
                     return self._block(
                         candidate, attempt, now, "create_target_already_exists"
                     )
@@ -1161,6 +1206,8 @@ class DerivedMemoryPublisher:
                     source_turn_id=primary_evidence_turn_id,
                     valid_from=decision.event_valid_from,
                     valid_to=decision.event_valid_to,
+                    origin="conversation_verification",
+                    grounding_status="verified",
                     **classification,
                 )
                 if not created or memory.record_kind != "derived":
@@ -1220,6 +1267,8 @@ class DerivedMemoryPublisher:
                 supersedes_id=target.id,
                 valid_from=decision.event_valid_from,
                 valid_to=decision.event_valid_to,
+                origin="conversation_verification",
+                grounding_status="verified",
                 **classification,
             )
             if not created or replacement.id == target.id:
@@ -1522,6 +1571,7 @@ class MemoryReconciliationService:
                     "historical_predecessor",
                     "historical_lineage_added",
                     "historical_already_represented",
+                    "legacy_grounded",
                     "lineage_added",
                     "already_represented",
                 }:
@@ -1632,7 +1682,7 @@ class MemoryReconciliationService:
             ]
             source_revision = int(transcript.content_revision or 0)
             memory_revision = await _memory_revision(session)
-            active, restricted = await self._related_memories(session, candidate)
+            active, restricted, legacy = await self._related_memories(session, candidate)
             evidence_refs = {
                 "trigger_turn_id": str(candidate.source_turn_id),
                 "evidence_set_hash": candidate.evidence_set_hash,
@@ -1644,6 +1694,7 @@ class MemoryReconciliationService:
                 ),
                 "active_memory_ids": [str(row.id) for row in active],
                 "restricted_memory_ids": [str(row.id) for row in restricted],
+                "legacy_unverified_target_ids": [str(row.id) for row in legacy],
             }
             candidate_payload = {
                 "kind": candidate.kind,
@@ -1655,6 +1706,7 @@ class MemoryReconciliationService:
                 "subject": candidate.subject,
                 "namespace": candidate.namespace,
                 "intake_path": candidate.intake_path,
+                "origin": candidate.origin,
                 "temporal_horizon_at": candidate.temporal_horizon_at,
                 "owner_confirmation_granted": bool(
                     (candidate.decision_json or {}).get("owner_confirmation_granted")
@@ -1679,6 +1731,9 @@ class MemoryReconciliationService:
                 active_memories=[_project_for_model(row) for row in active],
                 restricted_memories=[
                     _project_for_model(row) for row in restricted
+                ],
+                legacy_unverified_targets=[
+                    _project_for_model(row) for row in legacy
                 ],
                 evidence_refs=evidence_refs,
                 publication_allowed=publication_allowed,
@@ -1715,7 +1770,7 @@ class MemoryReconciliationService:
         self,
         session: AsyncSession,
         candidate: MemoryCandidateRow,
-    ) -> tuple[list[DurableMemoryRow], list[DurableMemoryRow]]:
+    ) -> tuple[list[DurableMemoryRow], list[DurableMemoryRow], list[DurableMemoryRow]]:
         return await self._related_memories_for(
             session,
             candidate,
@@ -1732,7 +1787,7 @@ class MemoryReconciliationService:
         kind: str,
         scope: str,
         scope_key: str | None,
-    ) -> tuple[list[DurableMemoryRow], list[DurableMemoryRow]]:
+    ) -> tuple[list[DurableMemoryRow], list[DurableMemoryRow], list[DurableMemoryRow]]:
         if scope == "cross_chat":
             scope_condition = DurableMemoryRow.scope == "cross_chat"
         elif scope == "chat":
@@ -1815,7 +1870,25 @@ class MemoryReconciliationService:
                 .limit(16)
             )
         ).scalars().all()
-        return list(active_by_id.values()), list(restricted)
+        legacy = (
+            await session.execute(
+                select(DurableMemoryRow)
+                .where(
+                    DurableMemoryRow.status == ACTIVE,
+                    DurableMemoryRow.grounding_status == "legacy_unverified",
+                    DurableMemoryRow.record_kind.like("derived%"),
+                    DurableMemoryRow.content.is_not(None),
+                    scope_condition,
+                    or_(*related_conditions),
+                )
+                .order_by(
+                    DurableMemoryRow.updated_at.desc(),
+                    DurableMemoryRow.id.desc(),
+                )
+                .limit(16)
+            )
+        ).scalars().all()
+        return list(active_by_id.values()), list(restricted), list(legacy)
 
     async def _independent_read(
         self, snapshot: EvaluationSnapshot
@@ -2128,7 +2201,7 @@ class MemoryReconciliationService:
                 )
             )
             kind = self._effective_kind(snapshot, reading, comparison)
-            active, restricted = await self._related_memories_for(
+            active, restricted, legacy = await self._related_memories_for(
                 session,
                 candidate,
                 kind=kind,
@@ -2143,10 +2216,14 @@ class MemoryReconciliationService:
                 restricted_memories=[
                     _project_for_model(row) for row in restricted
                 ],
+                legacy_unverified_targets=[
+                    _project_for_model(row) for row in legacy
+                ],
                 evidence_refs={
                     **snapshot.evidence_refs,
                     "active_memory_ids": [str(row.id) for row in active],
                     "restricted_memory_ids": [str(row.id) for row in restricted],
+                    "legacy_unverified_target_ids": [str(row.id) for row in legacy],
                 },
             )
 
@@ -2160,10 +2237,14 @@ class MemoryReconciliationService:
         instructions = (
             "Reconcile one independently verified claim against the current Atlas memory graph. "
             "The active/restricted memories are derived artifacts for state comparison, not "
-            "corroborating evidence for the claim. Choose exactly one relation: new, "
-            "duplicate_of, narrows, supersedes, historical_predecessor, or conflicts_with. "
-            "Targeted relations must name one supplied active memory_id. Never narrow or "
-            "supersede owner-directed memory; if the claim disagrees with owner-directed "
+            "corroborating evidence for the claim. Legacy-unverified memories are target-only "
+            "artifacts: they must never count as evidence for the claim. Choose exactly one "
+            "relation: new, duplicate_of, narrows, supersedes, historical_predecessor, "
+            "grounds_legacy, or conflicts_with. grounds_legacy is only for a supplied "
+            "legacy_unverified_target whose meaning is supported by the verified claim; its "
+            "replacement_content must be the verified claim wording, not the legacy wording. "
+            "Other targeted relations must name one supplied active memory_id. Never narrow "
+            "or supersede owner-directed memory; if the claim disagrees with owner-directed "
             "memory use conflicts_with. Do not use discovery/write order as chronology. "
             "Return exactly one JSON object with keys relation, target_memory_id, "
             "replacement_content."
@@ -2179,6 +2260,7 @@ class MemoryReconciliationService:
             },
             "applicable_active_memories": snapshot.active_memories,
             "lifecycle_restricted_memories": snapshot.restricted_memories,
+            "legacy_unverified_targets": snapshot.legacy_unverified_targets,
         }
         raw = await self.model.complete_text(
             instructions=instructions,
@@ -2198,8 +2280,16 @@ class MemoryReconciliationService:
         active_ids = {
             UUID(str(item["memory_id"])) for item in snapshot.active_memories
         }
-        if relation.target_memory_id is not None and relation.target_memory_id not in active_ids:
-            raise ValueError("reconciliation targeted memory outside evaluated graph")
+        legacy_ids = {
+            UUID(str(item["memory_id"])) for item in snapshot.legacy_unverified_targets
+        }
+        if relation.relation == "grounds_legacy":
+            if relation.target_memory_id not in legacy_ids:
+                raise ValueError("legacy grounding targeted memory outside target-only graph")
+            if not (relation.replacement_content or "").strip():
+                raise ValueError("legacy grounding requires verified replacement content")
+        elif relation.target_memory_id is not None and relation.target_memory_id not in active_ids:
+            raise ValueError("reconciliation targeted memory outside evaluated active graph")
         return relation
 
     @staticmethod
@@ -2340,6 +2430,11 @@ class MemoryReconciliationService:
         scope = self._effective_scope(snapshot, reading, comparison)
         if scope == "project":
             return "block", "project_identity_unresolved"
+        origin = str(snapshot.candidate.get("origin") or "conversation")
+        if origin not in {"conversation", "owner_statement", "sweep"}:
+            if bool(snapshot.candidate.get("owner_confirmation_granted")):
+                return "allow", "owner_confirmed_import"
+            return "require_owner_confirmation", "external_origin_requires_review"
         if category.casefold() in self._SENSITIVE_CATEGORIES:
             if bool(snapshot.candidate.get("owner_confirmation_granted")):
                 return "allow", "owner_confirmed"
@@ -2414,6 +2509,7 @@ class MemoryReconciliationService:
                 "historical_predecessor": (
                     "historical_predecessor", relation.target_memory_id
                 ),
+                "grounds_legacy": ("ground_legacy", relation.target_memory_id),
                 "conflicts_with": ("conflict", relation.target_memory_id),
             }[relation.relation]
         return ReconciliationDecision(
@@ -2422,7 +2518,7 @@ class MemoryReconciliationService:
             content=(
                 content
                 if action
-                in {"merge", "supersede", "historical_predecessor", "conflict"}
+                in {"merge", "supersede", "historical_predecessor", "ground_legacy", "conflict"}
                 else None
             ),
             event_valid_from=reading.event_valid_from,

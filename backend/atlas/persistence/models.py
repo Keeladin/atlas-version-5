@@ -166,8 +166,12 @@ class DurableMemoryRow(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     record_kind: Mapped[str] = mapped_column(String(32), default="owner_directed", index=True)
+    origin: Mapped[str] = mapped_column(
+        String(64), default="runtime_unclassified",
+        server_default="runtime_unclassified", index=True
+    )
     grounding_status: Mapped[str] = mapped_column(
-        String(32), default="verified", server_default="verified", index=True
+        String(32), default="legacy_unverified", server_default="legacy_unverified", index=True
     )
     memory_kind: Mapped[str | None] = mapped_column(String(32), index=True)
     scope: Mapped[str] = mapped_column(String(32), default="cross_chat", server_default="cross_chat", index=True)
@@ -271,6 +275,9 @@ class MemoryCandidateRow(Base):
     proposer_model: Mapped[str | None] = mapped_column(String(128), index=True)
     intake_path: Mapped[str] = mapped_column(
         String(32), default="foreground", server_default="foreground", index=True
+    )
+    origin: Mapped[str] = mapped_column(
+        String(64), default="conversation", server_default="conversation", index=True
     )
     temporal_horizon_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), index=True
@@ -494,6 +501,9 @@ class MemoryObligationRow(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
     subject_type: Mapped[str] = mapped_column(String(32), index=True)
     subject_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    origin: Mapped[str] = mapped_column(
+        String(64), default="runtime", server_default="runtime", index=True
+    )
     command_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("memory_commands.id", ondelete="SET NULL"), index=True
     )

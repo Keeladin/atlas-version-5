@@ -115,6 +115,7 @@ class DurableMemoryRepository:
         source_turn_id: UUID | None,
         supersedes_id: UUID | None = None,
         record_kind: str = "owner_directed",
+        origin: str = "runtime_unclassified",
         memory_kind: str | None = None,
         scope: str = "cross_chat",
         scope_key: str | None = None,
@@ -123,6 +124,7 @@ class DurableMemoryRepository:
         namespace: str | None = None,
         valid_from: datetime | None = None,
         valid_to: datetime | None = None,
+        grounding_status: str = "legacy_unverified",
     ) -> tuple[DurableMemoryRow, bool]:
         fingerprint = memory_fingerprint(content)
         existing = await self.active_by_fingerprint(fingerprint)
@@ -131,6 +133,8 @@ class DurableMemoryRepository:
         row = DurableMemoryRow(
             status=ACTIVE,
             record_kind=record_kind,
+            origin=origin,
+            grounding_status=grounding_status,
             memory_kind=memory_kind,
             scope=scope,
             scope_key=scope_key,
@@ -179,6 +183,8 @@ class DurableMemoryRepository:
         row = DurableMemoryRow(
             status=status,
             record_kind=record_kind,
+            origin="owner_lifecycle",
+            grounding_status="verified",
             scope="cross_chat",
             durability="long_term",
             content=content,

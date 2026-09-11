@@ -658,21 +658,11 @@ async def test_foreground_and_sweep_same_fact_converge_at_reconciliation(pg_fact
 
 @pytest.mark.asyncio
 async def test_legacy_unverified_memory_is_excluded_until_grounded(pg_factory):
-    content = "Jaco prefers grounded evidence before durable recall."
+    legacy_content = "Jaco likes grounded evidence before durable recall."
+    verified_content = "Jaco prefers grounded evidence before durable recall."
     async with pg_factory() as session:
-        transcript = TranscriptRow(kind="owner", next_turn_sequence=1, content_revision=1)
-        session.add(transcript)
-        await session.flush()
-        turn = TurnRow(
-            transcript_id=transcript.id,
-            sequence=1,
-            actor="owner",
-            blocks=[{"type": "text", "text": content}],
-        )
-        session.add(turn)
-        await session.flush()
         memory, _ = await DurableMemoryRepository(session).create_active(
-            content,
+            legacy_content,
             source_transcript_id=None,
             source_turn_id=None,
             record_kind="derived",
@@ -682,3 +672,79 @@ async def test_legacy_unverified_memory_is_excluded_until_grounded(pg_factory):
             durability="long_term",
             subject="Jaco",
         )
+        await session.commit()
+        memory_id = memory.id
+
+    before = await MemoryService(pg_factory).search({
+        "query": "grounded evidence", "limit": 5
+    })
+    assert all(item["memory_id"] != str(memory_id) for item in before["durable_memories"])
+
+    candidate_id, _transcript_id, turn_id, _ = await _seed(
+        pg_factory, content=verified_content
+    )
+    result = await MemoryReconciliationService(
+        pg_factory,
+        _PipelineModel(
+            content=verified_content,
+            relation="grounds_legacy",
+            target_memory_id=memory_id,
+        ),
+    ).run_once()
+    assert result.reconciled == 1
+
+    async with pg_factory() as session:
+        memory = await session.get(DurableMemoryRow, memory_id)
+        candidate = await session.get(MemoryCandidateRow, candidate_id)
+        assert memory.grounding_status == "verified"
+        assert memory.content == verified_content
+        assert memory.source_turn_id == turn_id
+        assert candidate.status == "reconciled"
+
+    after = await MemoryService(pg_factory).search({
+        "query": "grounded evidence", "limit": 5
+    })
+    assert any(item["memory_id"] == str(memory_id) for item in after["durable_memories"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "candidate_status",
+    [
+        "pending", "leased", "retained_short_term", "awaiting_owner",
+        "reconciled", "discarded", "blocked", "invalidated",
+        "expired", "failed", "rejected",
+    ],
+)
+async def test_purge_invalidates_candidate_from_every_persisted_state(
+    pg_factory, candidate_status
+):
+    content = f"Purge coverage for {candidate_status}."
+    candidate_id, transcript_id, turn_id, _ = await _seed(pg_factory, content=content)
+    async with pg_factory() as session:
+        memory, _ = await DurableMemoryRepository(session).create_active(
+            content,
+            source_transcript_id=transcript_id,
+            source_turn_id=turn_id,
+            record_kind="owner_directed",
+            memory_kind="fact",
+            scope="cross_chat",
+            scope_key="owner",
+            durability="long_term",
+        )
+        candidate = await session.get(MemoryCandidateRow, candidate_id)
+        candidate.status = candidate_status
+        await session.commit()
+        memory_id = memory.id
+    result = await MemoryLifecycleCommands(pg_factory).delete({
+        "memory_id": str(memory_id),
+        "scope": "memory_and_sources",
+    })
+    assert result["result"] == "deleted"
+    async with pg_factory() as session:
+        candidate = await session.get(MemoryCandidateRow, candidate_id)
+        turn = await session.get(TurnRow, turn_id)
+        assert candidate.status == "invalidated"
+        assert candidate.content is None
+        assert candidate.invalidated_at is not None
+        assert turn.deleted_at is not None

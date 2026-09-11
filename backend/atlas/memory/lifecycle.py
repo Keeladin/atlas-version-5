@@ -177,6 +177,8 @@ class MemoryLifecycleCommands:
                 source_transcript_id=source[0],
                 source_turn_id=source[1],
                 record_kind="owner_directed",
+                origin="owner_statement",
+                grounding_status="verified",
                 **classification,
             )
             if source[1] is not None:
@@ -263,6 +265,8 @@ class MemoryLifecycleCommands:
                 source_turn_id=source[1],
                 supersedes_id=target.id,
                 valid_from=now if change_type == "change_over_time" else None,
+                origin="owner_statement",
+                grounding_status="verified",
                 **classification,
             )
             target.status = SUPERSEDED
@@ -658,8 +662,8 @@ class MemoryLifecycleCommands:
     async def resolve_obligation(self, arguments: dict) -> dict[str, object]:
         obligation_id = UUID(str(arguments.get("obligation_id")))
         decision = str(arguments.get("decision") or "").strip()
-        if decision not in {"confirm", "reject"}:
-            raise ValueError("decision must be confirm or reject")
+        if decision not in {"confirm", "reject", "retry"}:
+            raise ValueError("decision must be confirm, reject, or retry")
         source = await self._latest_source()
         now = utcnow()
         async with self.factory() as session, session.begin():
@@ -672,8 +676,61 @@ class MemoryLifecycleCommands:
                 raise LookupError("memory obligation not found")
             if obligation.status != "pending":
                 return {"result": "already_resolved", **self._project_obligation(obligation)}
+
+            if obligation.kind == "memory_review" and obligation.subject_type == "durable_memory":
+                if decision not in {"confirm", "reject"}:
+                    raise ValueError("memory review requires confirm or reject")
+                if obligation.subject_id is None:
+                    raise LookupError("memory review target is missing")
+                target = (
+                    await session.execute(
+                        select(DurableMemoryRow)
+                        .where(DurableMemoryRow.id == obligation.subject_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if target is None:
+                    raise LookupError("memory review target not found")
+                obligation.status = "resolved"
+                obligation.resolution_source_transcript_id = source[0]
+                obligation.resolution_source_turn_id = source[1]
+                obligation.resolved_at = now
+                if decision == "confirm":
+                    if source[1] is None:
+                        raise ValueError("memory review confirmation requires canonical owner evidence")
+                    target.grounding_status = "verified"
+                    target.updated_at = now
+                    session.add(
+                        MemoryProvenanceRow(
+                            memory_id=target.id,
+                            relationship="owner_review_confirmed",
+                            source_turn_id=source[1],
+                        )
+                    )
+                    obligation.resolution_code = "confirmed"
+                    obligation.resolution_json = {"memory_id": str(target.id)}
+                    result = "confirmed"
+                else:
+                    if target.status == ACTIVE:
+                        target.status = RETIRED
+                        target.suppresses_recall = True
+                        target.retired_at = now
+                        target.updated_at = now
+                        _clear_embedding(target)
+                    obligation.resolution_code = "rejected"
+                    obligation.resolution_json = {"memory_id": str(target.id)}
+                    result = "rejected"
+                await session.flush()
+                return {
+                    "result": result,
+                    "memory_id": str(target.id),
+                    **self._project_obligation(obligation),
+                }
+
             if obligation.kind != "memory_confirmation" or obligation.subject_type != "memory_candidate":
-                raise ValueError("this obligation requires owner clarification, not confirmation")
+                raise ValueError("this obligation requires a different resolution flow")
+            if decision == "retry":
+                raise ValueError("candidate confirmation does not support retry")
             candidate = (await session.execute(
                 select(MemoryCandidateRow)
                 .where(MemoryCandidateRow.id == obligation.subject_id)
@@ -743,6 +800,7 @@ class MemoryLifecycleCommands:
             "status": row.status,
             "subject_type": row.subject_type,
             "subject_id": str(row.subject_id) if row.subject_id else None,
+            "origin": row.origin,
             "resolution_code": row.resolution_code,
             "resolution": dict(row.resolution_json or {}),
             "source_transcript_id": str(row.source_transcript_id) if row.source_transcript_id else None,
@@ -788,6 +846,7 @@ class MemoryLifecycleCommands:
                         status="pending",
                         subject_type="memory_command",
                         subject_id=command.id,
+                        origin="owner_statement",
                         command_id=command.id,
                         source_transcript_id=source[0],
                         source_turn_id=source[1],
