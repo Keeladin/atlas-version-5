@@ -27,6 +27,7 @@ from atlas.persistence.models import (
     MemoryCandidateRow,
     MemoryCommandRow,
     MemoryObligationRow,
+    MemoryProvenanceRow,
     TranscriptRow,
     TurnRow,
 )
@@ -60,11 +61,18 @@ class _OwnerClaimModel:
         claim_principal: str = "owner",
         scope: str | None = None,
         fail_stage: str | None = None,
+        reconcile=None,
+        event_time=None,
     ) -> None:
         self.factory = factory
         self.claim_principal = claim_principal
         self.scope = scope
         self.fail_stage = fail_stage
+        # Optional overrides: a dict or callable(candidate) -> dict for the
+        # reconcile stage, and a datetime or callable(observed_at) for the
+        # claim's event time.
+        self.reconcile = reconcile
+        self.event_time = event_time
         self.calls: dict[str, int] = {"blind": 0, "compare": 0, "reconcile": 0}
 
     async def _leased(self) -> tuple[MemoryCandidateRow, datetime | None]:
@@ -86,13 +94,17 @@ class _OwnerClaimModel:
                 raise RuntimeError("forced verifier failure")
             # The owner statement establishes the current state at observation
             # time, so the claim's event time is the evidence turn's timestamp.
+            event_time = (
+                self.event_time(observed_at) if callable(self.event_time)
+                else (self.event_time or observed_at)
+            )
             return json.dumps({
                 "extracted_claims": [candidate.content],
                 "category": candidate.kind,
                 "scope": scope,
                 "durability": candidate.durability,
                 "claim_principal": self.claim_principal,
-                "event_valid_from": observed_at.isoformat() if observed_at else None,
+                "event_valid_from": event_time.isoformat() if event_time else None,
                 "event_valid_to": None,
             })
         if "Compare a foreground memory proposal" in instructions:
@@ -106,6 +118,11 @@ class _OwnerClaimModel:
             })
         if "Reconcile one independently verified claim" in instructions:
             self.calls["reconcile"] += 1
+            if self.reconcile is not None:
+                payload = (
+                    self.reconcile(candidate) if callable(self.reconcile) else self.reconcile
+                )
+                return json.dumps(payload)
             async with self.factory() as session:
                 repository = DurableMemoryRepository(session)
                 existing = await repository.active_by_fingerprint(
@@ -127,11 +144,16 @@ class _OwnerClaimModel:
                     "replacement_content": None,
                 })
             if command is not None:
-                return json.dumps({
-                    "relation": "supersedes",
-                    "target_memory_id": str(command.target_memory_id),
-                    "replacement_content": candidate.content,
-                })
+                async with self.factory() as session:
+                    target = await session.get(DurableMemoryRow, command.target_memory_id)
+                # Only an active target can be superseded; a legacy correction
+                # guard is a restriction, so the replacement is a new memory.
+                if target is not None and target.status == "active":
+                    return json.dumps({
+                        "relation": "supersedes",
+                        "target_memory_id": str(command.target_memory_id),
+                        "replacement_content": candidate.content,
+                    })
             return json.dumps({
                 "relation": "new", "target_memory_id": None, "replacement_content": None,
             })
@@ -585,3 +607,216 @@ async def test_explicit_outcomes_surface_once_into_foreground_context(pg_factory
     later = datetime.now(UTC) + timedelta(seconds=1)
     assert await lifecycle.explicit_outcomes_since(transcript_id, since=later) == []
     assert render_memory_outcomes([]) is None
+
+
+async def _append_owner_turn(pg_factory, transcript_id: UUID, text: str) -> UUID:
+    async with pg_factory() as session:
+        transcript = await session.get(TranscriptRow, transcript_id)
+        sequence = int(transcript.next_turn_sequence or 0) + 1
+        transcript.next_turn_sequence = sequence
+        turn = TurnRow(
+            transcript_id=transcript_id, sequence=sequence, actor="owner",
+            blocks=[{"type": "text", "text": text}],
+        )
+        session.add(turn)
+        await session.commit()
+        return turn.id
+
+
+async def _publish_ok(pg_factory, model=None) -> None:
+    result = await _service(pg_factory, model or _OwnerClaimModel(pg_factory)).run_once()
+    assert result.reconciled == 1, result
+
+
+async def _published_memory_id(pg_factory, queued: dict) -> UUID:
+    _, obligation, _ = await _rows(pg_factory, queued)
+    assert obligation.resolution_code == "published", obligation.resolution_code
+    return UUID(str(obligation.resolution_json["memory_id"]))
+
+
+async def _provenance(pg_factory, memory_id: UUID) -> list[tuple[str, UUID | None]]:
+    async with pg_factory() as session:
+        rows = list((await session.execute(
+            select(MemoryProvenanceRow).where(MemoryProvenanceRow.memory_id == memory_id)
+        )).scalars())
+        return [(row.relationship, row.source_memory_id) for row in rows]
+
+
+@pytest.mark.asyncio
+async def test_legacy_correction_links_replacement_to_intake_guard(pg_factory):
+    old, new = "My preferred bird is a starling.", "My preferred bird is a raven."
+    await _seed_owner_turn(pg_factory, f"Correction: not a starling, {new}")
+    service = MemoryService(pg_factory)
+    corrected = await service.correct({"old_content": old, "content": new})
+    assert corrected["status"] == "queued"
+    # The challenged wording stops shaping context immediately, before verification.
+    assert corrected["_context_suppression"]["contents"] == [old]
+
+    _, obligation, command = await _rows(pg_factory, corrected)
+    assert obligation.status == "pending"
+    guard_id = command.target_memory_id
+    assert guard_id is not None
+    async with pg_factory() as session:
+        guard = await session.get(DurableMemoryRow, guard_id)
+        assert guard.record_kind == "owner_correction_guard"
+        assert guard.status == "superseded"
+        assert guard.suppresses_recall is True
+        assert guard.grounding_status == "verified"
+        assert guard.owner_assertion_turn_id is not None
+        assert guard.content == old
+        assert guard.superseded_by_id is None
+        guards = await DurableMemoryRepository(session).recall_guards()
+        assert old in {item["content"] for item in guards}
+
+    await _publish_ok(pg_factory)
+    new_id = await _published_memory_id(pg_factory, corrected)
+    async with pg_factory() as session:
+        memory = await session.get(DurableMemoryRow, new_id)
+        guard = await session.get(DurableMemoryRow, guard_id)
+        assert memory.status == "active"
+        assert memory.content == new
+        assert memory.supersedes_id == guard_id
+        assert guard.superseded_by_id == new_id
+        assert memory.valid_from is None
+    assert ("corrects", guard_id) in await _provenance(pg_factory, new_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change_type", "relationship"),
+    [("correction", "corrects"), ("change_over_time", "supersedes")],
+)
+async def test_correction_change_type_controls_validity_window(pg_factory, change_type, relationship):
+    transcript_id, _ = await _seed_owner_turn(pg_factory, "Remember that I live in London.")
+    service = MemoryService(pg_factory)
+    queued = await service.remember({"content": "I live in London."})
+    await _publish_ok(pg_factory)
+    old_id = await _published_memory_id(pg_factory, queued)
+    await _append_owner_turn(pg_factory, transcript_id, "Actually, I live in Lisbon.")
+
+    corrected = await service.correct({
+        "memory_id": str(old_id), "content": "I live in Lisbon.", "change_type": change_type,
+    })
+    assert corrected["_context_suppression"]["contents"] == ["I live in London."]
+    _, _, command = await _rows(pg_factory, corrected)
+    assert command.target_memory_id == old_id
+    await _publish_ok(pg_factory)
+    new_id = await _published_memory_id(pg_factory, corrected)
+
+    async with pg_factory() as session:
+        old = await session.get(DurableMemoryRow, old_id)
+        new = await session.get(DurableMemoryRow, new_id)
+        assert old.status == "superseded"
+        assert old.suppresses_recall is True
+        assert old.superseded_by_id == new_id
+        assert new.status == "active"
+        assert new.supersedes_id == old_id
+        assert old.valid_from is not None
+        if change_type == "correction":
+            # A wrong claim was never true: no validity window is closed or opened.
+            assert old.valid_to is None
+            assert new.valid_from is None
+        else:
+            assert old.valid_to is not None
+            assert new.valid_from is not None
+            assert new.valid_from >= old.valid_from
+    assert (relationship, old_id) in await _provenance(pg_factory, new_id)
+
+
+@pytest.mark.asyncio
+async def test_pending_correction_suppresses_target_from_foreground_context(pg_factory):
+    from atlas.api.app import _active_memory_suppression_contents
+
+    transcript_id, _ = await _seed_owner_turn(pg_factory, "Remember that I live in London.")
+    service = MemoryService(pg_factory)
+    queued = await service.remember({"content": "I live in London."})
+    await _publish_ok(pg_factory)
+    old_id = await _published_memory_id(pg_factory, queued)
+    async with pg_factory() as session:
+        assert await _active_memory_suppression_contents(session) == []
+
+    await _append_owner_turn(pg_factory, transcript_id, "Actually, I live in Lisbon.")
+    corrected = await service.correct({"memory_id": str(old_id), "content": "I live in Lisbon."})
+    async with pg_factory() as session:
+        # Pending correction: the challenged claim is suppressed without any durable change.
+        assert await _active_memory_suppression_contents(session) == ["I live in London."]
+        old = await session.get(DurableMemoryRow, old_id)
+        assert old.status == "active"
+        assert old.suppresses_recall is False
+
+    await _publish_ok(pg_factory)
+    async with pg_factory() as session:
+        # Published correction: suppression now comes from the superseded row itself.
+        assert await _active_memory_suppression_contents(session) == ["I live in London."]
+        old = await session.get(DurableMemoryRow, old_id)
+        assert old.status == "superseded"
+        assert old.suppresses_recall is True
+    _, obligation, command = await _rows(pg_factory, corrected)
+    assert obligation.resolution_code == "published"
+    assert command.status == "applied"
+
+
+@pytest.mark.asyncio
+async def test_explicit_correction_target_mismatch_is_blocked(pg_factory):
+    transcript_id, _ = await _seed_owner_turn(pg_factory, "Remember that I live in London.")
+    service = MemoryService(pg_factory)
+    first = await service.remember({"content": "I live in London."})
+    await _publish_ok(pg_factory)
+    target_id = await _published_memory_id(pg_factory, first)
+    await _append_owner_turn(pg_factory, transcript_id, "Remember that I work in Cambridge.")
+    other = await service.remember({"content": "I work in Cambridge."})
+    await _publish_ok(pg_factory)
+    other_id = await _published_memory_id(pg_factory, other)
+
+    await _append_owner_turn(pg_factory, transcript_id, "Actually, I live in Lisbon.")
+    corrected = await service.correct({"memory_id": str(target_id), "content": "I live in Lisbon."})
+    # The verifier tries to supersede a different memory than the owner named.
+    drifting = _OwnerClaimModel(pg_factory, reconcile=lambda candidate: {
+        "relation": "supersedes",
+        "target_memory_id": str(other_id),
+        "replacement_content": candidate.content,
+    })
+    result = await _service(pg_factory, drifting).run_once()
+    assert result.blocked == 1, result
+
+    candidate, obligation, command = await _rows(pg_factory, corrected)
+    assert candidate.status == "blocked"
+    assert candidate.decision_json["code"] == "explicit_correction_target_mismatch"
+    assert obligation.resolution_code == "blocked"
+    assert command.status == "failed"
+    async with pg_factory() as session:
+        for memory_id in (target_id, other_id):
+            row = await session.get(DurableMemoryRow, memory_id)
+            assert row.status == "active"
+            assert row.superseded_by_id is None
+        assert (await session.execute(
+            select(func.count()).select_from(DurableMemoryRow)
+        )).scalar_one() == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_correction_with_active_target_cannot_publish_as_new(pg_factory):
+    transcript_id, _ = await _seed_owner_turn(pg_factory, "Remember that I live in London.")
+    service = MemoryService(pg_factory)
+    first = await service.remember({"content": "I live in London."})
+    await _publish_ok(pg_factory)
+    target_id = await _published_memory_id(pg_factory, first)
+    await _append_owner_turn(pg_factory, transcript_id, "Actually, I live in Lisbon.")
+    corrected = await service.correct({"memory_id": str(target_id), "content": "I live in Lisbon."})
+
+    # A correction that ignores its named target cannot silently become a second fact.
+    ignoring = _OwnerClaimModel(pg_factory, reconcile={
+        "relation": "new", "target_memory_id": None, "replacement_content": None,
+    })
+    result = await _service(pg_factory, ignoring).run_once()
+    assert result.blocked == 1, result
+    candidate, obligation, command = await _rows(pg_factory, corrected)
+    assert candidate.decision_json["code"] == "explicit_correction_target_not_reconciled"
+    assert obligation.resolution_code == "blocked"
+    assert command.status == "failed"
+    async with pg_factory() as session:
+        target = await session.get(DurableMemoryRow, target_id)
+        assert target.status == "active"
+        assert (await session.execute(
+            select(func.count()).select_from(DurableMemoryRow)
+        )).scalar_one() == 1

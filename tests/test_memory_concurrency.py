@@ -404,12 +404,14 @@ async def test_model_event_time_beyond_cited_evidence_horizon_cannot_supersede(p
             blocks=[{"type": "text", "text": content}], created_at=observed_at,
         )
         session.add(turn)
+        await session.flush()
         target, _ = await DurableMemoryRepository(session).create_active(
             "Jaco prefers compact reports.",
             source_transcript_id=None, source_turn_id=None,
             record_kind="derived", memory_kind="preference", scope="cross_chat",
             scope_key="owner", durability="long_term", subject="Jaco",
             valid_from=target_time,
+            grounding_status="verified", owner_assertion_turn_id=turn.id,
         )
         await session.commit()
         transcript_id, turn_id, target_id = transcript.id, turn.id, target.id
@@ -621,11 +623,13 @@ async def test_duplicate_provenance_racing_supersede_reconciles_after_cas(pg_fac
             blocks=[{"type": "text", "text": new_content}], created_at=new_time,
         )
         session.add_all([old_turn, new_turn])
+        await session.flush()
         target, _ = await DurableMemoryRepository(session).create_active(
             old_content, source_transcript_id=None, source_turn_id=None,
             record_kind="derived", memory_kind="preference",
             scope="cross_chat", scope_key="owner", durability="long_term",
             subject="Jaco", valid_from=old_time,
+            grounding_status="verified", owner_assertion_turn_id=old_turn.id,
         )
         await session.commit()
         transcript_id = transcript.id
@@ -698,11 +702,13 @@ async def test_sweep_recent_filler_cannot_move_temporal_horizon(pg_factory):
             blocks=[{"type": "text", "text": "Yes, exactly."}], created_at=filler_time,
         )
         session.add_all([claim_turn, filler_turn])
+        await session.flush()
         target, _ = await DurableMemoryRepository(session).create_active(
             "Jaco prefers detailed reports.", source_transcript_id=None, source_turn_id=None,
             record_kind="derived", memory_kind="preference", scope="cross_chat", scope_key="owner",
             durability="long_term", subject="Jaco",
             valid_from=datetime(2026, 6, 1, 8, 0, tzinfo=UTC),
+            grounding_status="verified", owner_assertion_turn_id=claim_turn.id,
         )
         await session.commit()
     result = await MemoryCandidateIntake(pg_factory).enqueue_many(

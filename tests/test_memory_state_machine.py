@@ -245,7 +245,9 @@ async def test_cas_conflict_reconciles_again_without_rerunning_blind_read(pg_fac
     result = await MemoryReconciliationService(pg_factory, model).run_once()
     assert result.reconciled == 1
     assert result.version_conflicts == 1
-    assert model.calls == {"blind": 2, "compare": 2, "reconcile": 2}
+    # The blind reading and comparison are keyed on the evidence set and are
+    # reused after a memory-revision CAS conflict; only reconciliation reruns.
+    assert model.calls == {"blind": 1, "compare": 1, "reconcile": 2}
     async with pg_factory() as session:
         assert (
             await session.execute(

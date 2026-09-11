@@ -223,6 +223,7 @@ class MemoryLifecycleCommands:
             target_memory_id=(target.id if target is not None else None),
             change_type=change_type,
             legacy_old_content=(old_content if target is None else None),
+            suppression_content=(target.content if target is not None else old_content),
         )
 
     async def retire(self, arguments: dict) -> dict[str, object]:
@@ -715,6 +716,11 @@ class MemoryLifecycleCommands:
                     ordinal=next_ordinal,
                     span_ref="text:0",
                 ))
+                prior_evidence_set_hash = (
+                    candidate.evidence_set_hash
+                    if asserted == clean_memory_content(candidate.content)
+                    else None
+                )
                 candidate.evidence_set_hash = evidence_set_hash([
                     *((row.turn_id, row.span_ref) for row in evidence_rows),
                     (assertion_turn_id, "text:0"),
@@ -735,6 +741,7 @@ class MemoryLifecycleCommands:
                     "owner_assertion_turn_id": str(assertion_turn_id),
                     "owner_assertion_transcript_id": str(assertion_transcript_id),
                     "obligation_id": str(obligation.id),
+                    "prior_evidence_set_hash": prior_evidence_set_hash,
                 }
                 result = "requeued_for_reconciliation"
             else:
@@ -1142,6 +1149,7 @@ class MemoryLifecycleCommands:
         target_memory_id: UUID | None = None,
         change_type: str | None = None,
         legacy_old_content: str | None = None,
+        suppression_content: str | None = None,
     ) -> dict[str, object]:
         if operation not in {"remember", "correct"}:
             raise ValueError("unsupported explicit content command")
@@ -1210,13 +1218,14 @@ class MemoryLifecycleCommands:
                 )
 
                 if operation == "correct" and legacy_old_content:
-                    await DurableMemoryRepository(session).create_guard(
+                    guard, _ = await DurableMemoryRepository(session).create_guard(
                         legacy_old_content,
                         status=SUPERSEDED,
                         record_kind="owner_correction_guard",
                         source_transcript_id=source[0],
                         source_turn_id=source[1],
                     )
+                    command.target_memory_id = guard.id
 
                 obligation = MemoryObligationRow(
                     kind=obligation_kind,
@@ -1230,7 +1239,7 @@ class MemoryLifecycleCommands:
                 )
                 session.add(obligation)
                 await session.flush()
-                return {
+                result: dict[str, object] = {
                     "command_id": str(command.id),
                     "candidate_id": str(candidate.id),
                     "obligation_id": str(obligation.id),
@@ -1238,6 +1247,11 @@ class MemoryLifecycleCommands:
                     "operation": operation,
                     "result": "queued_for_verification",
                 }
+                if operation == "correct" and suppression_content:
+                    result["_context_suppression"] = {
+                        "contents": [clean_memory_content(suppression_content)]
+                    }
+                return result
         except Exception as exc:  # noqa: BLE001 - every intake failure must become a visible terminal obligation
             return await self._record_explicit_intake_failure(
                 operation=operation,

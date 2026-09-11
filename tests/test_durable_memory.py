@@ -641,27 +641,20 @@ async def test_delete_rebuilds_from_start_of_invalidated_multi_turn_chunk(pg_fac
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["retire", "delete"])
+@pytest.mark.parametrize("operation", ["correct", "retire", "delete"])
 async def test_id_selected_lifecycle_mutation_suppresses_old_context(pg_factory, operation) -> None:
     phrase = "The temporary signal is ORBIT-19."
     await _seed_transcript(pg_factory, f"Remember this: {phrase}")
     service = MemoryService(pg_factory)
     memory_id = await _publish(pg_factory, await service.remember({"content": phrase}))
-    result = await getattr(service, operation)({"memory_id": memory_id})
+    arguments = {"memory_id": memory_id}
+    if operation == "correct":
+        arguments["content"] = "The replacement signal is ORBIT-20."
+    result = await getattr(service, operation)(arguments)
+    # A queued correction suppresses the challenged wording immediately, even
+    # though the durable change waits for verification.
+    assert result["status"] == ("queued" if operation == "correct" else "applied")
     assert result["_context_suppression"]["contents"] == [phrase]
-
-
-@pytest.mark.asyncio
-async def test_queued_correct_does_not_suppress_context_before_publication(pg_factory) -> None:
-    phrase = "The temporary signal is ORBIT-19."
-    await _seed_transcript(pg_factory, f"Remember this: {phrase}")
-    service = MemoryService(pg_factory)
-    memory_id = await _publish(pg_factory, await service.remember({"content": phrase}))
-    result = await service.correct({
-        "memory_id": memory_id, "content": "The replacement signal is ORBIT-20.",
-    })
-    assert result["status"] == "queued"
-    assert "_context_suppression" not in result
 
 
 @pytest.mark.asyncio

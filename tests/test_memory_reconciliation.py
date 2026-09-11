@@ -97,6 +97,33 @@ class _PipelineModel:
         raise AssertionError("unexpected verification stage")
 
 
+async def _owner_assertion_turn(session, content: str) -> UUID:
+    """A verified owner assertion in a review transcript, the grounding of a durable memory."""
+    transcript = TranscriptRow(
+        kind="memory_review", next_turn_sequence=1, content_revision=1,
+        closed_at=datetime.now(UTC),
+    )
+    session.add(transcript)
+    await session.flush()
+    turn = TurnRow(
+        transcript_id=transcript.id, sequence=1, actor="owner",
+        blocks=[{"type": "text", "text": content}],
+    )
+    session.add(turn)
+    await session.flush()
+    return turn.id
+
+
+async def _create_verified_active(session, content: str, **fields):
+    assertion_turn_id = await _owner_assertion_turn(session, content)
+    return await DurableMemoryRepository(session).create_active(
+        content,
+        grounding_status="verified",
+        owner_assertion_turn_id=assertion_turn_id,
+        **fields,
+    )
+
+
 async def _seed_candidate(
     pg_factory,
     *,
@@ -105,6 +132,7 @@ async def _seed_candidate(
     scope: str = "cross_chat",
     durability: str = "long_term",
     subject: str | None = "Jaco",
+    owner_asserted: bool = False,
 ):
     async with pg_factory() as session:
         transcript = TranscriptRow(kind="owner", next_turn_sequence=1, content_revision=1)
@@ -146,6 +174,11 @@ async def _seed_candidate(
                 )
             )
         ).scalar_one()
+        if owner_asserted:
+            # Direct publisher tests bypass the reconciliation record; ground the
+            # publication on the owner turn instead so verified rows are legal.
+            candidate.decision_json = {"owner_assertion_turn_id": str(turn_id)}
+            await session.commit()
         return candidate.id, transcript_id, turn_id, raw
 
 
@@ -240,7 +273,8 @@ async def test_source_revision_change_after_snapshot_requeues_without_publicatio
 async def test_equivalent_adds_lineage_once_and_second_copy_is_true_no_change(pg_factory):
     candidate_id, transcript_id, turn_id, raw = await _seed_candidate(pg_factory)
     async with pg_factory() as session:
-        memory, _ = await DurableMemoryRepository(session).create_active(
+        memory, _ = await _create_verified_active(
+            session,
             raw["content"],
             source_transcript_id=None,
             source_turn_id=None,
@@ -305,7 +339,8 @@ async def test_derived_publication_cannot_supersede_owner_directed_memory(pg_fac
         pg_factory, content="Jaco likes concise reports.", subject="Jaco"
     )
     async with pg_factory() as session:
-        target, _ = await DurableMemoryRepository(session).create_active(
+        target, _ = await _create_verified_active(
+            session,
             "Jaco likes detailed reports.",
             source_transcript_id=None,
             source_turn_id=None,
@@ -343,12 +378,13 @@ async def test_retired_owner_claim_cannot_be_resurrected_from_same_candidate(pg_
     content = "Jaco prefers a specific temporary dashboard layout."
     candidate_id, _, _, _ = await _seed_candidate(pg_factory, content=content)
     async with pg_factory() as session:
+        retire_turn_id = await _owner_assertion_turn(session, f"Retire: {content}")
         guard, _ = await DurableMemoryRepository(session).create_guard(
             content,
             status=RETIRED,
             record_kind="owner_retire_guard",
             source_transcript_id=None,
-            source_turn_id=None,
+            source_turn_id=retire_turn_id,
         )
         await session.commit()
         guard_id = guard.id
@@ -401,7 +437,7 @@ async def test_short_term_retention_is_not_durable_memory_and_remains_deduplicat
 
 @pytest.mark.asyncio
 async def test_identical_publication_retry_replays_same_operation_without_duplicate_memory(pg_factory):
-    candidate_id, _, _, _ = await _seed_candidate(pg_factory)
+    candidate_id, _, _, _ = await _seed_candidate(pg_factory, owner_asserted=True)
     claim, snapshot, _ = await _claim_and_snapshot(pg_factory, candidate_id)
     operation_id = uuid4()
     publisher = DerivedMemoryPublisher(pg_factory)
@@ -447,7 +483,7 @@ async def test_model_cannot_target_memory_that_was_not_in_evaluation_snapshot(pg
 
 
 class _BumpMemoryDuringRelated(MemoryReconciliationService):
-    async def _related_memories(self, session, candidate):
+    async def _related_memories(self, session, candidate, **kwargs):
         async with self.factory() as other:
             row = await other.get(
                 SharedResourceVersionRow,
@@ -458,7 +494,7 @@ class _BumpMemoryDuringRelated(MemoryReconciliationService):
             else:
                 row.version += 1
             await other.commit()
-        return await super()._related_memories(session, candidate)
+        return await super()._related_memories(session, candidate, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -585,7 +621,8 @@ class _RetiringMemoryEmbeddingClient:
 @pytest.mark.asyncio
 async def test_stale_durable_embedding_cannot_publish_after_memory_retired(pg_factory):
     async with pg_factory() as session:
-        memory, _ = await DurableMemoryRepository(session).create_active(
+        memory, _ = await _create_verified_active(
+            session,
             "Active only while embedding starts.",
             source_transcript_id=None,
             source_turn_id=None,
@@ -696,6 +733,7 @@ async def test_chat_scope_survives_derived_publication(pg_factory):
         content="Use compact tables in this chat.",
         kind="preference",
         scope="chat",
+        owner_asserted=True,
     )
     claim, snapshot, _ = await _claim_and_snapshot(pg_factory, candidate_id)
     receipt = await DerivedMemoryPublisher(pg_factory).publish(

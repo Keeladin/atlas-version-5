@@ -56,7 +56,12 @@ from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
 from atlas.memory.lifecycle import MemoryLifecycleCommands
 from atlas.memory.observability import MemoryObservabilityService
-from atlas.persistence.models import OwnerAttentionRow, RunRow
+from atlas.persistence.models import (
+    DurableMemoryRow,
+    MemoryCommandRow,
+    OwnerAttentionRow,
+    RunRow,
+)
 from atlas.providers import OpenAIProvider
 from atlas.registry.repository import RegistryRepository
 from atlas.registry.service import build_phase0_registry
@@ -752,7 +757,25 @@ async def _persist_tool_observation(
 
 async def _active_memory_suppression_contents(session: AsyncSession) -> list[str]:
     guards = await DurableMemoryRepository(session).recall_guards()
-    return [str(item["content"]) for item in guards]
+    contents = {str(item["content"]) for item in guards if item.get("content")}
+    # An explicit correction is owner authority that the challenged current claim
+    # must not continue shaping conversation while its replacement is still being
+    # verified. This is temporary context suppression, not a durable state change.
+    pending_targets = list((await session.execute(
+        select(DurableMemoryRow.content)
+        .join(
+            MemoryCommandRow,
+            MemoryCommandRow.target_memory_id == DurableMemoryRow.id,
+        )
+        .where(
+            MemoryCommandRow.operation == "correct",
+            MemoryCommandRow.status == "pending",
+            DurableMemoryRow.status == "active",
+            DurableMemoryRow.content.is_not(None),
+        )
+    )).scalars())
+    contents.update(str(value) for value in pending_targets if value)
+    return sorted(contents)
 
 
 async def _assemble_working_context(

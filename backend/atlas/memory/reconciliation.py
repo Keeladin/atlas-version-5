@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import ClassVar, Literal, Protocol
@@ -16,6 +17,7 @@ from atlas.persistence.models import (
     DurableMemoryRow,
     MemoryCandidateEvidenceRow,
     MemoryCandidateRow,
+    MemoryCommandRow,
     MemoryComparisonVerdictRow,
     MemoryConflictRow,
     MemoryIndependentReadingRow,
@@ -44,12 +46,29 @@ from .durable import (
     memory_fingerprint,
     utcnow,
 )
-from .explicit import settle_explicit_obligation
+from .explicit import EXPLICIT_OBLIGATION_KINDS, settle_explicit_obligation
 from .state_machine import (
     PublicationBucket,
     PublicationOutcome,
     PublicationTerminality,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _evidence_turn_admissible(candidate: MemoryCandidateRow, turn: TurnRow) -> bool:
+    """Candidate evidence must come from its own transcript.
+
+    The one exception is the owner assertion appended by a confirmation: it is
+    written into a dependency-protected review transcript and recorded on the
+    candidate, so it is admissible even though it lives elsewhere.
+    """
+    if turn.deleted_at is not None:
+        return False
+    if turn.transcript_id == candidate.source_transcript_id:
+        return True
+    assertion = (candidate.decision_json or {}).get("owner_assertion_turn_id")
+    return bool(assertion) and str(turn.id) == str(assertion) and turn.actor == "owner"
 
 _MEMORY_RESOURCE_TYPE = "memory_state"
 _MEMORY_RESOURCE_ID = "owner"
@@ -595,9 +614,7 @@ class MemoryCandidateLeaseRepository:
         )
         by_id = {turn.id: turn for turn in turns}
         return all(
-            ref.turn_id in by_id
-            and by_id[ref.turn_id].deleted_at is None
-            and by_id[ref.turn_id].transcript_id == candidate.source_transcript_id
+            ref.turn_id in by_id and _evidence_turn_admissible(candidate, by_id[ref.turn_id])
             for ref in refs
         )
 
@@ -1031,6 +1048,16 @@ class DerivedMemoryPublisher:
                 decision.content or candidate.content
             )
             proposed_fingerprint = memory_fingerprint(proposed_content)
+            explicit_operation = str(
+                snapshot.candidate.get("explicit_operation") or ""
+            )
+            explicit_change_type = str(
+                snapshot.candidate.get("explicit_change_type") or ""
+            )
+            explicit_target_raw = snapshot.candidate.get("explicit_target_memory_id")
+            explicit_target_id = (
+                UUID(str(explicit_target_raw)) if explicit_target_raw else None
+            )
             restriction = (
                 await session.execute(
                     select(DurableMemoryRow)
@@ -1260,11 +1287,33 @@ class DerivedMemoryPublisher:
                     return self._block(
                         candidate, attempt, now, "create_target_already_exists"
                     )
+                correction_guard: DurableMemoryRow | None = None
+                if explicit_operation == "correct" and explicit_target_id is not None:
+                    explicit_target = await session.get(
+                        DurableMemoryRow, explicit_target_id
+                    )
+                    if (
+                        explicit_target is not None
+                        and explicit_target.status in {RETIRED, SUPERSEDED}
+                        and explicit_target.record_kind == "owner_correction_guard"
+                    ):
+                        correction_guard = explicit_target
+                    elif explicit_target is not None and explicit_target.status == ACTIVE:
+                        return self._block(
+                            candidate, attempt, now,
+                            "explicit_correction_target_not_reconciled",
+                        )
                 memory, created = await repository.create_active(
                     proposed_content,
                     source_transcript_id=candidate.source_transcript_id,
                     source_turn_id=primary_evidence_turn_id,
-                    valid_from=decision.event_valid_from,
+                    supersedes_id=(correction_guard.id if correction_guard else None),
+                    valid_from=(
+                        None
+                        if explicit_operation == "correct"
+                        and explicit_change_type == "correction"
+                        else decision.event_valid_from
+                    ),
                     valid_to=decision.event_valid_to,
                     origin="conversation_verification",
                     grounding_status="verified",
@@ -1278,6 +1327,17 @@ class DerivedMemoryPublisher:
                         candidate, attempt, now, "derived_create_refused"
                     )
                 await self._add_candidate_lineage(session, memory.id, candidate)
+                if correction_guard is not None:
+                    correction_guard.superseded_by_id = memory.id
+                    session.add(MemoryProvenanceRow(
+                        memory_id=memory.id,
+                        relationship=(
+                            "corrects"
+                            if explicit_change_type == "correction"
+                            else "supersedes"
+                        ),
+                        source_memory_id=correction_guard.id,
+                    ))
                 self._complete_candidate(
                     candidate, attempt, now, decision="create", result="created"
                 )
@@ -1296,6 +1356,14 @@ class DerivedMemoryPublisher:
                     candidate, attempt, now, "target_not_in_evaluated_snapshot"
                 )
             target = await session.get(DurableMemoryRow, decision.target_memory_id)
+            if (
+                explicit_operation == "correct"
+                and explicit_target_id is not None
+                and decision.target_memory_id != explicit_target_id
+            ):
+                return self._block(
+                    candidate, attempt, now, "explicit_correction_target_mismatch"
+                )
             if (
                 target is None
                 or target.status != ACTIVE
@@ -1323,12 +1391,18 @@ class DerivedMemoryPublisher:
                     candidate, attempt, now, "replacement_unchanged"
                 )
 
+            replacement_valid_from = decision.event_valid_from
+            if (
+                explicit_operation == "correct"
+                and explicit_change_type == "correction"
+            ):
+                replacement_valid_from = None
             replacement, created = await repository.create_active(
                 proposed_content,
                 source_transcript_id=candidate.source_transcript_id,
                 source_turn_id=primary_evidence_turn_id,
                 supersedes_id=target.id,
-                valid_from=decision.event_valid_from,
+                valid_from=replacement_valid_from,
                 valid_to=decision.event_valid_to,
                 origin="conversation_verification",
                 grounding_status="verified",
@@ -1344,7 +1418,11 @@ class DerivedMemoryPublisher:
             target.status = SUPERSEDED
             target.suppresses_recall = True
             target.superseded_by_id = replacement.id
-            target.valid_to = decision.event_valid_from or now
+            if not (
+                explicit_operation == "correct"
+                and explicit_change_type == "correction"
+            ):
+                target.valid_to = decision.event_valid_from or now
             target.updated_at = now
             _clear_embedding(target)
             await self._add_candidate_lineage(session, replacement.id, candidate)
@@ -1352,9 +1430,14 @@ class DerivedMemoryPublisher:
                 MemoryProvenanceRow(
                     memory_id=replacement.id,
                     relationship=(
-                        "merged_from"
-                        if decision.decision == "merge"
-                        else "supersedes"
+                        "corrects"
+                        if explicit_operation == "correct"
+                        and explicit_change_type == "correction"
+                        else (
+                            "merged_from"
+                            if decision.decision == "merge"
+                            else "supersedes"
+                        )
                     ),
                     source_memory_id=target.id,
                 )
@@ -1430,9 +1513,7 @@ class DerivedMemoryPublisher:
         )
         by_id = {turn.id: turn for turn in turns}
         if not all(
-            ref.turn_id in by_id
-            and by_id[ref.turn_id].deleted_at is None
-            and by_id[ref.turn_id].transcript_id == candidate.source_transcript_id
+            ref.turn_id in by_id and _evidence_turn_admissible(candidate, by_id[ref.turn_id])
             for ref in refs
         ):
             return []
@@ -1631,7 +1712,17 @@ class MemoryReconciliationService:
                         claim, reading_row, comparison
                     )
                 else:
-                    reading_row, reading, comparison_row, comparison = reusable
+                    reading_row, reading, comparison_row, comparison, rebind = reusable
+                    if rebind:
+                        # Reused across an identical-text owner confirmation: the
+                        # model is not re-run, but the artifacts are re-recorded
+                        # against the evidence set that is actually reconciled.
+                        reading_row = await self._persist_reading(
+                            claim, snapshot, reading
+                        )
+                        comparison_row = await self._persist_comparison(
+                            claim, reading_row, comparison
+                        )
 
                 if (
                     not reading.extracted_claims
@@ -1683,12 +1774,46 @@ class MemoryReconciliationService:
             except CandidateSnapshotError:
                 stats["failures"] += 1
                 await self._release_failed(claim, code="snapshot_stale")
-            except Exception:  # noqa: BLE001 - one candidate must not stop maintenance
+            except Exception:
+                logger.exception(
+                    "memory reconciliation failed for candidate %s", claim.candidate_id
+                )
                 stats["failures"] += 1
                 await self._release_failed(
                     claim, code="model_or_publish_error"
                 )
         return ReconciliationRunResult(**stats)
+
+    @staticmethod
+    async def _explicit_command_context(
+        session: AsyncSession, candidate_id: UUID
+    ) -> dict[str, object]:
+        row = (
+            await session.execute(
+                select(MemoryCommandRow)
+                .join(
+                    MemoryObligationRow,
+                    MemoryObligationRow.command_id == MemoryCommandRow.id,
+                )
+                .where(
+                    MemoryObligationRow.subject_type == "memory_candidate",
+                    MemoryObligationRow.subject_id == candidate_id,
+                    MemoryObligationRow.kind.in_(EXPLICIT_OBLIGATION_KINDS),
+                )
+                .order_by(MemoryObligationRow.created_at.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return {}
+        arguments = dict(row.arguments_json or {})
+        return {
+            "explicit_operation": row.operation,
+            "explicit_target_memory_id": (
+                str(row.target_memory_id) if row.target_memory_id is not None else None
+            ),
+            "explicit_change_type": arguments.get("change_type"),
+        }
 
     async def _load_snapshot(self, claim: CandidateLease) -> EvaluationSnapshot:
         async with self.factory() as session, session.begin():
@@ -1757,8 +1882,7 @@ class MemoryReconciliationService:
             by_id = {row.id: row for row in evidence_turns}
             if not all(
                 ref.turn_id in by_id
-                and by_id[ref.turn_id].deleted_at is None
-                and by_id[ref.turn_id].transcript_id == candidate.source_transcript_id
+                and _evidence_turn_admissible(candidate, by_id[ref.turn_id])
                 for ref in evidence_rows
             ):
                 raise CandidateSnapshotError("candidate evidence is unavailable")
@@ -1769,7 +1893,14 @@ class MemoryReconciliationService:
             ]
             source_revision = int(transcript.content_revision or 0)
             memory_revision = await _memory_revision(session)
-            active, restricted, legacy = await self._related_memories(session, candidate)
+            explicit_context = await self._explicit_command_context(session, candidate.id)
+            explicit_target_raw = explicit_context.get("explicit_target_memory_id")
+            explicit_target_id = (
+                UUID(str(explicit_target_raw)) if explicit_target_raw else None
+            )
+            active, restricted, legacy = await self._related_memories(
+                session, candidate, explicit_target_memory_id=explicit_target_id
+            )
             evidence_refs = {
                 "trigger_turn_id": str(candidate.source_turn_id),
                 "evidence_set_hash": candidate.evidence_set_hash,
@@ -1798,6 +1929,10 @@ class MemoryReconciliationService:
                 "owner_confirmation_granted": bool(
                     (candidate.decision_json or {}).get("owner_confirmation_granted")
                 ),
+                "prior_evidence_set_hash": (
+                    (candidate.decision_json or {}).get("prior_evidence_set_hash")
+                ),
+                **explicit_context,
             }
             publication_allowed = (
                 candidate.scope in {"chat", "cross_chat"}
@@ -1857,6 +1992,8 @@ class MemoryReconciliationService:
         self,
         session: AsyncSession,
         candidate: MemoryCandidateRow,
+        *,
+        explicit_target_memory_id: UUID | None = None,
     ) -> tuple[list[DurableMemoryRow], list[DurableMemoryRow], list[DurableMemoryRow]]:
         return await self._related_memories_for(
             session,
@@ -1864,6 +2001,7 @@ class MemoryReconciliationService:
             kind=candidate.kind,
             scope=candidate.scope,
             scope_key=candidate.scope_key,
+            explicit_target_memory_id=explicit_target_memory_id,
         )
 
     async def _related_memories_for(
@@ -1874,6 +2012,7 @@ class MemoryReconciliationService:
         kind: str,
         scope: str,
         scope_key: str | None,
+        explicit_target_memory_id: UUID | None = None,
     ) -> tuple[list[DurableMemoryRow], list[DurableMemoryRow], list[DurableMemoryRow]]:
         if scope == "cross_chat":
             scope_condition = DurableMemoryRow.scope == "cross_chat"
@@ -1957,7 +2096,7 @@ class MemoryReconciliationService:
                 .limit(16)
             )
         ).scalars().all()
-        legacy = (
+        legacy = list((
             await session.execute(
                 select(DurableMemoryRow)
                 .where(
@@ -1974,8 +2113,30 @@ class MemoryReconciliationService:
                 )
                 .limit(16)
             )
-        ).scalars().all()
-        return list(active_by_id.values()), list(restricted), list(legacy)
+        ).scalars().all())
+        restricted = list(restricted)
+        if explicit_target_memory_id is not None:
+            explicit_target = await session.get(DurableMemoryRow, explicit_target_memory_id)
+            if explicit_target is not None and explicit_target.content is not None:
+                if (
+                    explicit_target.status == ACTIVE
+                    and explicit_target.grounding_status == "verified"
+                ):
+                    active_by_id[explicit_target.id] = explicit_target
+                elif (
+                    explicit_target.status in {RETIRED, SUPERSEDED}
+                    and explicit_target.grounding_status == "verified"
+                    and explicit_target.suppresses_recall
+                    and all(row.id != explicit_target.id for row in restricted)
+                ):
+                    restricted.append(explicit_target)
+                elif (
+                    explicit_target.status == ACTIVE
+                    and explicit_target.grounding_status == "legacy_unverified"
+                    and all(row.id != explicit_target.id for row in legacy)
+                ):
+                    legacy.append(explicit_target)
+        return list(active_by_id.values()), restricted, legacy
 
     async def _independent_read(
         self, snapshot: EvaluationSnapshot
@@ -2140,10 +2301,15 @@ class MemoryReconciliationService:
         IndependentReading,
         MemoryComparisonVerdictRow,
         ComparisonVerdict,
+        bool,
     ] | None:
         evidence_hash = str(snapshot.evidence_refs.get("evidence_set_hash") or "")
         if not evidence_hash:
             return None
+        # An owner confirmation that asserts the identical text extends the
+        # evidence set without changing what was read; the prior reading stays valid.
+        prior_hash = str(snapshot.candidate.get("prior_evidence_set_hash") or "")
+        reusable_hashes = {value for value in (evidence_hash, prior_hash) if value}
         async with self.factory() as session:
             row = (
                 await session.execute(
@@ -2157,7 +2323,7 @@ class MemoryReconciliationService:
                         MemoryComparisonVerdictRow.candidate_id == snapshot.candidate_id,
                         MemoryComparisonVerdictRow.tombstoned_at.is_(None),
                         MemoryIndependentReadingRow.tombstoned_at.is_(None),
-                        MemoryIndependentReadingRow.evidence_set_hash == evidence_hash,
+                        MemoryIndependentReadingRow.evidence_set_hash.in_(reusable_hashes),
                         MemoryIndependentReadingRow.source_revision == snapshot.source_revision,
                     )
                     .order_by(MemoryComparisonVerdictRow.created_at.desc())
@@ -2183,7 +2349,8 @@ class MemoryReconciliationService:
                 scope=comparison_row.scope,
                 durability=comparison_row.durability,
             )
-            return reading_row, reading, comparison_row, comparison
+            rebind = reading_row.evidence_set_hash != evidence_hash
+            return reading_row, reading, comparison_row, comparison, rebind
 
     async def _reconcile_policy_publish(
         self,
@@ -2296,12 +2463,17 @@ class MemoryReconciliationService:
                 )
             )
             kind = self._effective_kind(snapshot, reading, comparison)
+            explicit_target_raw = snapshot.candidate.get("explicit_target_memory_id")
+            explicit_target_id = (
+                UUID(str(explicit_target_raw)) if explicit_target_raw else None
+            )
             active, restricted, legacy = await self._related_memories_for(
                 session,
                 candidate,
                 kind=kind,
                 scope=scope,
                 scope_key=scope_key,
+                explicit_target_memory_id=explicit_target_id,
             )
             revision = await _memory_revision(session)
             return replace(
@@ -2340,9 +2512,13 @@ class MemoryReconciliationService:
             "replacement_content must be the verified claim wording, not the legacy wording. "
             "Other targeted relations must name one supplied active memory_id. Never narrow "
             "or supersede owner-directed memory; if the claim disagrees with owner-directed "
-            "memory use conflicts_with. Do not use discovery/write order as chronology. "
-            "Return exactly one JSON object with keys relation, target_memory_id, "
-            "replacement_content."
+            "memory use conflicts_with. Explicit command intent, when present, is structural owner "
+            "intent rather than corroborating evidence. For an explicit correction, compare the "
+            "verified claim against its supplied target. If that target is an active derived memory, "
+            "a supported replacement should normally supersede it. If the target is only a lifecycle-"
+            "restricted correction guard, return new when the claim is otherwise new; publication "
+            "will preserve the historical link. Do not use discovery/write order as chronology. "
+            "Return exactly one JSON object with keys relation, target_memory_id, replacement_content."
         )
         payload = {
             "verified_claim": {
@@ -2356,6 +2532,11 @@ class MemoryReconciliationService:
             "applicable_active_memories": snapshot.active_memories,
             "lifecycle_restricted_memories": snapshot.restricted_memories,
             "legacy_unverified_targets": snapshot.legacy_unverified_targets,
+            "explicit_command_intent": {
+                "operation": snapshot.candidate.get("explicit_operation"),
+                "target_memory_id": snapshot.candidate.get("explicit_target_memory_id"),
+                "change_type": snapshot.candidate.get("explicit_change_type"),
+            },
         }
         raw = await self.model.complete_text(
             instructions=instructions,
