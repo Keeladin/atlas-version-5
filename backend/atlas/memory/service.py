@@ -176,14 +176,19 @@ class MemoryService:
             ).scalars()
         )
         obligations = {row.subject_id: row for row in obligation_rows}
+        target_contents = {
+            str(item.get("memory_id")): item.get("content") for item in durable_memories
+        }
         return [
             {
                 "conflict_id": str(row.id),
                 "status": row.status,
                 "target_memory_id": str(row.target_memory_id),
+                "target_content": target_contents.get(str(row.target_memory_id)),
                 "candidate_id": str(row.candidate_id),
                 "competing_claim": row.proposed_content,
                 "reason_code": row.reason_code,
+                "resolution_options": ["accept_competing", "keep_current", "restate"],
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "obligation": (
                     {

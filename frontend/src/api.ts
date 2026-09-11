@@ -616,6 +616,8 @@ export type MemoryObservability = {
     candidate_counts: Record<string, number>
     memory_counts: Record<string, number>
     authority_counts: { owner: number; derived: number }
+    grounding_counts: Record<string, number>
+    obligation_counts: Record<string, number>
     proposal_verifier: {
       eligible: number
       agree: number

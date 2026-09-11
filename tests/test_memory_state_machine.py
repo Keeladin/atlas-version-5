@@ -952,3 +952,44 @@ async def test_memory_review_edit_becomes_exact_owner_assertion(pg_factory):
         assert transcript is not None
         assert transcript.kind == "memory_review"
         assert transcript.retention_policy == "dependency_protected"
+
+
+@pytest.mark.asyncio
+async def test_memory_review_reject_retires_legacy_memory(pg_factory):
+    content = "Legacy claim the owner no longer wants Atlas to use."
+    async with pg_factory() as session:
+        memory = DurableMemoryRow(
+            status="active", record_kind="owner_directed", origin="legacy_pre25a13",
+            grounding_status="legacy_unverified", scope="cross_chat", durability="long_term",
+            content=content, fingerprint=memory_fingerprint(content), suppresses_recall=False,
+        )
+        session.add(memory)
+        await session.flush()
+        obligation = MemoryObligationRow(
+            kind="memory_review", status="pending", subject_type="durable_memory",
+            subject_id=memory.id, origin="legacy_pre25a13",
+        )
+        session.add(obligation)
+        await session.commit()
+        memory_id, obligation_id = memory.id, obligation.id
+
+    lifecycle = MemoryLifecycleCommands(pg_factory)
+    pending = await lifecycle.obligations({"kind": "memory_review", "status": "pending"})
+    review = next(item for item in pending["obligations"] if item["obligation_id"] == str(obligation_id))
+    assert review["proposed_assertion_text"] == content
+    rejected = await lifecycle.resolve_obligation({
+        "obligation_id": str(obligation_id), "decision": "reject",
+        "review_version": review["review_version"],
+    })
+    assert rejected["result"] == "rejected"
+    async with pg_factory() as session:
+        row = await session.get(DurableMemoryRow, memory_id)
+        assert row.status == "retired"
+        assert row.suppresses_recall is True
+        assert row.grounding_status == "legacy_unverified"
+        obligation = await session.get(MemoryObligationRow, obligation_id)
+        assert obligation.status == "resolved"
+        assert obligation.resolution_code == "rejected"
+    found = await MemoryService(pg_factory).search({"query": "legacy claim", "limit": 5})
+    assert found["durable_memories"] == []
+    assert found["memory_policy"]["suppression_guards"] == 1

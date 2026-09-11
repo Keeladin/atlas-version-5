@@ -198,3 +198,31 @@ async def test_observability_change_token_tracks_pipeline_state_transitions(pg_f
         evaluated_token = await MemoryObservabilityService(session).change_token()
         assert evaluated_token != leased_token
 
+
+
+@pytest.mark.asyncio
+async def test_observability_reports_grounding_and_obligation_counts(pg_factory) -> None:
+    from atlas.memory.durable import memory_fingerprint
+    from atlas.persistence.models import DurableMemoryRow, MemoryObligationRow
+
+    async with pg_factory() as session:
+        for index in range(3):
+            content = f"Legacy fact number {index} about the workshop."
+            memory = DurableMemoryRow(
+                status="active", record_kind="owner_directed", origin="legacy_pre25a13",
+                grounding_status="legacy_unverified", scope="cross_chat", durability="long_term",
+                content=content, fingerprint=memory_fingerprint(content), suppresses_recall=False,
+            )
+            session.add(memory)
+            await session.flush()
+            session.add(MemoryObligationRow(
+                kind="memory_review", status=("pending" if index < 2 else "resolved"),
+                subject_type="durable_memory", subject_id=memory.id, origin="legacy_pre25a13",
+            ))
+        await session.commit()
+
+    async with pg_factory() as session:
+        overview = await MemoryObservabilityService(session).overview(limit=10)
+        assert overview["summary"]["grounding_counts"] == {"legacy_unverified": 3}
+        # Only pending obligations count toward the owner's backlog.
+        assert overview["summary"]["obligation_counts"] == {"memory_review": 2}

@@ -234,18 +234,19 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         description="List pending or resolved memory confirmation/conflict obligations without exposing hidden model reasoning.",
         input_schema={"type":"object","properties":{
             "status":{"type":"string","enum":["pending","resolved"]},
-            "kind":{"type":"string","enum":["memory_confirmation","memory_review","memory_conflict","explicit_remember"]},
+            "kind":{"type":"string","enum":["memory_confirmation","memory_review","memory_conflict","explicit_remember","explicit_correct"]},
             "limit":{"type":"integer","minimum":1,"maximum":100}},
             "additionalProperties":False},
         effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(
         id="memory.obligations.resolve", capability_id="atlas.memory", family="Memory",
-        description="Resolve exactly one owner memory review/confirmation. Use the review_version returned by memory.obligations.list; stale versions are rejected and must be re-rendered. Optional content is edited assertion text and becomes fresh canonical owner evidence. Conflict obligations require substantive clarification instead.",
+        description="Resolve exactly one owner memory obligation. Reviews/confirmations: confirm or reject with the review_version from memory.obligations.list (stale versions are rejected and must be re-rendered); optional content is edited assertion text and becomes fresh canonical owner evidence. Failed explicit remember/correct: retry. Conflicts: keep_current retains the current memory and rejects the competing claim; accept_competing queues the competing claim as an explicit owner correction of the target; restate queues the owner's own wording (content required). Conflict decisions require review_version and are queued for verification, never written immediately.",
         input_schema={"type":"object","properties":{
             "obligation_id":{"type":"string","format":"uuid"},
-            "decision":{"type":"string","enum":["confirm","reject","retry"]},
+            "decision":{"type":"string","enum":["confirm","reject","retry","keep_current","accept_competing","restate"]},
             "review_version":{"type":"string","minLength":1,"maxLength":128},
-            "content":{"type":"string","minLength":1,"maxLength":4000}},
+            "content":{"type":"string","minLength":1,"maxLength":4000},
+            "change_type":{"type":"string","enum":["correction","change_over_time"]}},
             "required":["obligation_id","decision"],"additionalProperties":False},
         effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="internal"))
     registry.register_operation(OperationDescriptor(

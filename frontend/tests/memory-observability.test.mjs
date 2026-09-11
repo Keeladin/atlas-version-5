@@ -16,7 +16,7 @@ async function captureJson(payload, exercise) {
 test('memory observability loads a bounded read-only projection', async () => {
   const request = await captureJson({
     reconciliation: { enabled: true, model: 'gpt-5.6-sol' },
-    summary: { candidate_counts: {}, memory_counts: {}, authority_counts: { owner: 0, derived: 0 }, last_attempt: null },
+    summary: { candidate_counts: {}, memory_counts: {}, authority_counts: { owner: 0, derived: 0 }, grounding_counts: { legacy_unverified: 0 }, obligation_counts: { memory_review: 0, memory_conflict: 0 }, last_attempt: null },
     recent_candidates: [],
     recent_memories: [],
   }, () => getMemoryObservability(50))

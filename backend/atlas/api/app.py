@@ -70,6 +70,7 @@ from atlas.runtime.conversation import (
     build_model_instructions,
     context_turns,
     memory_evidence_handle_map,
+    render_memory_attention,
     render_memory_outcomes,
     tool_observation_is_compactable,
     tool_observation_to_provider_message,
@@ -783,6 +784,7 @@ async def _assemble_working_context(
     continuity_context: str | None = None, continuity_count: int = 0,
     evidence_handles: dict[str, tuple[UUID, str]] | None = None,
     memory_outcomes: str | None = None,
+    memory_attention: str | None = None,
 ):
     instructions = build_model_instructions(await capability_runtime.compact_index_current())
     suppressed_contents = suppressed_contents or []
@@ -805,6 +807,7 @@ async def _assemble_working_context(
             suppressed_contents=suppressed_contents,
             evidence_handles=evidence_handles,
             memory_outcomes=memory_outcomes,
+            memory_attention=memory_attention,
         )
         task_message = active_task_provider_message(transcript.active_task_state)
         if task_message is not None:
@@ -902,6 +905,14 @@ async def _explicit_memory_outcomes(transcript, turns) -> str | None:
     return render_memory_outcomes(outcomes)
 
 
+async def _memory_attention(transcript) -> str | None:
+    """Open memory conflicts and the legacy review backlog the owner still has to act on."""
+    attention = await MemoryLifecycleCommands(get_session_factory()).pending_owner_attention(
+        transcript.id
+    )
+    return render_memory_attention(attention)
+
+
 async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns):
     async with get_session_factory()() as memory_session:
         suppressed_contents = await _active_memory_suppression_contents(memory_session)
@@ -909,11 +920,13 @@ async def _prepare_provider_messages(provider: OpenAIProvider, transcript, turns
             memory_session, transcript.id, limit=settings.memory_continuity_chats
         )
     memory_outcomes = await _explicit_memory_outcomes(transcript, turns)
+    memory_attention = await _memory_attention(transcript)
     handles = memory_evidence_handle_map(turns)
     messages, _ = await _assemble_working_context(
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
         evidence_handles=handles, memory_outcomes=memory_outcomes,
+        memory_attention=memory_attention,
     )
     rendered = "\n".join(str(message.get("content") or "") for message in messages)
     visible_handles = {
@@ -1092,6 +1105,7 @@ async def conversation_context(session: Annotated[AsyncSession, Depends(get_sess
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
         memory_outcomes=await _explicit_memory_outcomes(transcript, turns),
+        memory_attention=await _memory_attention(transcript),
     )
     input_tokens = int(policy["input_tokens"])
     limit_tokens = int(policy["token_budget"])
@@ -1129,6 +1143,7 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
         provider, transcript, turns, suppressed_contents=suppressed_contents,
         continuity_context=continuity_context, continuity_count=continuity_count,
         memory_outcomes=await _explicit_memory_outcomes(transcript, turns),
+        memory_attention=await _memory_attention(transcript),
     )
     current_tokens = int(working_policy["input_tokens"])
     canonical_tokens = await provider.count_input_tokens(

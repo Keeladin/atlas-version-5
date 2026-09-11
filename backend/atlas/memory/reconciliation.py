@@ -1364,11 +1364,18 @@ class DerivedMemoryPublisher:
                 return self._block(
                     candidate, attempt, now, "explicit_correction_target_mismatch"
                 )
+            explicit_correction_of_target = (
+                explicit_operation == "correct"
+                and explicit_target_id is not None
+                and decision.target_memory_id == explicit_target_id
+            )
             if (
                 target is None
                 or target.status != ACTIVE
-                or _owner_directed(target)
-                or not target.record_kind.startswith("derived")
+                or (
+                    not explicit_correction_of_target
+                    and (_owner_directed(target) or not target.record_kind.startswith("derived"))
+                )
                 or not self._same_scope(
                     target, candidate, decision_scope=decision.scope
                 )
@@ -2566,7 +2573,15 @@ class MemoryReconciliationService:
         )
         if target is None:
             raise ValueError("temporal target disappeared from evaluated graph")
-        if target.get("authority") == "owner_directed":
+        # An explicit memory.correct naming this exact target is structural owner
+        # intent: it may supersede an owner-directed row and needs no event ordering.
+        # The evidence-horizon guard still applies; a derived candidate still conflicts.
+        explicit_correction = (
+            str(snapshot.candidate.get("explicit_operation") or "") == "correct"
+            and str(snapshot.candidate.get("explicit_target_memory_id") or "")
+            == str(relation.target_memory_id)
+        )
+        if target.get("authority") == "owner_directed" and not explicit_correction:
             return relation.model_copy(update={"relation": "conflicts_with"})
         candidate_time = reading.event_valid_from
         evidence_times: list[datetime] = []
@@ -2604,6 +2619,11 @@ class MemoryReconciliationService:
             return relation.model_copy(update={
                 "relation": "conflicts_with",
                 "temporal_guard": "beyond_evidence_horizon",
+            })
+        if explicit_correction and relation.relation == "supersedes":
+            return relation.model_copy(update={
+                "relation": "supersedes",
+                "temporal_guard": "explicit_owner_correction",
             })
         target_time = target.get("event_valid_from")
         if isinstance(target_time, str):

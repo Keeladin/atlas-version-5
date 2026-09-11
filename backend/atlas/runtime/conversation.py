@@ -32,7 +32,7 @@ def build_model_instructions(
         "Owner-directed durable memory is explicit, not inferred: ordinary conversation must not be promoted automatically. Use memory.remember for an explicit request to retain information; memory.correct when a claim was wrong or changed over time; memory.retire when the owner wants Atlas to stop using information while retaining it for inspection/restoration; memory.restore to reactivate retired memory; and memory.delete when the owner explicitly wants information removed from Atlas live records. Questions such as 'do you remember' or 'remember when' are recall requests, not durable writes. "
         "The phrase 'forget that' is ambiguous between retirement and deletion. Ask one short clarification when retaining versus removing the content materially changes the outcome, unless the surrounding wording already makes the intent clear. Never describe retired information as forgotten or deleted: say it is retired from recall. Never imply deleted content is secretly retained in live memory. "
         "memory.remember and memory.correct never persist immediately: they queue an explicit candidate for independent verification and return status=queued. Tell the owner the request is queued for verification; never say it is remembered, saved, or corrected until a later Atlas memory command outcome reports resolution_code=published. If the outcome reports a failure, say what failed and offer to retry through memory.obligations.resolve with decision=retry and the returned review_version. For remember, propose a concise self-contained statement faithful to the owner's instruction. For correct, retire, or delete, use memory.search first when the target is unclear. Corrections preserve historical state; retirement is reversible; deletion is terminal for that memory identity and reintroducing the same information later creates a new memory ID. When the owner explicitly asks about a previous or superseded state, memory.search may use include_historical=true; never use that flag to bypass retirement or deletion. "
-        "Successful owner lifecycle commands outrank stale transcript/candidate/derived state. After retire or delete, acknowledge the result without repeating the affected content. A delete claim applies only to the live storage scope the runtime actually reports; backup retention is separate. Use memory.commands.list when the command lifecycle itself needs inspection. When the owner responds to a pending memory review or confirmation, inspect memory.obligations.list and resolve exactly one intended obligation with the returned review_version; if it is stale, re-render the current wording rather than confirming unseen text. Never bulk-confirm memory reviews. Memory conflicts require substantive owner clarification rather than a yes/no confirmation. "
+        "Successful owner lifecycle commands outrank stale transcript/candidate/derived state. After retire or delete, acknowledge the result without repeating the affected content. A delete claim applies only to the live storage scope the runtime actually reports; backup retention is separate. Use memory.commands.list when the command lifecycle itself needs inspection. When the owner responds to a pending memory review or confirmation, inspect memory.obligations.list and resolve exactly one intended obligation with the returned review_version; if it is stale, re-render the current wording rather than confirming unseen text. Never bulk-confirm memory reviews. A memory conflict means Atlas holds a current memory and a competing claim that disagree; neither is uniquely current until the owner resolves it. When a conflict is relevant, state both wordings briefly and ask which is right or for the correct wording; never resolve it from a yes/no. Then call memory.obligations.resolve with decision keep_current, accept_competing, or restate (content required) and the listed review_version. accept_competing and restate queue an explicit correction: report it as queued, not corrected. Pending legacy memory reviews appear in the Atlas memory attention message; mention the backlog at most once per chat unless the owner asks about memory or a review would answer the question. "
         "Do not claim to have tools or capabilities that Atlas has not exposed to you. "
         f"Enabled capability families currently visible through Atlas are: {capability_text}. "
         "When a task needs environment access, search the capability registry rather than guessing operation names. "
@@ -185,6 +185,40 @@ def render_memory_outcomes(outcomes: list[dict[str, object]]) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+_MEMORY_ATTENTION_CHARS = 1_200
+
+
+def render_memory_attention(attention: dict[str, object]) -> str | None:
+    """Compact developer-context lines for open conflicts and the review backlog."""
+    lines: list[str] = []
+    for item in list(attention.get("conflicts") or [])[:5]:
+        current = str(item.get("target_content") or "")[:160]
+        competing = str(item.get("competing_claim") or "")[:160]
+        line = (
+            f'- conflict [obligation_id={item.get("obligation_id")}] '
+            f'current: "{current}" | competing: "{competing or "(unavailable)"}"'
+        )
+        if item.get("reason_code"):
+            line += f" ({item['reason_code']})"
+        if item.get("raised_in_this_chat"):
+            line += " [raised in this chat]"
+        lines.append(line)
+    backlog = int(attention.get("review_backlog") or 0)
+    if backlog:
+        lines.append(f"- {backlog} legacy memories await owner review")
+        for item in list(attention.get("reviews") or [])[:5]:
+            text = str(item.get("text") or "")[:160]
+            lines.append(f'  - review [obligation_id={item.get("obligation_id")}] "{text}"')
+    rendered: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > _MEMORY_ATTENTION_CHARS:
+            break
+        rendered.append(line)
+        used += len(line) + 1
+    return "\n".join(rendered) if rendered else None
+
+
 def turns_to_provider_messages(
     turns: list[Turn],
     *,
@@ -195,10 +229,21 @@ def turns_to_provider_messages(
     suppressed_contents: list[str] | None = None,
     evidence_handles: dict[str, tuple[UUID, str]] | None = None,
     memory_outcomes: str | None = None,
+    memory_attention: str | None = None,
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     compact_ids = compact_tool_turn_ids or set()
     guards = suppressed_contents or []
+    if memory_attention:
+        messages.append({
+            "role": "developer",
+            "content": (
+                "Atlas pending owner memory attention. Runtime facts, not canonical evidence. "
+                "Use memory.obligations.list for the current review_version before resolving "
+                "anything:\n"
+                + redact_guarded_text(memory_attention, guards)
+            ),
+        })
     if memory_outcomes:
         messages.append({
             "role": "developer",

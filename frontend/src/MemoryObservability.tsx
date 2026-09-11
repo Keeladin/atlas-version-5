@@ -120,6 +120,11 @@ export function MemoryObservabilityPanel() {
   const memoryCounts = overview?.summary.memory_counts ?? {}
   const lastAttempt = overview?.summary.last_attempt ?? null
   const verifier = overview?.summary.proposal_verifier
+  const groundingCounts = overview?.summary.grounding_counts ?? {}
+  const obligationCounts = overview?.summary.obligation_counts ?? {}
+  const legacyBacklog = groundingCounts.legacy_unverified ?? 0
+  const pendingReviews = obligationCounts.memory_review ?? 0
+  const openConflicts = obligationCounts.memory_conflict ?? 0
   const pending = (candidateCounts.pending ?? 0) + (candidateCounts.leased ?? 0)
   const retained = candidateCounts.retained_short_term ?? 0
 
@@ -134,6 +139,7 @@ export function MemoryObservabilityPanel() {
       <div><span>Pending candidates</span><strong>{pending}</strong><small>{retained} retained short-term</small></div>
       <div><span>Durable memories</span><strong>{memoryCounts.active ?? 0}</strong><small>{overview ? `${overview.summary.authority_counts.derived} derived · ${overview.summary.authority_counts.owner} owner` : '—'}</small></div>
       <div><span>Last reconciliation</span><strong>{lastAttempt?.semantic_decision ?? lastAttempt?.status ?? 'No decisions yet'}</strong><small>{lastAttempt ? `${resultLabel(lastAttempt)} · ${formatDate(lastAttempt.completed_at ?? lastAttempt.started_at)}` : 'Waiting for an eligible candidate'}</small></div>
+      <div><span>Legacy review backlog</span><strong>{legacyBacklog}</strong><small>{overview ? `${pendingReviews} pending reviews · ${openConflicts} open conflicts` : '—'}</small></div>
       <div><span>Verifier disagreement</span><strong>{verifier?.disagreement_rate != null ? `${Math.round(verifier.disagreement_rate * 100)}%` : '—'}</strong><small>{verifier ? `${verifier.disagree}/${verifier.eligible} disagree · ${verifier.review_excluded} review excluded` : 'No eligible comparisons yet'}</small></div>
     </div>
 

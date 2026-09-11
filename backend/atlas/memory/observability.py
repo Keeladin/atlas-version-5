@@ -230,6 +230,17 @@ class MemoryObservabilityService:
                 )
             ).all()
         }
+        obligation_counts = {
+            str(kind): int(count)
+            for kind, count in (
+                await self.session.execute(
+                    select(MemoryObligationRow.kind, func.count())
+                    .where(MemoryObligationRow.status == "pending")
+                    .group_by(MemoryObligationRow.kind)
+                    .order_by(MemoryObligationRow.kind)
+                )
+            ).all()
+        }
         authority_counts = {
             "owner": int(
                 (
@@ -391,6 +402,7 @@ class MemoryObservabilityService:
                 "memory_counts": memory_counts,
                 "authority_counts": authority_counts,
                 "grounding_counts": grounding_counts,
+                "obligation_counts": obligation_counts,
                 "proposal_verifier": proposal_verifier,
                 "last_attempt": _attempt_projection(latest_attempt) if latest_attempt else None,
             },
