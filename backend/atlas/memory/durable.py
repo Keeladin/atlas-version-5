@@ -19,6 +19,8 @@ ACTIVE = "active"
 SUPERSEDED = "superseded"
 RETIRED = "retired"
 DELETED = "deleted"
+VERIFIED = "verified"
+LEGACY_UNVERIFIED = "legacy_unverified"
 PENDING = "pending"
 APPLIED = "applied"
 FAILED = "failed"
@@ -223,6 +225,7 @@ class DurableMemoryRepository:
         ).label("lexical_rank")
         lexical = select(DurableMemoryRow, lexical_rank).where(
             DurableMemoryRow.status == ACTIVE,
+            DurableMemoryRow.grounding_status == VERIFIED,
             DurableMemoryRow.search_vector.op("@@")(tsquery),
         )
         lexical = self._applicable(lexical, transcript_id)
@@ -241,6 +244,7 @@ class DurableMemoryRepository:
             )
             semantic = select(DurableMemoryRow, distance).where(
                 DurableMemoryRow.status == ACTIVE,
+                DurableMemoryRow.grounding_status == VERIFIED,
                 DurableMemoryRow.embedding.is_not(None),
                 DurableMemoryRow.embedding_model == embedding_model,
             )
@@ -303,6 +307,7 @@ class DurableMemoryRepository:
         ).label("lexical_rank")
         statement = select(DurableMemoryRow, lexical_rank).where(
             DurableMemoryRow.status == SUPERSEDED,
+            DurableMemoryRow.grounding_status == VERIFIED,
             DurableMemoryRow.search_vector.op("@@")(tsquery),
         )
         statement = self._applicable(statement, transcript_id)
@@ -358,6 +363,16 @@ class DurableMemoryRepository:
             "superseded_memories": memories.get(SUPERSEDED, 0),
             "retired_memories": memories.get(RETIRED, 0),
             "deleted_memory_identities": memories.get(DELETED, 0),
+            "legacy_unverified_memories": int(
+                (
+                    await self.session.execute(
+                        select(func.count(DurableMemoryRow.id)).where(
+                            DurableMemoryRow.grounding_status == LEGACY_UNVERIFIED
+                        )
+                    )
+                ).scalar_one()
+                or 0
+            ),
             "suppression_guards": int(
                 (
                     await self.session.execute(
@@ -412,6 +427,7 @@ class DurableMemoryRepository:
             "source_class": "owner_canonical_memory" if owner_directed else "derived_memory",
             "status": row.status,
             "record_kind": row.record_kind,
+            "grounding_status": row.grounding_status,
             "memory_kind": row.memory_kind,
             "scope": row.scope,
             "scope_key": row.scope_key,

@@ -166,6 +166,9 @@ class DurableMemoryRow(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     status: Mapped[str] = mapped_column(String(32), default="active", index=True)
     record_kind: Mapped[str] = mapped_column(String(32), default="owner_directed", index=True)
+    grounding_status: Mapped[str] = mapped_column(
+        String(32), default="verified", server_default="verified", index=True
+    )
     memory_kind: Mapped[str | None] = mapped_column(String(32), index=True)
     scope: Mapped[str] = mapped_column(String(32), default="cross_chat", server_default="cross_chat", index=True)
     scope_key: Mapped[str | None] = mapped_column(String(255), index=True)
@@ -269,6 +272,12 @@ class MemoryCandidateRow(Base):
     intake_path: Mapped[str] = mapped_column(
         String(32), default="foreground", server_default="foreground", index=True
     )
+    temporal_horizon_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    state_version: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0"
+    )
     invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     invalidation_operation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True
@@ -347,6 +356,9 @@ class MemoryReconciliationAttemptRow(Base):
     )
     lease_token: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), index=True)
     attempt_number: Mapped[int] = mapped_column(BigInteger)
+    candidate_state_version: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0"
+    )
     evaluated_memory_revision: Mapped[int | None] = mapped_column(BigInteger)
     evaluated_source_revision: Mapped[int | None] = mapped_column(BigInteger)
     semantic_decision: Mapped[str | None] = mapped_column(String(32), index=True)
@@ -523,6 +535,7 @@ class MemoryConflictRow(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="open", index=True)
     proposed_content: Mapped[str | None] = mapped_column(Text)
+    reason_code: Mapped[str | None] = mapped_column(String(64), index=True)
     tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     tombstone_operation_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("shared_write_operations.id", ondelete="SET NULL"), index=True

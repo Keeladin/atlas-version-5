@@ -103,6 +103,7 @@ def _memory_projection(row: DurableMemoryRow) -> dict[str, object]:
         "status": row.status,
         "authority": "owner" if row.record_kind.startswith("owner_") else "derived",
         "record_kind": row.record_kind,
+        "grounding_status": row.grounding_status,
         "memory_kind": row.memory_kind,
         "scope": row.scope,
         "scope_key": row.scope_key,
@@ -167,17 +168,25 @@ class MemoryObservabilityService:
             ).all()
         ]
         memory_state = [
-            [str(status), str(kind), int(count), str(updated or ""), str(embedded or "")]
-            for status, kind, count, updated, embedded in (
+            [
+                str(status), str(kind), str(grounding), int(count),
+                str(updated or ""), str(embedded or ""),
+            ]
+            for status, kind, grounding, count, updated, embedded in (
                 await self.session.execute(
                     select(
                         DurableMemoryRow.status,
                         DurableMemoryRow.record_kind,
+                        DurableMemoryRow.grounding_status,
                         func.count(),
                         func.max(DurableMemoryRow.updated_at),
                         func.max(DurableMemoryRow.embedded_at),
                     )
-                    .group_by(DurableMemoryRow.status, DurableMemoryRow.record_kind)
+                    .group_by(
+                        DurableMemoryRow.status,
+                        DurableMemoryRow.record_kind,
+                        DurableMemoryRow.grounding_status,
+                    )
                     .order_by(DurableMemoryRow.status, DurableMemoryRow.record_kind)
                 )
             ).all()
@@ -207,6 +216,16 @@ class MemoryObservabilityService:
                     select(DurableMemoryRow.status, func.count())
                     .group_by(DurableMemoryRow.status)
                     .order_by(DurableMemoryRow.status)
+                )
+            ).all()
+        }
+        grounding_counts = {
+            str(status): int(count)
+            for status, count in (
+                await self.session.execute(
+                    select(DurableMemoryRow.grounding_status, func.count())
+                    .group_by(DurableMemoryRow.grounding_status)
+                    .order_by(DurableMemoryRow.grounding_status)
                 )
             ).all()
         }
@@ -305,6 +324,7 @@ class MemoryObservabilityService:
                 "candidate_counts": candidate_counts,
                 "memory_counts": memory_counts,
                 "authority_counts": authority_counts,
+                "grounding_counts": grounding_counts,
                 "last_attempt": _attempt_projection(latest_attempt) if latest_attempt else None,
             },
             "recent_candidates": [
@@ -584,6 +604,7 @@ class MemoryObservabilityService:
                         "status": row.status,
                         "target_memory_id": str(row.target_memory_id),
                         "proposed_content": row.proposed_content,
+                        "reason_code": row.reason_code,
                         "tombstoned": row.tombstoned_at is not None,
                         "created_at": row.created_at,
                         "resolved_at": row.resolved_at,

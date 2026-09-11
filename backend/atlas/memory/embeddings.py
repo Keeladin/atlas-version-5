@@ -143,6 +143,7 @@ class DurableMemoryEmbeddingIndexer:
                     )
                     .where(
                         DurableMemoryRow.status == "active",
+                        DurableMemoryRow.grounding_status == "verified",
                         DurableMemoryRow.content.is_not(None),
                         or_(
                             DurableMemoryRow.embedding.is_(None),
@@ -170,6 +171,7 @@ class DurableMemoryEmbeddingIndexer:
                         .where(
                             DurableMemoryRow.id == memory_id,
                             DurableMemoryRow.status == "active",
+                            DurableMemoryRow.grounding_status == "verified",
                             DurableMemoryRow.fingerprint == fingerprint,
                         )
                         .values(

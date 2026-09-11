@@ -31,6 +31,27 @@ def _json_array() -> sa.TextClause:
 
 
 def upgrade() -> None:
+    op.add_column(
+        "durable_memories",
+        sa.Column(
+            "grounding_status", sa.String(length=32),
+            server_default="verified", nullable=False,
+        ),
+    )
+    op.create_index(
+        "ix_durable_memories_grounding_status",
+        "durable_memories",
+        ["grounding_status"],
+    )
+    # Derived memories created before the evidence graph existed cannot satisfy
+    # the V1 grounding invariant. Preserve them for owner inspection/history but
+    # exclude them from ordinary recall until a future grounding pass verifies them.
+    op.execute(
+        "UPDATE durable_memories "
+        "SET grounding_status = 'legacy_unverified' "
+        "WHERE record_kind = 'derived'"
+    )
+
     op.drop_index("uq_pending_memory_candidate_fingerprint", table_name="memory_candidates")
     op.add_column(
         "memory_candidates",
@@ -60,6 +81,23 @@ def upgrade() -> None:
         "ix_memory_candidates_intake_path",
         "memory_candidates",
         ["intake_path"],
+    )
+    op.add_column(
+        "memory_candidates",
+        sa.Column("temporal_horizon_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    op.create_index(
+        "ix_memory_candidates_temporal_horizon_at",
+        "memory_candidates",
+        ["temporal_horizon_at"],
+    )
+    op.add_column(
+        "memory_candidates",
+        sa.Column("state_version", sa.BigInteger(), server_default="0", nullable=False),
+    )
+    op.add_column(
+        "memory_reconciliation_attempts",
+        sa.Column("candidate_state_version", sa.BigInteger(), server_default="0", nullable=False),
     )
     op.create_index(
         "uq_reconcilable_memory_candidate_evidence",
@@ -361,6 +399,7 @@ def upgrade() -> None:
         sa.Column("target_memory_id", sa.UUID(), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("proposed_content", sa.Text(), nullable=True),
+        sa.Column("reason_code", sa.String(length=64), nullable=True),
         sa.Column("tombstoned_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("tombstone_operation_id", sa.UUID(), nullable=True),
         sa.Column(
@@ -388,7 +427,7 @@ def upgrade() -> None:
     )
     for column in (
         "candidate_id", "reconciliation_id", "target_memory_id", "status",
-        "tombstoned_at", "tombstone_operation_id",
+        "reason_code", "tombstoned_at", "tombstone_operation_id",
     ):
         op.create_index(
             f"ix_memory_conflicts_{column}", "memory_conflicts", [column]
@@ -396,6 +435,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "ix_durable_memories_grounding_status", table_name="durable_memories"
+    )
+    op.drop_column("durable_memories", "grounding_status")
     op.drop_table("memory_discovery_state")
 
     for table, columns in (
@@ -452,6 +495,8 @@ def downgrade() -> None:
         "ix_memory_candidates_evidence_set_hash",
         table_name="memory_candidates",
     )
+    op.drop_index("ix_memory_candidates_temporal_horizon_at", table_name="memory_candidates")
+    op.drop_column("memory_candidates", "temporal_horizon_at")
     op.drop_index("ix_memory_candidates_intake_path", table_name="memory_candidates")
     op.drop_column("memory_candidates", "intake_path")
     op.drop_index("ix_memory_candidates_proposer_model", table_name="memory_candidates")

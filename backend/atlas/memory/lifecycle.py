@@ -22,6 +22,7 @@ from atlas.persistence.models import (
     MemoryIndependentReadingRow,
     MemoryObligationRow,
     MemoryProvenanceRow,
+    MemoryReconciliationAttemptRow,
     MemoryReconciliationRecordRow,
     TranscriptIndexChunkRow,
     TranscriptIndexStateRow,
@@ -53,6 +54,7 @@ from .durable import (
 _MEMORY_RESOURCE_TYPE = "memory_state"
 _MEMORY_RESOURCE_ID = "owner"
 _DELETION_MARKER = "[Content deleted by owner]"
+_EXPLICIT_REMEMBER_FAILURE_BUDGET = 3
 _ALLOWED_KINDS = {
     "identity", "preference", "fact", "decision", "relationship",
     "procedure", "project_state", "intent",
@@ -485,6 +487,18 @@ class MemoryLifecycleCommands:
             source_candidate_ids = {
                 item.source_candidate_id for item in provenance if item.source_candidate_id is not None
             }
+            if source_candidate_ids:
+                source_turn_ids.update(
+                    (
+                        await session.execute(
+                            select(MemoryCandidateEvidenceRow.turn_id).where(
+                                MemoryCandidateEvidenceRow.candidate_id.in_(
+                                    source_candidate_ids
+                                )
+                            )
+                        )
+                    ).scalars()
+                )
 
             redacted_turn_ids: set[UUID] = set()
             if scope == "memory_and_sources" and selected_content:
@@ -496,14 +510,47 @@ class MemoryLifecycleCommands:
                         "every selected source passage must be isolated safely; retry with the exact source content"
                     )
 
+            dependency_turn_ids = source_turn_ids | redacted_turn_ids
             candidate_ids, evidence_turn_ids = await self._invalidate_candidates(
                 session,
                 command_id,
-                turn_ids=source_turn_ids,
-                content=selected_content,
+                turn_ids=dependency_turn_ids,
+                # Exact-content scanning is a legacy cleanup fallback only. Normal
+                # V1 purge roots come from persisted turn/candidate dependencies.
+                content=(
+                    selected_content
+                    if not dependency_turn_ids and not source_candidate_ids
+                    else None
+                ),
                 scrub=True,
                 candidate_ids=source_candidate_ids,
             )
+
+            # Rebuild the cascade only after the shared resource lock is held and
+            # source passages have been resolved. This sees writes that committed
+            # before this purge won serialization, including newly published
+            # memories and their evidence/candidate provenance.
+            if dependency_turn_ids:
+                directly_sourced = set(
+                    (
+                        await session.execute(
+                            select(DurableMemoryRow.id).where(
+                                DurableMemoryRow.source_turn_id.in_(dependency_turn_ids),
+                                DurableMemoryRow.status != DELETED,
+                            )
+                        )
+                    ).scalars()
+                )
+                provenance_sourced = set(
+                    (
+                        await session.execute(
+                            select(MemoryProvenanceRow.memory_id).where(
+                                MemoryProvenanceRow.source_turn_id.in_(dependency_turn_ids)
+                            )
+                        )
+                    ).scalars()
+                )
+                affected_memory_ids.update(directly_sourced | provenance_sourced)
             affected_memory_ids = await self._dependent_memory_closure(
                 session, affected_memory_ids, candidate_ids
             )
@@ -635,6 +682,7 @@ class MemoryLifecycleCommands:
             if candidate is None:
                 raise LookupError("memory candidate for obligation not found")
             if obligation.expires_at is not None and obligation.expires_at <= now:
+                candidate.state_version = int(candidate.state_version or 0) + 1
                 obligation.status = "resolved"
                 obligation.resolution_code = "expired_unconfirmed"
                 obligation.resolution_json = {}
@@ -646,6 +694,7 @@ class MemoryLifecycleCommands:
                 }
                 return {"result": "expired", **self._project_obligation(obligation)}
 
+            candidate.state_version = int(candidate.state_version or 0) + 1
             obligation.status = "resolved"
             obligation.resolution_source_transcript_id = source[0]
             obligation.resolution_source_turn_id = source[1]
@@ -695,6 +744,7 @@ class MemoryLifecycleCommands:
             "subject_type": row.subject_type,
             "subject_id": str(row.subject_id) if row.subject_id else None,
             "resolution_code": row.resolution_code,
+            "resolution": dict(row.resolution_json or {}),
             "source_transcript_id": str(row.source_transcript_id) if row.source_transcript_id else None,
             "source_turn_id": str(row.source_turn_id) if row.source_turn_id else None,
             "resolution_source_transcript_id": (
@@ -856,11 +906,31 @@ class MemoryLifecycleCommands:
                     )
                 )
             ).scalar_one_or_none()
-            if obligation is not None:
+            if obligation is not None and command.operation != "remember":
                 obligation.status = "resolved"
                 obligation.resolution_code = "failed"
                 obligation.resolution_json = {}
                 obligation.resolved_at = now
+            elif obligation is not None:
+                failure_count = int(
+                    (obligation.resolution_json or {}).get("failure_count", 0)
+                ) + 1
+                error_code = f"{type(exc).__name__}: {exc}"[:500]
+                obligation.resolution_json = {
+                    "failure_count": failure_count,
+                    "failure_budget": _EXPLICIT_REMEMBER_FAILURE_BUDGET,
+                    "last_error": error_code,
+                }
+                if failure_count >= _EXPLICIT_REMEMBER_FAILURE_BUDGET:
+                    obligation.status = "resolved"
+                    obligation.resolution_code = "failed_retry_exhausted"
+                    obligation.resolved_at = now
+                else:
+                    # The write rolled back. Keep the owner obligation visible and
+                    # pending until retry succeeds or the bounded failure budget ends.
+                    obligation.status = "pending"
+                    obligation.resolution_code = None
+                    obligation.resolved_at = None
             await session.commit()
 
     async def _memory_descendants(
@@ -1072,19 +1142,17 @@ class MemoryLifecycleCommands:
                     evidence_turn.deletion_operation_id = operation_id
                     evidence_turn_ids.add(evidence_turn.id)
 
-        nonterminal = {
-            "pending",
-            "leased",
-            "retained_short_term",
-            "awaiting_owner",
-        }
         for row in selected.values():
-            if row.status in nonterminal:
-                row.status = "invalidated"
-                row.lease_token = None
-                row.leased_until = None
-                row.review_after = None
-                row.processed_at = now
+            if row.invalidated_at is None:
+                row.state_version = int(row.state_version or 0) + 1
+            # Purge invalidates the candidate identity regardless of whether it
+            # had already reconciled; its semantic result no longer has live
+            # evidence and must not appear as a successful current candidate.
+            row.status = "invalidated"
+            row.lease_token = None
+            row.leased_until = None
+            row.review_after = None
+            row.processed_at = now
             row.invalidated_at = now
             row.invalidation_operation_id = operation_id
             if scrub:
@@ -1107,6 +1175,23 @@ class MemoryLifecycleCommands:
         candidate_ids: set[UUID],
         now,
     ) -> None:
+        attempts = list(
+            (
+                await session.execute(
+                    select(MemoryReconciliationAttemptRow).where(
+                        MemoryReconciliationAttemptRow.candidate_id.in_(candidate_ids),
+                        MemoryReconciliationAttemptRow.completed_at.is_(None),
+                    )
+                )
+            ).scalars()
+        )
+        for row in attempts:
+            row.status = "invalidated"
+            row.completed_at = now
+            row.error = None
+            row.evidence_json = {}
+            row.result_json = {"result": "invalidated", "code": "evidence_purged"}
+
         readings = list(
             (
                 await session.execute(

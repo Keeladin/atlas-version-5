@@ -183,6 +183,7 @@ class MemoryService:
                 "target_memory_id": str(row.target_memory_id),
                 "candidate_id": str(row.candidate_id),
                 "competing_claim": row.proposed_content,
+                "reason_code": row.reason_code,
                 "created_at": row.created_at.isoformat() if row.created_at else None,
                 "obligation": (
                     {

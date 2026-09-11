@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -101,6 +101,14 @@ class SharedWriteRepository:
         mutation: Mutation,
     ) -> SharedWriteReceipt:
         payload_hash = _payload_hash(envelope.payload)
+        # Resource serialization is the first database lock in a shared write.
+        # Taking it after receipt/FK inserts can invert lock order with a writer
+        # already mutating transcript-backed state and deadlock.
+        lock_key = f"{envelope.resource_type}:{envelope.resource_id}"
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": lock_key},
+        )
         created = await self._claim(envelope, payload_hash)
         if not created:
             row = await self.session.get(SharedWriteOperationRow, envelope.operation_id)

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from atlas.persistence.models import (
@@ -46,6 +47,19 @@ from .durable import (
 
 _MEMORY_RESOURCE_TYPE = "memory_state"
 _MEMORY_RESOURCE_ID = "owner"
+
+
+def _is_retryable_serialization_error(exc: BaseException) -> bool:
+    current: BaseException | None = exc
+    for _ in range(4):
+        code = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if code in {"40001", "40P01"}:
+            return True
+        current = getattr(current, "orig", None) or getattr(current, "__cause__", None)
+        if current is None:
+            break
+    return False
+
 _TERMINAL_CANDIDATE_STATUSES = {
     "discarded",
     "reconciled",
@@ -139,6 +153,7 @@ class MemoryRelationDecision(BaseModel):
     ]
     target_memory_id: UUID | None = None
     replacement_content: str | None = Field(default=None, max_length=4_000)
+    temporal_guard: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def validate_shape(self) -> MemoryRelationDecision:
@@ -219,6 +234,18 @@ def _clip(value: object, limit: int) -> str:
 
 def _owner_directed(row: DurableMemoryRow) -> bool:
     return row.record_kind == "owner_directed" or row.record_kind.startswith("owner_")
+
+
+def _advance_candidate_state(
+    candidate: MemoryCandidateRow, attempt: MemoryReconciliationAttemptRow
+) -> None:
+    current = int(candidate.state_version or 0)
+    expected = int(attempt.candidate_state_version or 0)
+    if current != expected:
+        raise CandidateSnapshotError("candidate state changed during worker advance")
+    next_version = current + 1
+    candidate.state_version = next_version
+    attempt.candidate_state_version = next_version
 
 
 def _clear_embedding(row: DurableMemoryRow) -> None:
@@ -314,6 +341,7 @@ class MemoryCandidateLeaseRepository:
                 ).scalars()
             )
             for row in expired_rows:
+                row.state_version = int(row.state_version or 0) + 1
                 row.status = "expired"
                 row.processed_at = now
                 row.lease_token = None
@@ -341,6 +369,7 @@ class MemoryCandidateLeaseRepository:
                 ).scalars()
             )
             for row in exhausted:
+                row.state_version = int(row.state_version or 0) + 1
                 await self._close_stale_attempts(
                     session, row.id, now, status="attempt_limit"
                 )
@@ -398,6 +427,7 @@ class MemoryCandidateLeaseRepository:
                     await self._close_stale_attempts(
                         session, row.id, now, status="evidence_unavailable"
                     )
+                    row.state_version = int(row.state_version or 0) + 1
                     row.status = "invalidated"
                     row.invalidated_at = now
                     row.lease_token = None
@@ -430,10 +460,12 @@ class MemoryCandidateLeaseRepository:
                     ).scalar_one()
                 ) + 1
                 token = uuid4()
+                row.state_version = int(row.state_version or 0) + 1
                 attempt = MemoryReconciliationAttemptRow(
                     candidate_id=row.id,
                     lease_token=token,
                     attempt_number=attempt_number,
+                    candidate_state_version=row.state_version,
                     status="claimed",
                     evidence_json={},
                     result_json={},
@@ -480,6 +512,7 @@ class MemoryCandidateLeaseRepository:
             if obligation.subject_type == "memory_candidate" and obligation.subject_id:
                 candidate = await session.get(MemoryCandidateRow, obligation.subject_id)
                 if candidate is not None and candidate.status == "awaiting_owner":
+                    candidate.state_version = int(candidate.state_version or 0) + 1
                     candidate.status = "expired"
                     candidate.lease_token = None
                     candidate.leased_until = None
@@ -496,6 +529,7 @@ class MemoryCandidateLeaseRepository:
                     conflict.resolved_at = now
                     candidate = await session.get(MemoryCandidateRow, conflict.candidate_id)
                     if candidate is not None and candidate.status == "awaiting_owner":
+                        candidate.state_version = int(candidate.state_version or 0) + 1
                         candidate.status = "expired"
                         candidate.processed_at = now
                         candidate.decision_json = {
@@ -635,6 +669,9 @@ class DerivedMemoryPublisher:
             if (
                 attempt.lease_token != claim.lease_token
                 or attempt.completed_at is not None
+                or candidate is not None
+                and int(candidate.state_version or 0)
+                != int(attempt.candidate_state_version or 0)
             ):
                 return SharedWriteMutation(
                     mutated=False, result={"result": "lease_conflict"}
@@ -709,6 +746,7 @@ class DerivedMemoryPublisher:
                 (row.turn_id for row in evidence_rows if row.principal == "owner"),
                 evidence_rows[0].turn_id,
             )
+            _advance_candidate_state(candidate, attempt)
 
             transcript = (
                 await session.execute(
@@ -804,12 +842,14 @@ class DerivedMemoryPublisher:
                 candidate.decision_json = {
                     "decision": "awaiting_owner",
                     "obligation_id": str(obligation.id),
+                    "reason_code": decision.reason,
                 }
                 attempt.status = "awaiting_owner"
                 attempt.completed_at = now
                 attempt.result_json = {
                     "result": "awaiting_owner",
                     "obligation_id": str(obligation.id),
+                    "reason_code": decision.reason,
                 }
                 return SharedWriteMutation(
                     result={
@@ -836,6 +876,7 @@ class DerivedMemoryPublisher:
                     proposed_content=clean_memory_content(
                         decision.content or candidate.content
                     ),
+                    reason_code=decision.reason,
                 )
                 session.add(conflict)
                 await session.flush()
@@ -846,6 +887,9 @@ class DerivedMemoryPublisher:
                     subject_id=conflict.id,
                     source_transcript_id=candidate.source_transcript_id,
                     source_turn_id=candidate.source_turn_id,
+                    resolution_json=(
+                        {"trigger_reason": decision.reason} if decision.reason else {}
+                    ),
                     expires_at=now + timedelta(days=14),
                 )
                 session.add(obligation)
@@ -922,16 +966,21 @@ class DerivedMemoryPublisher:
             proposed_fingerprint = memory_fingerprint(proposed_content)
             restriction = (
                 await session.execute(
-                    select(DurableMemoryRow.id)
+                    select(DurableMemoryRow)
                     .where(
                         DurableMemoryRow.fingerprint == proposed_fingerprint,
+                        DurableMemoryRow.grounding_status == "verified",
                         DurableMemoryRow.suppresses_recall.is_(True),
                         DurableMemoryRow.status.in_([RETIRED, SUPERSEDED]),
                     )
+                    .order_by(DurableMemoryRow.updated_at.desc(), DurableMemoryRow.id.desc())
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            if restriction is not None:
+            if restriction is not None and (
+                restriction.status == RETIRED
+                or decision.decision != "historical_predecessor"
+            ):
                 return self._block(
                     candidate, attempt, now, "owner_lifecycle_restriction"
                 )
@@ -972,6 +1021,51 @@ class DerivedMemoryPublisher:
                 ):
                     return self._block(
                         candidate, attempt, now, "historical_target_invalid"
+                    )
+                if restriction is not None:
+                    linked_to_target = (
+                        restriction.superseded_by_id == target.id
+                        or target.supersedes_id == restriction.id
+                    )
+                    if (
+                        restriction.status != SUPERSEDED
+                        or _owner_directed(restriction)
+                        or not restriction.record_kind.startswith("derived")
+                        or not self._target_applicable(
+                            restriction, candidate, decision_scope=decision.scope
+                        )
+                        or not linked_to_target
+                    ):
+                        return self._block(
+                            candidate, attempt, now,
+                            "historical_lifecycle_restriction",
+                        )
+                    lineage_added = await self._add_candidate_lineage(
+                        session, restriction.id, candidate
+                    )
+                    self._complete_candidate(
+                        candidate,
+                        attempt,
+                        now,
+                        decision="historical_predecessor",
+                        result=(
+                            "historical_lineage_added"
+                            if lineage_added
+                            else "historical_already_represented"
+                        ),
+                    )
+                    attempt.target_memory_id = target.id
+                    return SharedWriteMutation(
+                        mutated=lineage_added,
+                        result={
+                            "result": (
+                                "historical_lineage_added"
+                                if lineage_added
+                                else "historical_already_represented"
+                            ),
+                            "memory_id": str(restriction.id),
+                            "target_memory_id": str(target.id),
+                        },
                     )
                 historical = DurableMemoryRow(
                     status=SUPERSEDED,
@@ -1022,6 +1116,42 @@ class DerivedMemoryPublisher:
                     proposed_fingerprint
                 )
                 if existing is not None:
+                    if (
+                        existing.grounding_status == "legacy_unverified"
+                        and existing.record_kind.startswith("derived")
+                        and self._same_scope(
+                            existing, candidate, decision_scope=decision.scope
+                        )
+                        and (
+                            existing.memory_kind is None
+                            or existing.memory_kind == classification["memory_kind"]
+                        )
+                    ):
+                        lineage_added = await self._add_candidate_lineage(
+                            session, existing.id, candidate
+                        )
+                        existing.grounding_status = "verified"
+                        existing.memory_kind = (
+                            existing.memory_kind or classification["memory_kind"]
+                        )
+                        if existing.source_transcript_id is None:
+                            existing.source_transcript_id = candidate.source_transcript_id
+                        if existing.source_turn_id is None:
+                            existing.source_turn_id = primary_evidence_turn_id
+                        existing.updated_at = now
+                        self._complete_candidate(
+                            candidate, attempt, now,
+                            decision="create", result="legacy_grounded"
+                        )
+                        attempt.target_memory_id = existing.id
+                        return SharedWriteMutation(
+                            mutated=True,
+                            result={
+                                "result": "legacy_grounded",
+                                "memory_id": str(existing.id),
+                                "lineage_added": lineage_added,
+                            },
+                        )
                     return self._block(
                         candidate, attempt, now, "create_target_already_exists"
                     )
@@ -1390,6 +1520,8 @@ class MemoryReconciliationService:
                     "merge",
                     "supersede",
                     "historical_predecessor",
+                    "historical_lineage_added",
+                    "historical_already_represented",
                     "lineage_added",
                     "already_represented",
                 }:
@@ -1427,10 +1559,20 @@ class MemoryReconciliationService:
                 text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             )
             now = datetime.now(UTC)
-            candidate = await session.get(MemoryCandidateRow, claim.candidate_id)
-            attempt = await session.get(
-                MemoryReconciliationAttemptRow, claim.attempt_id
-            )
+            candidate = (
+                await session.execute(
+                    select(MemoryCandidateRow)
+                    .where(MemoryCandidateRow.id == claim.candidate_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            attempt = (
+                await session.execute(
+                    select(MemoryReconciliationAttemptRow)
+                    .where(MemoryReconciliationAttemptRow.id == claim.attempt_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             if (
                 candidate is None
                 or attempt is None
@@ -1512,6 +1654,8 @@ class MemoryReconciliationService:
                 "durability": candidate.durability,
                 "subject": candidate.subject,
                 "namespace": candidate.namespace,
+                "intake_path": candidate.intake_path,
+                "temporal_horizon_at": candidate.temporal_horizon_at,
                 "owner_confirmation_granted": bool(
                     (candidate.decision_json or {}).get("owner_confirmation_granted")
                 ),
@@ -1612,6 +1756,7 @@ class MemoryReconciliationService:
             await session.execute(
                 select(DurableMemoryRow).where(
                     DurableMemoryRow.status == ACTIVE,
+                    DurableMemoryRow.grounding_status == "verified",
                     DurableMemoryRow.fingerprint == durable_fingerprint,
                     scope_condition,
                 )
@@ -1629,6 +1774,7 @@ class MemoryReconciliationService:
                 select(DurableMemoryRow)
                 .where(
                     DurableMemoryRow.status == ACTIVE,
+                    DurableMemoryRow.grounding_status == "verified",
                     scope_condition,
                     or_(*related_conditions),
                 )
@@ -1656,6 +1802,7 @@ class MemoryReconciliationService:
                 select(DurableMemoryRow)
                 .where(
                     DurableMemoryRow.status.in_([RETIRED, SUPERSEDED]),
+                    DurableMemoryRow.grounding_status == "verified",
                     DurableMemoryRow.suppresses_recall.is_(True),
                     DurableMemoryRow.content.is_not(None),
                     scope_condition,
@@ -1717,6 +1864,7 @@ class MemoryReconciliationService:
             ).scalar_one_or_none()
             if existing is not None:
                 return existing
+            _advance_candidate_state(candidate, attempt)
             row = MemoryIndependentReadingRow(
                 candidate_id=candidate.id,
                 attempt_id=attempt.id,
@@ -1799,6 +1947,7 @@ class MemoryReconciliationService:
             ).scalar_one_or_none()
             if existing is not None:
                 return existing
+            _advance_candidate_state(candidate, attempt)
             row = MemoryComparisonVerdictRow(
                 candidate_id=candidate.id,
                 reading_id=reading.id,
@@ -1916,9 +2065,18 @@ class MemoryReconciliationService:
                 relation,
                 policy=policy,
             )
-            receipt = await self.publisher.publish(
-                claim, publication_snapshot, decision
-            )
+            try:
+                receipt = await self.publisher.publish(
+                    claim, publication_snapshot, decision
+                )
+            except DBAPIError as exc:
+                if not _is_retryable_serialization_error(exc):
+                    raise
+                version_conflicts += 1
+                current = await self._refresh_memory_snapshot(
+                    claim, current, reading, comparison
+                )
+                continue
             if receipt.outcome != "version_conflict":
                 result = str(receipt.result.get("result") or "")
                 if result == "source_conflict":
@@ -2064,6 +2222,42 @@ class MemoryReconciliationService:
         if target.get("authority") == "owner_directed":
             return relation.model_copy(update={"relation": "conflicts_with"})
         candidate_time = reading.event_valid_from
+        evidence_times: list[datetime] = []
+        for item in snapshot.evidence_items:
+            observed = item.get("recorded_at")
+            if isinstance(observed, str):
+                try:
+                    observed = datetime.fromisoformat(observed)
+                except ValueError:
+                    observed = None
+            if isinstance(observed, datetime):
+                evidence_times.append(observed)
+        cited_horizon = max(evidence_times) if evidence_times else None
+        sweep_horizon = snapshot.candidate.get("temporal_horizon_at")
+        if isinstance(sweep_horizon, str):
+            try:
+                sweep_horizon = datetime.fromisoformat(sweep_horizon)
+            except ValueError:
+                sweep_horizon = None
+        if snapshot.candidate.get("intake_path") == "sweep" and isinstance(
+            sweep_horizon, datetime
+        ):
+            evidence_horizon = (
+                min(cited_horizon, sweep_horizon)
+                if cited_horizon is not None
+                else sweep_horizon
+            )
+        else:
+            evidence_horizon = cited_horizon
+        if (
+            candidate_time is not None
+            and evidence_horizon is not None
+            and candidate_time > evidence_horizon
+        ):
+            return relation.model_copy(update={
+                "relation": "conflicts_with",
+                "temporal_guard": "beyond_evidence_horizon",
+            })
         target_time = target.get("event_valid_from")
         if isinstance(target_time, str):
             try:
@@ -2071,12 +2265,24 @@ class MemoryReconciliationService:
             except ValueError:
                 target_time = None
         if candidate_time is None or not isinstance(target_time, datetime):
-            return relation.model_copy(update={"relation": "conflicts_with"})
+            return relation.model_copy(update={
+                "relation": "conflicts_with",
+                "temporal_guard": "event_order_unknown",
+            })
         if candidate_time > target_time:
-            return relation.model_copy(update={"relation": "supersedes"})
+            return relation.model_copy(update={
+                "relation": "supersedes",
+                "temporal_guard": "event_order_checked",
+            })
         if candidate_time < target_time:
-            return relation.model_copy(update={"relation": "historical_predecessor"})
-        return relation.model_copy(update={"relation": "conflicts_with"})
+            return relation.model_copy(update={
+                "relation": "historical_predecessor",
+                "temporal_guard": "event_order_checked",
+            })
+        return relation.model_copy(update={
+            "relation": "conflicts_with",
+            "temporal_guard": "event_times_equal",
+        })
 
     async def _persist_reconciliation(
         self,
@@ -2092,6 +2298,7 @@ class MemoryReconciliationService:
             )
             if comparison is None or comparison.tombstoned_at is not None:
                 raise CandidateSnapshotError("comparison disappeared before reconciliation")
+            _advance_candidate_state(candidate, attempt)
             row = MemoryReconciliationRecordRow(
                 candidate_id=candidate.id,
                 comparison_id=comparison.id,
@@ -2104,11 +2311,14 @@ class MemoryReconciliationService:
                     else None
                 ),
                 temporal_guard=(
-                    "event_order_checked"
-                    if relation.relation
-                    in {"supersedes", "historical_predecessor", "conflicts_with"}
-                    and relation.target_memory_id is not None
-                    else None
+                    relation.temporal_guard
+                    or (
+                        "event_order_checked"
+                        if relation.relation
+                        in {"supersedes", "historical_predecessor", "conflicts_with"}
+                        and relation.target_memory_id is not None
+                        else None
+                    )
                 ),
             )
             session.add(row)
@@ -2158,6 +2368,7 @@ class MemoryReconciliationService:
             ).scalar_one_or_none()
             if existing is not None:
                 return existing
+            _advance_candidate_state(candidate, attempt)
             row = MemoryPolicyDecisionRow(
                 candidate_id=candidate.id,
                 reconciliation_id=reconciliation_row.id,
@@ -2219,6 +2430,7 @@ class MemoryReconciliationService:
             memory_kind=kind,
             scope=scope,
             durability=durability,
+            reason=(relation.temporal_guard if action == "conflict" else None),
         )
 
     async def _finish_epistemic_rejection(
@@ -2227,6 +2439,7 @@ class MemoryReconciliationService:
         async with self.factory() as session, session.begin():
             candidate, attempt = await self._locked_live_claim(session, claim)
             now = utcnow()
+            _advance_candidate_state(candidate, attempt)
             candidate.status = "discarded"
             candidate.lease_token = None
             candidate.leased_until = None
@@ -2246,6 +2459,7 @@ class MemoryReconciliationService:
         async with self.factory() as session, session.begin():
             candidate, attempt = await self._locked_live_claim(session, claim)
             now = utcnow()
+            _advance_candidate_state(candidate, attempt)
             candidate.status = "blocked"
             candidate.lease_token = None
             candidate.leased_until = None
@@ -2259,23 +2473,37 @@ class MemoryReconciliationService:
         self, claim: CandidateLease, snapshot: EvaluationSnapshot
     ) -> None:
         async with self.factory() as session, session.begin():
-            candidate = await session.get(MemoryCandidateRow, claim.candidate_id)
-            attempt = await session.get(
-                MemoryReconciliationAttemptRow, claim.attempt_id
-            )
+            candidate = (
+                await session.execute(
+                    select(MemoryCandidateRow)
+                    .where(MemoryCandidateRow.id == claim.candidate_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            attempt = (
+                await session.execute(
+                    select(MemoryReconciliationAttemptRow)
+                    .where(MemoryReconciliationAttemptRow.id == claim.attempt_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
             now = utcnow()
-            if attempt is not None and attempt.completed_at is None:
+            if (
+                candidate is not None
+                and attempt is not None
+                and attempt.completed_at is None
+                and candidate.status == "leased"
+                and candidate.lease_token == claim.lease_token
+                and int(candidate.state_version or 0)
+                == int(attempt.candidate_state_version or 0)
+            ):
+                _advance_candidate_state(candidate, attempt)
                 attempt.status = "version_conflict"
                 attempt.completed_at = now
                 attempt.result_json = {
                     "result": "version_conflict",
                     "expected_revision": snapshot.memory_revision,
                 }
-            if (
-                candidate is not None
-                and candidate.status == "leased"
-                and candidate.lease_token == claim.lease_token
-            ):
                 candidate.status = "pending"
                 candidate.lease_token = None
                 candidate.leased_until = None
@@ -2288,19 +2516,33 @@ class MemoryReconciliationService:
         self, claim: CandidateLease, *, code: str
     ) -> None:
         async with self.factory() as session, session.begin():
-            candidate = await session.get(MemoryCandidateRow, claim.candidate_id)
-            attempt = await session.get(
-                MemoryReconciliationAttemptRow, claim.attempt_id
-            )
-            if attempt is not None and attempt.completed_at is None:
+            candidate = (
+                await session.execute(
+                    select(MemoryCandidateRow)
+                    .where(MemoryCandidateRow.id == claim.candidate_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            attempt = (
+                await session.execute(
+                    select(MemoryReconciliationAttemptRow)
+                    .where(MemoryReconciliationAttemptRow.id == claim.attempt_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if (
+                candidate is not None
+                and attempt is not None
+                and attempt.completed_at is None
+                and candidate.status == "leased"
+                and candidate.lease_token == claim.lease_token
+                and int(candidate.state_version or 0)
+                == int(attempt.candidate_state_version or 0)
+            ):
+                _advance_candidate_state(candidate, attempt)
                 attempt.status = code
                 attempt.completed_at = utcnow()
                 attempt.result_json = {"result": code}
-            if (
-                candidate is not None
-                and candidate.status == "leased"
-                and candidate.lease_token == claim.lease_token
-            ):
                 self._requeue_or_fail(candidate)
 
     async def _release_failed(
@@ -2311,17 +2553,22 @@ class MemoryReconciliationService:
             attempt = await session.get(
                 MemoryReconciliationAttemptRow, claim.attempt_id
             )
-            if attempt is not None and attempt.completed_at is None:
-                attempt.status = "failed"
-                attempt.error = code
-                attempt.completed_at = utcnow()
-                attempt.result_json = {"result": "failed", "code": code}
             if (
                 candidate is None
+                or attempt is None
+                or attempt.completed_at is not None
                 or candidate.status in _TERMINAL_CANDIDATE_STATUSES
+                or candidate.status != "leased"
                 or candidate.lease_token != claim.lease_token
+                or int(candidate.state_version or 0)
+                != int(attempt.candidate_state_version or 0)
             ):
                 return
+            _advance_candidate_state(candidate, attempt)
+            attempt.status = "failed"
+            attempt.error = code
+            attempt.completed_at = utcnow()
+            attempt.result_json = {"result": "failed", "code": code}
             self._requeue_or_fail(candidate)
 
     def _requeue_or_fail(self, candidate: MemoryCandidateRow) -> None:
@@ -2363,6 +2610,7 @@ class MemoryReconciliationService:
             or candidate.lease_token != claim.lease_token
             or attempt.lease_token != claim.lease_token
             or attempt.completed_at is not None
+            or int(candidate.state_version or 0) != int(attempt.candidate_state_version or 0)
             or candidate.leased_until is None
             or candidate.leased_until <= now
             or candidate.invalidated_at is not None

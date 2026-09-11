@@ -8,6 +8,7 @@ import pytest
 from atlas.memory.candidates import MemoryCandidateIntake
 from atlas.memory.durable import DurableMemoryRepository
 from atlas.memory.lifecycle import MemoryLifecycleCommands
+from atlas.memory.observability import MemoryObservabilityService
 from atlas.memory.reconciliation import (
     MemoryCandidateLeaseRepository,
     MemoryReconciliationService,
@@ -244,7 +245,7 @@ class _PurgeDuringBlindModel(_PipelineModel):
 
 
 @pytest.mark.asyncio
-async def test_purge_while_blind_verifier_runs_aborts_candidate(pg_factory):
+async def test_purge_while_blind_verifier_runs_aborts_candidate(pg_factory, caplog):
     content = "Jaco prefers the temporary starling setting."
     candidate_id, transcript_id, turn_id, _ = await _seed(pg_factory, content=content)
     async with pg_factory() as session:
@@ -275,6 +276,9 @@ async def test_purge_while_blind_verifier_runs_aborts_candidate(pg_factory):
                 select(func.count()).select_from(MemoryIndependentReadingRow)
             )
         ).scalar_one() == 0
+        detail = await MemoryObservabilityService(session).candidate_detail(candidate_id)
+        assert content not in json.dumps(detail, default=str)
+    assert content not in caplog.text
 
 
 class _PurgeDuringReconcileModel(_PipelineModel):
@@ -650,3 +654,31 @@ async def test_foreground_and_sweep_same_fact_converge_at_reconciliation(pg_fact
         assert len(memories) == 1
         assert [row.status for row in candidates] == ["reconciled", "reconciled"]
         assert {row.intake_path for row in candidates} == {"foreground", "sweep"}
+
+
+@pytest.mark.asyncio
+async def test_legacy_unverified_memory_is_excluded_until_grounded(pg_factory):
+    content = "Jaco prefers grounded evidence before durable recall."
+    async with pg_factory() as session:
+        transcript = TranscriptRow(kind="owner", next_turn_sequence=1, content_revision=1)
+        session.add(transcript)
+        await session.flush()
+        turn = TurnRow(
+            transcript_id=transcript.id,
+            sequence=1,
+            actor="owner",
+            blocks=[{"type": "text", "text": content}],
+        )
+        session.add(turn)
+        await session.flush()
+        memory, _ = await DurableMemoryRepository(session).create_active(
+            content,
+            source_transcript_id=None,
+            source_turn_id=None,
+            record_kind="derived",
+            memory_kind="preference",
+            scope="cross_chat",
+            scope_key="owner",
+            durability="long_term",
+            subject="Jaco",
+        )

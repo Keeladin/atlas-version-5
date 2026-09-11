@@ -106,6 +106,10 @@ class MemoryBackgroundDiscoveryService:
                 handle_map = memory_evidence_handle_map(visible_turns)
                 batch = await self._discover(visible_turns, handle_map)
                 anchor = scan_turns[-1]
+                sweep_horizon = max(
+                    (turn.created_at for turn in scan_turns if turn.created_at is not None),
+                    default=None,
+                )
                 intake = await self.intake.enqueue_many(
                     [item.model_dump(mode="json") for item in batch.memory_candidates],
                     source_transcript_id=transcript_id,
@@ -115,6 +119,7 @@ class MemoryBackgroundDiscoveryService:
                     evidence_handle_map=handle_map,
                     proposer_model=str(getattr(self.model, "model", "") or "") or None,
                     intake_path="sweep",
+                    temporal_horizon_at=sweep_horizon,
                 )
                 stats["accepted"] += intake["accepted"]
                 stats["duplicates"] += intake["duplicate"]
