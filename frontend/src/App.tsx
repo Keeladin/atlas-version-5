@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { startAuthentication, startRegistration, type PublicKeyCredentialCreationOptionsJSON, type PublicKeyCredentialRequestOptionsJSON } from '@simplewebauthn/browser'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -135,8 +135,8 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [chats, activeChatId])
   const latestTurnId = turns.at(-1)?.id
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  useLayoutEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'auto', block: 'end' })
   }, [latestTurnId, streamingText])
 
   const visibleTurns = useMemo(() => turns.filter((turn) => turn.actor === 'owner' || turn.actor === 'atlas'), [turns])
@@ -647,7 +647,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             ) : (
               <>
                 <div className={`chat-space${visibleTurns.length ? ' has-conversation' : ''}`}>
-                  {historyCursor ? <button type="button" disabled={historyLoading} onClick={() => { void loadOlderConversation() }}>{historyLoading ? 'Loading…' : 'Load older conversation'}</button> : null}
+                  {historyCursor ? <button className="history-load" type="button" disabled={historyLoading} onClick={() => { void loadOlderConversation() }}>{historyLoading ? 'Loading…' : 'Load older conversation'}</button> : null}
                   {visibleTurns.length === 0 && !streamingText ? (
                     <div className="phase-message"><span className="phase-label">PHASE 1</span><h2>The model is in the seat.</h2><p>Conversation is Atlas-owned and durable. Start anywhere.</p></div>
                   ) : (

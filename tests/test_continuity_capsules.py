@@ -58,7 +58,7 @@ def test_continuity_context_is_explicitly_orientation_not_evidence() -> None:
     messages = turns_to_provider_messages([], continuity_context="Prior chat: Atlas memory work")
     assert len(messages) == 1
     assert messages[0]["role"] == "developer"
-    assert "cross-chat continuity orientation" in messages[0]["content"]
+    assert "derived orientation" in messages[0]["content"]
     assert "not canonical evidence" in messages[0]["content"]
     assert "Prior chat: Atlas memory work" in messages[0]["content"]
 

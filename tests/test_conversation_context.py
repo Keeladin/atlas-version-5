@@ -83,17 +83,22 @@ def test_failure_and_uncertainty_are_not_normal_compaction_candidates() -> None:
     assert tool_observation_is_compactable(ToolObservationBlock(phase="uncertain")) is False
 
 
-def test_model_instructions_calibrate_historical_recall_by_evidence_mode() -> None:
+def test_model_instructions_prioritize_semantic_judgment_and_proportional_verification() -> None:
     instructions = build_model_instructions([], active_task_enabled=False)
 
+    assert "Prioritize understanding his actual intent" in instructions
+    assert "Use your own semantic judgment" in instructions
+    assert "say when you disagree" in instructions
+    assert "Do not wait for an explicit invitation when the value is clear" in instructions
     assert "CONVERSATIONAL is the default" in instructions
     assert "PRECISE applies" in instructions
     assert "FORENSIC applies" in instructions
-    assert "do not by themselves require exhaustive historical verification" in instructions
-    assert "do not block a useful answer solely because canonical evidence has not been re-read" in instructions
-    assert "verify the exact tool observation" in instructions
-    assert "Use the familiarity earned from supplied context naturally" in instructions
-    assert "do not force jokes, nicknames, or intimacy" in instructions
+    assert "State genuine uncertainty clearly but once" in instructions
+    assert "Treat owner statements, prior Atlas/model statements" in instructions
+    assert "Use familiarity earned from supplied context naturally" in instructions
+    assert "Use memory capabilities for explicit owner requests" in instructions
+    assert "memory.obligations.resolve" not in instructions
+    assert "Never bulk-confirm memory reviews" not in instructions
 
 
 def test_owner_retirement_redacts_guarded_content_from_working_projection() -> None:

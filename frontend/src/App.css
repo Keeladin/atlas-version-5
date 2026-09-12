@@ -766,10 +766,24 @@ textarea:disabled {
 }
 
 .chat-space.has-conversation {
-  align-items: stretch;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   overflow-y: auto;
   padding-top: 30px;
+}
+
+.history-load {
+  flex: 0 0 auto;
+  align-self: center;
+  min-height: 30px;
+  margin: 0 0 12px;
+  padding: 0 12px;
+  border: 1px solid var(--border-default);
+  border-radius: 7px;
+  background: var(--bg-muted);
+  color: var(--fg-muted);
+  font: 600 11px/1 var(--font-sans);
 }
 
 .conversation-thread {
@@ -1331,7 +1345,8 @@ button.storage-row:disabled { opacity: 1; cursor: default; }
 /* Keep conversation geometry full-width after the desktop conversation rules below. */
 @media (max-width: 860px) {
   .chat-space.has-conversation {
-    align-items: stretch;
+    flex-direction: column;
+    align-items: center;
     padding: 18px 12px 12px;
   }
   .conversation-thread {
