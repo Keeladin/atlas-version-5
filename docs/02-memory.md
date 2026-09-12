@@ -149,6 +149,8 @@ After the initial snapshot, the same Control panel opens a same-origin Server-Se
 
 This is observability, not authority. The stream does not add memory edit/approve controls, does not make candidates searchable, and does not change reconciliation policy or publication semantics. Its purpose is to let the owner observe real candidate → reconciliation → durable-memory traffic before tuning model policy, thresholds or model choice.
 
+The systemd memory pass also publishes a bounded machine-local observer snapshot at `/var/lib/atlas-v5/observer/memory.json`. It is built from the same read-only Control projections, includes recent candidate details and structured verification/reconciliation state, does not read or serialize Atlas credential/config stores, and is atomically replaced after each pass. The deployment grants the maintenance owner read-only ACL access to this observer directory only; protected auth/control state and `/etc/atlas-v5` remain outside that path.
+
 ## 16. Memory state machine, discovery sweep and conflict resolution — 2026-09-11
 
 Migration `25a13` makes grounding explicit. Every durable memory carries `grounding_status`; ordinary recall and embedding admit only `verified` rows, and a verified row must reference either a reconciliation record or a canonical owner assertion turn. All memories that predate the migration become `legacy_unverified` with origin `legacy_pre25a13`, and each active one receives a pending `memory_review` obligation. Immediately after migration ordinary durable recall is therefore empty by design until the owner reviews a memory (confirm, edit or reject through `memory.obligations.resolve`) or the reconciler grounds it from fresh evidence. There is no bulk confirmation.

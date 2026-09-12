@@ -19,12 +19,16 @@ def test_normal_deploy_does_not_walk_owner_projects() -> None:
     assert "reconcile-project-access.sh" in script
 
 
-def test_maintenance_acl_grant_is_confined_to_deployment_root() -> None:
+def test_maintenance_acl_grant_is_confined_to_explicit_read_only_roots() -> None:
     script = (DEPLOYMENT / "grant-maintenance-access.sh").read_text()
     acl_lines = [line for line in script.splitlines() if "setfacl" in line and "find" in line]
     assert acl_lines
-    assert all('${APP_ROOT}' in line for line in acl_lines)
+    assert all(
+        '${APP_ROOT}' in line or '${OBSERVER_ROOT}' in line for line in acl_lines
+    )
     assert "APP_ROOT=/opt/atlas-v5" in script
+    assert "OBSERVER_ROOT=/var/lib/atlas-v5/observer" in script
+    assert "/etc/atlas-v5" not in "\n".join(acl_lines)
 
 
 def test_project_reconcile_uses_explicit_acl_masks() -> None:
@@ -76,3 +80,18 @@ def test_deploy_quiesces_memory_worker_before_replacing_runtime() -> None:
     assert stop_timer < replace_code
     assert stop_worker < replace_code
     assert stop_worker < sync_dependencies
+
+
+def test_observer_state_is_separate_and_owner_read_only() -> None:
+    deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
+    bootstrap = (DEPLOYMENT / "bootstrap-host.sh").read_text()
+    grant = (DEPLOYMENT / "grant-maintenance-access.sh").read_text()
+    observer = "/var/lib/atlas-v5/observer"
+    assert observer in deploy
+    assert observer in bootstrap
+    assert f"OBSERVER_ROOT={observer}" in grant
+    assert 'u:${MAINTAINER}:r-x' in grant
+    assert 'u:${MAINTAINER}:r--' in grant
+    assert "/etc/atlas-v5" not in "\n".join(
+        line for line in grant.splitlines() if "setfacl" in line
+    )

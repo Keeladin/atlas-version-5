@@ -26,6 +26,7 @@ fi
 
 install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0700 \
   /var/lib/atlas-v5/artifacts /var/lib/atlas-v5/runtime /var/lib/atlas-v5/backups /var/lib/atlas-v5/control
+install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 /var/lib/atlas-v5/observer
 install -d -o root -g "${APP_GROUP}" -m 0750 \
   /etc/atlas-v5/config /etc/atlas-v5/secrets /opt/atlas-v5
 
@@ -55,6 +56,8 @@ chmod 0640 /etc/atlas-v5/secrets/database-url
 
 install -o root -g "${APP_GROUP}" -m 0640 \
   "${ROOT_DIR}/deployment/runtime.env.example" /etc/atlas-v5/config/runtime.env
+
+bash "${ROOT_DIR}/deployment/grant-maintenance-access.sh"
 
 cat <<EOF
 Atlas V5 host foundation is ready.
