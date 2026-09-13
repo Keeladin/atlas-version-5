@@ -43,6 +43,7 @@ It may expose:
 - Environment Registry state and local software availability;
 - memory inspection/correction/forgetting and retention settings;
 - schedules and automation status;
+- owner notification inbox, push devices, and read-only host monitors (`26-notifications.md`);
 - workspace/storage information;
 - runtime/service health, logs, errors, latency, tokens, and cost.
 

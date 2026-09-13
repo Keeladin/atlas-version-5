@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import atlas.notifications.bridge  # noqa: F401 - attention rows are mirrored into owner notifications on flush
 from atlas.persistence.models import (
     ActionRow,
     OwnerAttentionRow,

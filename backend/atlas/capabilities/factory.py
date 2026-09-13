@@ -7,8 +7,11 @@ from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.memory import MemoryService
 from atlas.memory.embeddings import OpenAIEmbeddingClient
+from atlas.notifications import NotificationEvent, NotificationService
+from atlas.notifications.models import MODEL_SEVERITIES
 from atlas.registry.repository import RegistryRepository
 from atlas.registry.service import EnvironmentRegistry
+from atlas.runtime.invocation import current_run_id
 from atlas.runtime.observations import EvidenceStore
 from atlas.schedules import ScheduleService
 from atlas.storage import LocalStorageService, ProjectFolderService
@@ -86,6 +89,34 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     runtime.register_executor("schedules.create", lambda arguments: schedule_call("create", arguments))
     runtime.register_executor("schedules.update", lambda arguments: schedule_call("update", arguments))
     runtime.register_executor("schedules.delete", lambda arguments: schedule_call("delete", arguments))
+
+    async def notifications_list(arguments):
+        async with factory() as session:
+            service = NotificationService(session, repeat_minutes=settings.push_repeat_minutes)
+            items = await service.list(limit=int(arguments.get("limit") or 20),
+                include_superseded=bool(arguments.get("include_superseded", False)), audience="model")
+            return {"items": items, "unread": await service.unread_count()}
+
+    async def notifications_emit(arguments):
+        severity = str(arguments.get("severity") or "info")
+        if severity not in MODEL_SEVERITIES:
+            raise ValueError("Model notifications may only be info or warning")
+        async with factory() as session:
+            service = NotificationService(session, repeat_minutes=settings.push_repeat_minutes)
+            if not await service.model_emit_allowed(settings.notifications_model_emit_per_hour):
+                raise ValueError("Notification budget exhausted for this hour; the owner inbox already has recent model notifications")
+            thread_key = str(arguments.get("thread_key") or "").strip() or None
+            item = await service.emit(NotificationEvent(
+                source="model", kind=str(arguments.get("kind") or "model").strip()[:64] or "model", severity=severity,
+                title=str(arguments.get("title") or "").strip()[:160], body=str(arguments.get("body") or "").strip()[:1000],
+                thread_key=f"model:{thread_key}" if thread_key else None, run_id=current_run_id.get(),
+                detail={"open_url": "/"},
+            ))
+            await session.commit()
+            return item
+
+    runtime.register_executor("notifications.list", notifications_list)
+    runtime.register_executor("notifications.emit", notifications_emit)
 
     projects = ProjectFolderService(settings.projects_root, settings.projects_display_root, settings.project_checkpoint_root)
     runtime.register_executor(

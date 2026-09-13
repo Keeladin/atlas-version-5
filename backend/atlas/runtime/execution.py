@@ -6,7 +6,7 @@ from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import ActionStatus
 from atlas.capabilities import AuthorityMode, EffectKind
 from atlas.persistence.models import ActionRow, OwnerAttentionRow
-from atlas.runtime.invocation import current_transcript_id
+from atlas.runtime.invocation import current_run_id, current_transcript_id
 from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import require_live_run
 
@@ -114,9 +114,11 @@ class RunExecutor:
                     action_id=action_id, arguments=args, trust='internal')
                 await session.commit()
         context_token = current_transcript_id.set(self.transcript_id)
+        run_token = current_run_id.set(self.run_id)
         try:
             result = await self.runtime.call(operation, args, proposal_sink=propose)
         finally:
+            current_run_id.reset(run_token)
             current_transcript_id.reset(context_token)
         if proposal_evidence is not None:
             evidence_id = proposal_evidence

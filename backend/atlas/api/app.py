@@ -56,6 +56,10 @@ from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
 from atlas.memory.lifecycle import MemoryLifecycleCommands
 from atlas.memory.observability import MemoryObservabilityService
+from atlas.monitors.rdc import rdc_monitor_loop
+from atlas.notifications.api import push_router
+from atlas.notifications.api import router as notifications_router
+from atlas.notifications.dispatcher import push_delivery_loop
 from atlas.persistence.models import (
     DurableMemoryRow,
     MemoryCommandRow,
@@ -135,13 +139,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await reconcile_once(settings)
     scheduler_task = asyncio.create_task(scheduler_loop(settings, capability_runtime)) if settings.scheduler_enabled else None
     reconciliation_task = asyncio.create_task(reconciliation_loop(settings))
+    push_task = asyncio.create_task(push_delivery_loop(settings))
+    rdc_task = asyncio.create_task(rdc_monitor_loop(settings)) if settings.rdc_monitor_enabled else None
+    background = (scheduler_task, reconciliation_task, push_task, rdc_task)
     try:
         yield
     finally:
-        for task in (scheduler_task, reconciliation_task):
+        for task in background:
             if task is not None:
                 task.cancel()
-        for task in (scheduler_task, reconciliation_task):
+        for task in background:
             if task is not None:
                 with suppress(asyncio.CancelledError):
                     await task
@@ -149,6 +156,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Atlas V5", version=__version__, lifespan=lifespan)
 app.include_router(auth_router)
+app.include_router(notifications_router)
+app.include_router(push_router)
 
 
 def _auth_service(session: AsyncSession) -> AuthService:
@@ -522,6 +531,13 @@ async def control_configuration():
             google_oauth,
             _credential_projection("GitHub MCP token", settings.github_token_file),
         ],
+        "notifications": {
+            "push_configured": settings.push_configured,
+            "push_subject": settings.push_vapid_subject,
+            "push_repeat_minutes": settings.push_repeat_minutes,
+            "rdc_monitor_enabled": settings.rdc_monitor_enabled,
+            "rdc_monitor_unit": settings.rdc_monitor_unit,
+        },
         "mcps": [
             {
                 "id": "google.workspace",

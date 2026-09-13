@@ -101,7 +101,7 @@ async def test_25a13_marks_all_existing_memories_unverified_and_downgrades(pg_fa
     async with engine.begin() as connection:
         assert (
             await connection.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == '25a13'
+        ).scalar_one() == '25a14'
         assert (
             await connection.execute(text(
                 "SELECT count(*) FROM memory_obligations "

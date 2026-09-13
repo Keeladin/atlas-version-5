@@ -82,6 +82,19 @@ def test_deploy_quiesces_memory_worker_before_replacing_runtime() -> None:
     assert stop_worker < sync_dependencies
 
 
+def test_runtime_gets_journal_group_for_the_connector_monitor_and_push_defaults() -> None:
+    deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
+    assert "usermod -aG systemd-journal atlas-v5" in deploy
+    assert deploy.index("usermod -aG systemd-journal") < deploy.index("systemctl start atlas-v5.service")
+    assert "ATLAS_RDC_MONITOR_ENABLED=true" in deploy
+    assert "ATLAS_PUSH_VAPID_PRIVATE_KEY_FILE=/etc/atlas-v5/secrets/push-vapid-private-key" in deploy
+    bootstrap = (DEPLOYMENT / "bootstrap-push-vapid.sh").read_text()
+    assert "install -o root -g atlas-v5 -m 0640" in bootstrap
+    assert "prime256v1" in bootstrap
+    unit = (DEPLOYMENT / "systemd" / "atlas-v5.service").read_text()
+    assert "ProtectHome=yes" in unit  # the monitor reads the journal, never the owner's home
+
+
 def test_observer_state_is_separate_and_owner_read_only() -> None:
     deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
     bootstrap = (DEPLOYMENT / "bootstrap-host.sh").read_text()

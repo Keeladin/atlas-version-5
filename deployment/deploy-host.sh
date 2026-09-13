@@ -19,6 +19,12 @@ if ! id atlas-v5 >/dev/null 2>&1; then
   exit 1
 fi
 
+# The Desktop Commander monitor reads the owner's user journal; journal files are
+# root:systemd-journal 0640, so runtime group membership is the whole grant.
+if ! id -nG atlas-v5 | grep -qw systemd-journal; then
+  usermod -aG systemd-journal atlas-v5
+fi
+
 if [[ ! -r /etc/atlas-v5/secrets/database-url ]]; then
   echo "Atlas V5 database secret is missing." >&2
   exit 1
@@ -132,6 +138,27 @@ if ! grep -q '^ATLAS_MEMORY_SHORT_TERM_REVIEW_HOURS=' /etc/atlas-v5/config/runti
 fi
 if ! grep -q '^ATLAS_MEMORY_SHORT_TERM_EXPIRY_DAYS=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_MEMORY_SHORT_TERM_EXPIRY_DAYS=14' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_PUSH_VAPID_PRIVATE_KEY_FILE=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_PUSH_VAPID_PRIVATE_KEY_FILE=/etc/atlas-v5/secrets/push-vapid-private-key' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_PUSH_VAPID_SUBJECT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_PUSH_VAPID_SUBJECT=mailto:owner@localhost' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_PUSH_REPEAT_MINUTES=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_PUSH_REPEAT_MINUTES=60' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_RDC_MONITOR_ENABLED=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_RDC_MONITOR_ENABLED=true' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_RDC_MONITOR_UNIT=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_RDC_MONITOR_UNIT=desktop-commander.service' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_RDC_MONITOR_UID=' /etc/atlas-v5/config/runtime.env; then
+  echo "ATLAS_RDC_MONITOR_UID=$(id -u jaco)" >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_RDC_MONITOR_POLL_SECONDS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_RDC_MONITOR_POLL_SECONDS=30' >> /etc/atlas-v5/config/runtime.env
 fi
 if ! grep -q '^ATLAS_AUTH_REQUIRED=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_AUTH_REQUIRED=true' >> /etc/atlas-v5/config/runtime.env
@@ -258,5 +285,8 @@ echo "Runtime: http://127.0.0.1:8086"
 if [[ ! -f /var/lib/atlas-v5/auth/enrolled && -f /var/lib/atlas-v5/auth/enrollment-code ]]; then
   echo "Owner passkey enrollment code: $(cat /var/lib/atlas-v5/auth/enrollment-code)"
   echo "Open https://atlas-agentic.co.za and use this code once to register your passkey."
+fi
+if [[ ! -s /etc/atlas-v5/secrets/push-vapid-private-key ]]; then
+  echo "Push notifications are not configured yet: run deployment/bootstrap-push-vapid.sh and set ATLAS_PUSH_VAPID_SUBJECT."
 fi
 echo "Caddy/V4 were not changed."

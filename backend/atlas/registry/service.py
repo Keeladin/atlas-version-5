@@ -108,6 +108,15 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             executable_operations=["schedules.list", "schedules.create", "schedules.update", "schedules.delete"],
         ),
         CapabilityEntry(
+            id="atlas.notifications",
+            family="Owner notifications",
+            description="Read the owner's notification inbox and emit informational owner notifications that reach the inbox and the owner's devices.",
+            source=CapabilitySource.ATLAS,
+            enabled=True,
+            availability=CapabilityAvailability.AVAILABLE,
+            executable_operations=["notifications.list", "notifications.emit"],
+        ),
+        CapabilityEntry(
             id="github.mcp",
             family="GitHub",
             description="Access owner-authorized GitHub repositories through GitHub's official MCP server.",
@@ -322,6 +331,18 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         description="Change, pause, or resume an existing scheduled Atlas task.",
         input_schema={"type":"object","properties":{"task_id":{"type":"string"},"title":{"type":"string"},"prompt":{"type":"string"},"schedule_kind":{"type":"string","enum":["once","interval","cron"]},"schedule_value":{"type":"string"},"timezone":{"type":"string"},"enabled":{"type":"boolean"}},"required":["task_id"],"additionalProperties":False},
         effect=EffectKind.UPDATE, authority=AuthorityMode.APPROVAL_REQUIRED,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="notifications.list", capability_id="atlas.notifications", family="Owner notifications",
+        description="List recent owner notifications (newest first). Sensitive fields are redacted for the model.",
+        input_schema={"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50},"include_superseded":{"type":"boolean"}},"additionalProperties":False},
+        effect=EffectKind.READ, authority=AuthorityMode.AUTO,
+    ))
+    registry.register_operation(OperationDescriptor(
+        id="notifications.emit", capability_id="atlas.notifications", family="Owner notifications",
+        description="Notify the owner. info stays in the inbox; warning also reaches the owner's devices. Use thread_key to update an earlier notification about the same matter instead of stacking new ones. Rate limited.",
+        input_schema={"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":160},"body":{"type":"string","maxLength":1000},"severity":{"type":"string","enum":["info","warning"]},"kind":{"type":"string","maxLength":64},"thread_key":{"type":"string","maxLength":200}},"required":["title","body"],"additionalProperties":False},
+        effect=EffectKind.CREATE, authority=AuthorityMode.AUTO,
     ))
     registry.register_operation(OperationDescriptor(
         id="schedules.delete", capability_id="atlas.schedules", family="Scheduled tasks",

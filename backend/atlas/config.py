@@ -68,6 +68,16 @@ class Settings(BaseSettings):
     github_token_file: Path | None = None
     github_mcp_toolsets: str = "repos,git,pull_requests,issues"
     github_owner: str = "Keeladin"
+    push_vapid_private_key_file: Path | None = None
+    push_vapid_subject: str = "mailto:owner@localhost"
+    push_repeat_minutes: int = 60
+    push_delivery_poll_seconds: int = 5
+    notifications_model_emit_per_hour: int = 20
+    rdc_monitor_enabled: bool = False
+    rdc_monitor_unit: str = "desktop-commander.service"
+    rdc_monitor_uid: int = 1000
+    rdc_monitor_poll_seconds: int = 30
+    rdc_monitor_process_grace_seconds: int = 120
 
     @property
     def database_dsn(self) -> str:
@@ -99,6 +109,11 @@ class Settings(BaseSettings):
             and self.github_token_file is not None
             and self.github_token_file.is_file()
         )
+
+    @property
+    def push_configured(self) -> bool:
+        path = self.push_vapid_private_key_file
+        return path is not None and path.is_file() and bool(path.read_text().strip())
 
     @property
     def is_production(self) -> bool:

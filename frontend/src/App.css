@@ -1439,3 +1439,32 @@ button.memory-row:hover, button.memory-row.selected { background: var(--bg-inset
   .memory-attempt time { grid-column: 2; }
   .memory-trace-subhead { align-items: start; flex-direction: column; }
 }
+
+/* Owner notifications: Updates section and the Control notifications card. */
+.updates-section .activity-heading-row { align-items: center; }
+.activity-inline-button { margin-left: auto; padding: 0; border: 0; background: none; color: var(--accent); font-size: 11px; cursor: pointer; }
+.activity-inline-button:hover { text-decoration: underline; }
+.updates-list { display: flex; flex-direction: column; gap: 8px; }
+.update-row { display: flex; flex-direction: column; gap: 4px; padding: 9px 10px; border: 1px solid var(--border-muted); border-left: 3px solid var(--border-default); border-radius: 8px; background: var(--bg-muted); }
+.update-row.unread { border-left-color: var(--accent); }
+.update-row.severity-warning.unread, .update-row.severity-critical.unread { border-left-color: var(--bad); }
+.update-row.severity-action_required.unread { border-left-color: var(--attention); }
+.update-row.severity-resolved.unread { border-left-color: var(--ok); }
+.update-row.settled { opacity: .72; }
+.update-head { display: flex; justify-content: space-between; gap: 8px; color: var(--fg-muted); font: 10px/1.4 var(--font-mono); text-transform: uppercase; letter-spacing: .04em; }
+.update-row strong { font-size: 12px; line-height: 1.35; }
+.update-row p { margin: 0; color: var(--fg-muted); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.update-code { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--fg-muted); font-size: 11px; }
+.update-code code { padding: 5px 8px; border-radius: 6px; background: var(--bg-inset); color: var(--fg-default); font: 600 14px/1 var(--font-mono); letter-spacing: .08em; user-select: all; }
+.update-code button, .push-device button, .push-actions button { padding: 4px 9px; border: 1px solid var(--border-default); border-radius: 6px; background: var(--bg-default); color: var(--fg-default); font-size: 11px; cursor: pointer; }
+.update-code button:hover, .push-device button:hover:not(:disabled), .push-actions button:hover:not(:disabled) { border-color: var(--accent); }
+.push-actions button:disabled, .push-device button:disabled { opacity: .45; cursor: not-allowed; }
+.update-row .approval-actions a { padding: 4px 9px; border: 1px solid var(--border-default); border-radius: 6px; color: var(--fg-default); font-size: 11px; text-decoration: none; }
+.update-row .approval-actions a:hover { border-color: var(--accent); }
+.push-status-row { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; color: var(--fg-muted); font-size: 12px; }
+.push-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.push-devices { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.push-devices > p { margin: 0; }
+.push-device { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border-muted); border-radius: 8px; }
+.push-device strong { display: block; font-size: 12px; }
+.push-device small { color: var(--fg-muted); font-size: 11px; overflow-wrap: anywhere; }

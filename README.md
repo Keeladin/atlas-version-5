@@ -27,7 +27,7 @@ The model is the primary semantic decision-maker: it interprets intent, selects 
 
 ## Deliberate boundaries
 
-Atlas does not currently provide general shell or code execution. GitHub remains read-only, project changes are staged for owner integration, and consequential external effects remain owner-gated. Transcript hybrid lexical/semantic recall, explicit owner-directed remember/correct/retire/restore/delete semantics, and bounded candidate-driven semantic reconciliation are implemented on PostgreSQL plus pgvector. A bounded incremental memory discovery sweep is implemented; whole-history consolidation, same-chat pressure capsules, visual attachment indexing, and indexed OEM-manual retrieval remain staged work.
+Atlas does not currently provide general shell or code execution. The Desktop Commander connector monitor is read-only: it reads the unit's journal and announces device-code requests and recoveries to the owner, and holds no restart authority (`docs/26-notifications.md`). GitHub remains read-only, project changes are staged for owner integration, and consequential external effects remain owner-gated. Transcript hybrid lexical/semantic recall, explicit owner-directed remember/correct/retire/restore/delete semantics, and bounded candidate-driven semantic reconciliation are implemented on PostgreSQL plus pgvector. A bounded incremental memory discovery sweep is implemented; whole-history consolidation, same-chat pressure capsules, visual attachment indexing, and indexed OEM-manual retrieval remain staged work.
 
 ## Repository map
 

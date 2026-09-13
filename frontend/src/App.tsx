@@ -5,7 +5,8 @@ import remarkGfm from 'remark-gfm'
 import './App.css'
 import { MemoryObservabilityPanel } from './MemoryObservability'
 import { approvalFields } from './approval'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type OwnerNotification, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -53,6 +54,10 @@ function formatBytes(value: number | null): string {
   if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`
   if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`
   return `${(value / 1024 ** 3).toFixed(1)} GB`
+}
+
+const SEVERITY_LABELS: Record<OwnerNotification['severity'], string> = {
+  info: 'Info', warning: 'Warning', action_required: 'Action needed', critical: 'Critical', resolved: 'Resolved',
 }
 
 function storageTitle(path: string): string {
@@ -110,7 +115,9 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([])
-  const [mobileActivity, setMobileActivity] = useState<'chats' | 'needs' | 'latest' | null>(null)
+  const [mobileActivity, setMobileActivity] = useState<'chats' | 'needs' | 'updates' | 'latest' | null>(null)
+  const [notifications, setNotifications] = useState<OwnerNotification[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const composerFileInputRef = useRef<HTMLInputElement | null>(null)
   const [composerAttachments, setComposerAttachments] = useState<LocalStorageEntry[]>([])
@@ -131,6 +138,25 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     getPendingActions().then(setPendingActions).catch(() => setPendingActions([]))
     getRecentActions(4).then(setRecentActions).catch(() => setRecentActions([]))
     getScheduledTasks(true).then(setScheduledTasks).catch(() => setScheduledTasks([]))
+  }, [])
+
+  function refreshNotifications(): Promise<void> {
+    // Best-effort on the main surface; the Control page reports configuration problems.
+    return getNotifications(20).then((inbox) => { setNotifications(inbox.items); setUnreadCount(inbox.unread) }).catch(() => undefined)
+  }
+
+  useEffect(() => {
+    void refreshNotifications()
+    const interval = window.setInterval(() => { if (document.visibilityState === 'visible') void refreshNotifications() }, 60_000)
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshNotifications() }
+    const onMessage = (event: MessageEvent) => { if ((event.data as { type?: string } | null)?.type === 'notification') void refreshNotifications() }
+    document.addEventListener('visibilitychange', onVisible)
+    navigator.serviceWorker?.addEventListener('message', onMessage)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+      navigator.serviceWorker?.removeEventListener('message', onMessage)
+    }
   }, [])
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [chats, activeChatId])
@@ -438,6 +464,49 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     await submitOwnerMessage('continue', [], false)
   }
 
+  async function handleNotificationRead(item: OwnerNotification) {
+    try { await markNotificationRead(item.id); await refreshNotifications() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  async function handleNotificationsReadAll() {
+    try { await markAllNotificationsRead(); await refreshNotifications() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  async function handleNotificationResolve(item: OwnerNotification) {
+    try { await resolveNotification(item.id); await refreshNotifications() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  function renderNotification(item: OwnerNotification) {
+    const code = typeof item.detail.code === 'string' ? item.detail.code : null
+    const link = typeof item.detail.open_url === 'string' && /^https?:\/\//.test(item.detail.open_url) ? item.detail.open_url : null
+    const expires = typeof item.detail.expires_at === 'string' ? new Date(item.detail.expires_at) : null
+    return (
+      <div className={`update-row severity-${item.severity}${item.status !== 'open' ? ' settled' : ''}${item.read ? '' : ' unread'}`} key={item.id}>
+        <div className="update-head"><span>{SEVERITY_LABELS[item.severity] ?? item.severity}</span><span>{item.created_at ? new Date(item.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span></div>
+        <strong>{item.title}</strong>
+        {item.body ? <p>{item.body}</p> : null}
+        {code ? <div className="update-code"><code>{code}</code><button type="button" onClick={() => { void navigator.clipboard?.writeText(code) }}>Copy</button>{expires ? <span>expires {expires.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> : null}</div> : null}
+        <div className="approval-actions">
+          {link ? <a href={link} target="_blank" rel="noreferrer">Open</a> : null}
+          {!item.read ? <button type="button" onClick={() => { void handleNotificationRead(item) }}>Mark read</button> : null}
+          {item.status === 'open' && item.severity !== 'info' ? <button type="button" onClick={() => { void handleNotificationResolve(item) }}>Resolve</button> : null}
+        </div>
+      </div>
+    )
+  }
+
+  function renderUpdatesSection() {
+    return (
+      <section className="activity-section updates-section">
+        <div className="activity-heading-row"><span className="activity-heading">Updates</span><span className="activity-count">{unreadCount}</span>{unreadCount ? <button type="button" className="activity-inline-button" onClick={() => { void handleNotificationsReadAll() }}>Mark all read</button> : null}</div>
+        {notifications.length ? <div className="updates-list">{notifications.slice(0, 8).map(renderNotification)}</div> : <p className="activity-empty">No updates yet. Atlas posts status changes and alerts here and to your devices.</p>}
+      </section>
+    )
+  }
+
   function renderPendingAction(action: PendingAction) {
     const args = action.detail.arguments ?? {}
     const uncertain = action.state === 'uncertain'
@@ -491,6 +560,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         <div className="mobile-activity-controls" aria-label="Activity shortcuts">
           <button type="button" className={mobileActivity === 'chats' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'chats' ? null : 'chats')}>Chats</button>
           <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'needs' ? null : 'needs')}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
+          <button type="button" className={mobileActivity === 'updates' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'updates' ? null : 'updates')}>Updates <span>{unreadCount}</span></button>
           <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'latest' ? null : 'latest')}>Latest</button>
           <span className="mobile-token-count" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of Atlas working-context budget` : 'Working-context token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />{conversationContext ? `${formatTokens(conversationContext.input_tokens)}/${formatTokens(conversationContext.limit_tokens)}` : '—/64k'}</span>
           <button type="button" className="mobile-auth-control" onClick={() => { void onLogout() }}>Log out</button>
@@ -499,7 +569,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
       {mobileActivity ? <>
         <button className="mobile-activity-backdrop" type="button" aria-label="Close activity" onClick={() => setMobileActivity(null)} />
-        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'chats' ? 'Chats' : mobileActivity === 'needs' ? 'Needs You' : 'Latest activity'}>
+        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'chats' ? 'Chats' : mobileActivity === 'needs' ? 'Needs You' : mobileActivity === 'updates' ? 'Updates' : 'Latest activity'}>
           {mobileActivity === 'chats' ? <section className="mobile-chat-section">
             <div className="chat-rail-head"><strong>Chats</strong><button type="button" disabled={chatBusy || sending} onClick={() => { void startNewChat() }}>+ New chat</button></div>
             {renderChatEntries()}
@@ -508,7 +578,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             {error ? <p className="activity-empty">{error}</p> : null}
             {pendingActions.map(renderPendingAction)}
             {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
-          </section> : <section className="activity-section">
+          </section> : mobileActivity === 'updates' ? renderUpdatesSection() : <section className="activity-section">
             <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
             {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
           </section>}
@@ -679,6 +749,8 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
               {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
             </section>
             <div className="activity-divider" />
+            {renderUpdatesSection()}
+            <div className="activity-divider" />
             <section className="activity-section latest-section">
               <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
               {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
@@ -773,6 +845,49 @@ function ControlPage({ health }: { health: Health | null }) {
   const [githubToken, setGithubToken] = useState('')
   const [githubOwner, setGithubOwner] = useState('')
   const [googleCredential, setGoogleCredential] = useState('')
+  const [pushState, setPushState] = useState<PushSupport>(() => pushSupport())
+  const [pushDevices, setPushDevices] = useState<PushSubscriptionSummary[]>([])
+  const [pushMessage, setPushMessage] = useState<string | null>(null)
+  const [pushBusy, setPushBusy] = useState(false)
+  const [thisDeviceSubscribed, setThisDeviceSubscribed] = useState(false)
+
+  function refreshPush(): Promise<void> {
+    return Promise.all([getPushSubscriptions().catch(() => [] as PushSubscriptionSummary[]), currentPushEndpoint().catch(() => null)])
+      .then(([devices, endpoint]) => { setPushState(pushSupport()); setPushDevices(devices); setThisDeviceSubscribed(Boolean(endpoint)) })
+  }
+
+  useEffect(() => { void refreshPush() }, [])
+
+  async function handlePushEnable() {
+    setPushBusy(true); setPushMessage(null)
+    try { await enablePushOnThisDevice(); setPushMessage('Push enabled on this device.'); await refreshPush() }
+    catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)); setPushState(pushSupport()) }
+    finally { setPushBusy(false) }
+  }
+
+  async function handlePushDisable() {
+    setPushBusy(true); setPushMessage(null)
+    try { await disablePushOnThisDevice(); setPushMessage('Push disabled on this device.'); await refreshPush() }
+    catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPushBusy(false) }
+  }
+
+  async function handlePushTest() {
+    setPushBusy(true); setPushMessage('Sending test notification…')
+    try {
+      const result = await sendTestPush()
+      setPushMessage(!result.configured ? 'Push is not configured on the server yet: run deployment/bootstrap-push-vapid.sh.' : result.push_status === 'sent' ? 'Test notification delivered to the push service.' : result.push_status === 'skipped' ? 'No device is subscribed yet; the test landed in Updates only.' : `Test notification ${result.push_status ?? 'queued'}.`)
+      await refreshPush()
+    } catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPushBusy(false) }
+  }
+
+  async function handlePushRemove(device: PushSubscriptionSummary) {
+    setPushBusy(true)
+    try { await deletePushSubscription(device.id); await refreshPush() }
+    catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPushBusy(false) }
+  }
 
   async function refreshControl() {
     const [nextCapabilities, nextConfiguration] = await Promise.all([getOwnerCapabilities(), getControlConfiguration()])
@@ -901,6 +1016,21 @@ function ControlPage({ health }: { health: Health | null }) {
         <section className="control-card"><div className="panel-title">Runtime</div><div className="control-hero-state"><StatusDot ok={health?.status === 'ok'} /><strong>{health?.status === 'ok' ? 'Online' : 'Checking'}</strong></div><p>v{health?.version ?? '—'} · {health?.environment ?? '—'}</p><div className="control-runtime-actions"><button className="control-restart-button" type="button" onClick={() => { void handleRestart() }} disabled={restartState === 'requesting' || restartState === 'waiting'}>{restartState === 'requesting' || restartState === 'waiting' ? 'Restarting…' : 'Restart Atlas'}</button>{restartMessage ? <span className={restartState === 'error' ? 'warning-text' : ''}>{restartMessage}</span> : null}</div></section>
         <section className="control-card"><div className="panel-title">System</div><div className="control-hero-state"><StatusDot ok={Boolean(health?.database.ok)} /><strong>{health?.database.ok ? 'Healthy' : 'Degraded'}</strong></div><p>PostgreSQL {health?.database.ok ? 'connected' : 'unavailable'} · {health?.registry_entries ?? '—'} registry entries</p></section>
         <section className="control-card"><div className="panel-title">Working context</div><div className="control-hero-state"><ContextDot state={contextStats?.state ?? null} /><strong>{contextStats ? `${formatTokens(contextStats.current_context_tokens)} / ${formatTokens(contextStats.limit_tokens)}` : 'Measuring…'}</strong></div><p>{contextStats ? `${contextStats.policy.selected_exchanges} exchanges · ${contextStats.policy.compacted_tool_turns} compacted tool turns` : 'Bounded foreground context'}</p></section>
+
+        <section className="control-card control-full notifications-card">
+          <div className="control-section-inline"><div><div className="panel-title">Notifications</div><p>Atlas keeps you in the loop: status changes land in Updates and, when it matters, on your devices.</p></div><span className={configuration?.notifications?.push_configured ? 'healthy-text' : 'warning-text'}>{configuration?.notifications ? (configuration.notifications.push_configured ? 'Push configured' : 'Push not configured') : '…'}</span></div>
+          <div className="push-status-row">
+            <span>{!pushState.supported ? 'This browser cannot receive Web Push.' : pushState.permission === 'denied' ? 'Notifications are blocked for this site in the browser settings.' : thisDeviceSubscribed ? 'This device receives Atlas notifications.' : 'This device is not subscribed yet.'}</span>
+            {pushState.ios && !pushState.standalone ? <span>On iPhone or iPad, add Atlas to the Home Screen first; Safari only delivers push to installed apps.</span> : null}
+          </div>
+          <div className="push-actions">
+            {thisDeviceSubscribed ? <button type="button" disabled={pushBusy} onClick={() => { void handlePushDisable() }}>Disable on this device</button> : <button type="button" disabled={pushBusy || !pushState.supported || pushState.permission === 'denied' || !configuration?.notifications?.push_configured} onClick={() => { void handlePushEnable() }}>Enable on this device</button>}
+            <button type="button" disabled={pushBusy} onClick={() => { void handlePushTest() }}>Send test</button>
+          </div>
+          {pushMessage ? <p className="connection-message">{pushMessage}</p> : null}
+          <div className="push-devices">{pushDevices.length ? pushDevices.map((device) => <div className="push-device" key={device.id}><div><strong>{device.host}</strong><small>{device.user_agent || 'unknown device'} · {device.disabled ? 'disabled by the push service' : device.last_success_at ? `last delivered ${new Date(device.last_success_at).toLocaleString()}` : 'nothing delivered yet'}</small></div><button type="button" disabled={pushBusy} onClick={() => { void handlePushRemove(device) }}>Remove</button></div>) : <p>No devices registered yet.</p>}</div>
+          {configuration?.notifications ? <p className="control-note">Connector monitor {configuration.notifications.rdc_monitor_enabled ? `watching ${configuration.notifications.rdc_monitor_unit} (read only)` : 'off'} · repeat pushes stay quiet for {configuration.notifications.push_repeat_minutes} min.</p> : null}
+        </section>
 
         <div className="control-section-heading"><div><span className="eyebrow">CONNECTIONS</span><h2>Setup & integrations</h2></div><span>Configure, verify and reconnect the services Atlas depends on.</span></div>
         {configurationError ? <section className="control-card control-full"><p className="warning-text">{configurationError}</p></section> : configuration ? configuration.connections.map(connectionCard) : <section className="control-card control-full"><p>Checking connections…</p></section>}
