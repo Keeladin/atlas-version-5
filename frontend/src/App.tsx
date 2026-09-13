@@ -6,7 +6,7 @@ import './App.css'
 import { MemoryObservabilityPanel } from './MemoryObservability'
 import { scheduleSummary } from './schedules'
 import { approvalFields } from './approval'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostPolicy, validateHostPolicy, applyHostPolicy, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostPolicyStatus, type HostPolicyVerdict, type HostServersVerdict, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -829,12 +829,10 @@ function OwnerLogin({ status, onAuthenticated }: { status: AuthStatus; onAuthent
 function ControlPage({ health }: { health: Health | null }) {
   const [capabilities, setCapabilities] = useState<OwnerCapability[]>([])
   const [operations, setOperations] = useState<OperationAuthority[]>([])
-  const [hostStatus, setHostStatus] = useState<HostPolicyStatus | null>(null)
-  const [policyDraft, setPolicyDraft] = useState<string | null>(null)
-  const [serversDraft, setServersDraft] = useState<string | null>(null)
-  const [hostVerdict, setHostVerdict] = useState<{ policy: HostPolicyVerdict | null; servers: HostServersVerdict | null } | null>(null)
-  const [hostBusy, setHostBusy] = useState(false)
-  const [hostMessage, setHostMessage] = useState<string | null>(null)
+  const [hostScopes, setHostScopes] = useState<HostFilesystemScopes>({ read: [], write: [], delete: [] })
+  const [hostScopesDraft, setHostScopesDraft] = useState<HostFilesystemScopes>({ read: [], write: [], delete: [] })
+  const [hostScopesBusy, setHostScopesBusy] = useState(false)
+  const [hostScopesMessage, setHostScopesMessage] = useState<string | null>(null)
   const [operationBusy, setOperationBusy] = useState<string | null>(null)
   const [operationError, setOperationError] = useState<string | null>(null)
   const [capabilityBusy, setCapabilityBusy] = useState<string | null>(null)
@@ -868,72 +866,17 @@ function ControlPage({ health }: { health: Health | null }) {
 
   useEffect(() => { void refreshPush() }, [])
 
-  function loadHostStatus(): Promise<void> {
-    return getHostPolicy().then(setHostStatus).catch((cause) => setHostMessage(cause instanceof Error ? cause.message : String(cause)))
-  }
-
-  useEffect(() => { void loadHostStatus() }, [])
-
   useEffect(() => {
-    if (!hostStatus?.pending) return
-    const timer = window.setInterval(() => { void loadHostStatus() }, 3000)
-    return () => window.clearInterval(timer)
-  }, [hostStatus?.pending])
+    getHostFilesystemScopes().then((next) => { setHostScopes(next); setHostScopesDraft(next) }).catch((cause) => setHostScopesMessage(cause instanceof Error ? cause.message : String(cause)))
+  }, [])
 
-  const policyText = policyDraft ?? hostStatus?.policy.text ?? ''
-  const serversText = serversDraft ?? hostStatus?.servers.text ?? ''
-  const hostDirty = policyDraft !== null || serversDraft !== null
-
-  async function handleHostValidate() {
-    setHostBusy(true); setHostMessage(null)
-    try { setHostVerdict(await validateHostPolicy({ policy: policyText, servers: serversText })) }
-    catch (cause) { setHostMessage(cause instanceof Error ? cause.message : String(cause)) }
-    finally { setHostBusy(false) }
-  }
-
-  async function handleHostApply() {
-    setHostBusy(true); setHostMessage(null)
+  async function saveHostScopes() {
+    setHostScopesBusy(true); setHostScopesMessage(null)
     try {
-      const edit: { policy?: string; servers?: string } = {}
-      if (policyDraft !== null) edit.policy = policyDraft
-      if (serversDraft !== null) edit.servers = serversDraft
-      const status = await applyHostPolicy(edit)
-      setHostStatus(status); setPolicyDraft(null); setServersDraft(null); setHostVerdict(null)
-      setHostMessage('Staged. The host applies it now; the result appears below.')
-    } catch (cause) { setHostMessage(cause instanceof Error ? cause.message : String(cause)) }
-    finally { setHostBusy(false) }
-  }
-
-  function renderHostPolicyCard() {
-    const effective = hostStatus?.policy.effective ?? null
-    const result = hostStatus?.last_result ?? null
-    return (
-      <section className="control-card control-full host-policy-card">
-        <div className="control-section-inline"><div><div className="panel-title">Host policy</div><p>The OS envelope, in your words: units and verbs, polkit grants, groups, server tools, and diagnostics commands. Validate shows what the host will enforce; Apply hands it to the host.</p></div><span>{hostStatus?.pending ? 'Applying…' : effective?.ok ? 'Effective' : hostStatus?.policy.exists ? 'Effective policy invalid' : 'No policy file'}</span></div>
-        {hostMessage ? <p className="connection-message">{hostMessage}</p> : null}
-        <div className="host-policy-editors">
-          <label>Host policy<textarea spellCheck={false} rows={18} value={policyText} onChange={(event) => setPolicyDraft(event.target.value)} /></label>
-          <label>Governed MCP servers<textarea spellCheck={false} rows={18} value={serversText} onChange={(event) => setServersDraft(event.target.value)} /></label>
-        </div>
-        <div className="push-actions">
-          <button type="button" disabled={hostBusy} onClick={() => { void handleHostValidate() }}>Validate</button>
-          <button type="button" className="control-primary-button" disabled={hostBusy || !hostDirty || Boolean(hostStatus?.pending)} onClick={() => { void handleHostApply() }}>Apply on host</button>
-          {hostDirty ? <button type="button" disabled={hostBusy} onClick={() => { setPolicyDraft(null); setServersDraft(null); setHostVerdict(null) }}>Discard edits</button> : null}
-        </div>
-        {hostVerdict ? <div className="host-verdict">
-          {hostVerdict.policy ? <div><strong className={hostVerdict.policy.ok ? 'healthy-text' : 'warning-text'}>{hostVerdict.policy.ok ? 'Policy valid' : `Policy rejected: ${hostVerdict.policy.error}`}</strong>{hostVerdict.policy.notes.map((note) => <p key={note}>Note: {note}</p>)}{hostVerdict.policy.rule ? <details><summary>Rendered polkit rule</summary><pre>{hostVerdict.policy.rule}</pre></details> : null}</div> : null}
-          {hostVerdict.servers ? <div><strong className={hostVerdict.servers.ok ? 'healthy-text' : 'warning-text'}>{hostVerdict.servers.ok ? `${hostVerdict.servers.servers.length} servers` : `Servers rejected: ${hostVerdict.servers.error}`}</strong>{hostVerdict.servers.servers.map((server) => <p key={server.id}>{server.id} · {server.transport} · {server.configured ? 'reachable' : 'not reachable now'}</p>)}</div> : null}
-        </div> : null}
-        {result ? <div className={`host-result${result.status === 'applied' ? ' ok' : ' bad'}`}>
-          <strong>Last apply: {result.status}{result.finished_at ? ` · ${new Date(result.finished_at).toLocaleString()}` : ''}</strong>
-          {(result.applied ?? []).length ? <p>Applied: {(result.applied ?? []).join(', ')}</p> : null}
-          {(result.errors ?? []).map((error) => <p className="warning-text" key={error}>{error}</p>)}
-          {(result.notes ?? []).map((note) => <p key={note}>Note: {note}</p>)}
-          {result.restart_required ? <p>Restart Atlas to load the new server configuration.</p> : null}
-        </div> : null}
-        {effective?.rule ? <details className="host-effective"><summary>Effective polkit rule on this host</summary><pre>{effective.rule}</pre></details> : null}
-      </section>
-    )
+      const saved = await setHostFilesystemScopes(hostScopesDraft)
+      setHostScopes(saved); setHostScopesDraft(saved); setHostScopesMessage('Filesystem paths saved.')
+    } catch (cause) { setHostScopesMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setHostScopesBusy(false) }
   }
 
   async function handlePushEnable() {
@@ -1002,33 +945,63 @@ function ControlPage({ health }: { health: Health | null }) {
   }
 
   function renderAuthorityCard() {
-    const families = Array.from(new Set(operations.map((item) => item.family)))
-    const overridden = operations.filter((item) => item.override !== null).length
-    const labels: Record<string, string> = { auto: 'Auto', approval_required: 'Ask me', forbidden: 'Forbidden' }
+    const labels: Record<string, string> = { auto: 'Automatic', approval_required: 'Ask me', forbidden: 'Deny' }
+    const byId = new Map(operations.map((item) => [item.id, item]))
+    const hostId = (tool: string) => `host.operations.${tool}`
+    const rows = [
+      { section: 'System services', label: 'Inspect services', tool: 'services_inspect' },
+      { section: 'System services', label: 'Read service logs', tool: 'service_logs' },
+      { section: 'System services', label: 'Start service', tool: 'service_start' },
+      { section: 'System services', label: 'Restart service', tool: 'service_restart' },
+      { section: 'System services', label: 'Stop service', tool: 'service_stop' },
+      { section: 'System services', label: 'Enable / disable service', tool: 'service_enable_disable' },
+      { section: 'Docker', label: 'Inspect containers', tool: 'docker_inspect' },
+      { section: 'Docker', label: 'Start / restart container', tool: 'docker_start_restart' },
+      { section: 'Docker', label: 'Stop container', tool: 'docker_stop' },
+      { section: 'Docker', label: 'Create / remove container', tool: 'docker_create_remove' },
+      { section: 'Filesystem', label: 'Read', tool: 'filesystem_read' },
+      { section: 'Filesystem', label: 'Write', tool: 'filesystem_write' },
+      { section: 'Filesystem', label: 'Delete', tool: 'filesystem_delete' },
+      { section: 'Packages', label: 'Inspect', tool: 'packages_inspect' },
+      { section: 'Packages', label: 'Install / update / remove', tool: 'packages_change' },
+      { section: 'Host', label: 'View resources', tool: 'host_resources' },
+      { section: 'Host', label: 'Restart', tool: 'host_restart' },
+      { section: 'Host', label: 'Shutdown', tool: 'host_shutdown' },
+    ]
+    const sections = Array.from(new Set(rows.map((row) => row.section)))
+    const other = operations.filter((item) => !item.id.startsWith('host.operations.'))
+    function selector(item: OperationAuthority | undefined, label: string) {
+      if (!item) return <span className="authority-effective">Not installed</span>
+      return <select aria-label={`Authority for ${label}`} value={item.override ?? 'default'} disabled={operationBusy !== null || !item.enabled} onChange={(event) => { void changeOperationAuthority(item, event.target.value) }}>
+        <option value="default">{labels[item.default_authority] ?? item.default_authority}</option>
+        <option value="auto">Automatic</option><option value="approval_required">Ask me</option><option value="forbidden">Deny</option>
+      </select>
+    }
+    const scopeDirty = JSON.stringify(hostScopes) !== JSON.stringify(hostScopesDraft)
     return (
-      <section className="control-card control-full authority-card">
-        <div className="control-section-inline"><div><div className="panel-title">Authority</div><p>Your decision per operation. Default follows the operation's own setting; anything you set here wins over it.</p></div><span>{overridden} overridden</span></div>
-        {operationError ? <p className="warning-text">{operationError}</p> : null}
-        {operations.length === 0 ? <p>No operations registered yet.</p> : families.map((family) => (
-          <div className="authority-family" key={family}>
-            <h3>{family}</h3>
-            <div className="authority-rows">
-              {operations.filter((item) => item.family === family).map((item) => (
-                <div className={`authority-row${item.enabled ? '' : ' disabled'}`} key={item.id}>
-                  <div className="authority-copy"><strong title={item.description}>{item.id}</strong><small>{item.effect}{item.argument_rules ? ' · argument rules' : ''}{item.trust === 'external' ? ' · external' : ''}{item.enabled ? '' : ' · capability off'}</small></div>
-                  <span className={`authority-effective authority-${item.effective_authority}`}>{labels[item.effective_authority] ?? item.effective_authority}</span>
-                  <select aria-label={`Authority for ${item.id}`} value={item.override ?? 'default'} disabled={operationBusy !== null} onChange={(event) => { void changeOperationAuthority(item, event.target.value) }}>
-                    <option value="default">Default ({labels[item.default_authority] ?? item.default_authority})</option>
-                    <option value="auto">Auto</option>
-                    <option value="approval_required">Ask me</option>
-                    <option value="forbidden">Forbidden</option>
-                  </select>
+      <>
+        <section className="control-card control-full authority-card host-operations-card">
+          <div className="control-section-inline"><div><div className="panel-title">Host operations</div><p>You decide what Atlas may do on this server. Risk information informs the choice; it does not make the choice for you.</p></div><span>Owner policy</span></div>
+          {operationError ? <p className="warning-text">{operationError}</p> : null}
+          {sections.map((section) => <div className="host-operation-group" key={section}>
+            <h3>{section}</h3>
+            <div className="host-operation-rows">
+              {rows.filter((row) => row.section === section).map((row) => {
+                const item = byId.get(hostId(row.tool))
+                return <div className={`host-operation-row${item?.enabled ? '' : ' disabled'}`} key={row.tool}>
+                  <div><strong>{row.label}</strong>{item ? <small>{item.description}</small> : <small>Host operations broker not loaded yet.</small>}</div>
+                  {selector(item, row.label)}
                 </div>
-              ))}
+              })}
             </div>
-          </div>
-        ))}
-      </section>
+            {section === 'Filesystem' ? <div className="host-path-scopes">
+              {(['read', 'write', 'delete'] as const).map((kind) => <label key={kind}><span>{kind[0].toUpperCase() + kind.slice(1)} paths</span><textarea rows={2} value={hostScopesDraft[kind].join('\n')} placeholder="One absolute path per line" onChange={(event) => setHostScopesDraft((current) => ({ ...current, [kind]: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) }))} /></label>)}
+              <div className="push-actions"><button type="button" disabled={hostScopesBusy || !scopeDirty} onClick={() => { void saveHostScopes() }}>Save paths</button>{hostScopesMessage ? <span>{hostScopesMessage}</span> : null}</div>
+            </div> : null}
+          </div>)}
+        </section>
+        {other.length ? <details className="control-card control-full control-advanced"><summary><span><span className="panel-title">Other operation authority</span><small>Non-host capabilities retain the same owner-controlled authority model</small></span><span>Expand</span></summary><div className="advanced-content"><section><div className="authority-rows">{other.map((item) => <div className={`authority-row${item.enabled ? '' : ' disabled'}`} key={item.id}><div className="authority-copy"><strong>{item.id}</strong><small>{item.family} · {item.effect}</small></div><span className={`authority-effective authority-${item.effective_authority}`}>{labels[item.effective_authority]}</span>{selector(item, item.id)}</div>)}</div></section></div></details> : null}
+      </>
     )
   }
 
@@ -1163,7 +1136,6 @@ function ControlPage({ health }: { health: Health | null }) {
 
         {renderAuthorityCard()}
 
-        {renderHostPolicyCard()}
 
         <MemoryObservabilityPanel />
 

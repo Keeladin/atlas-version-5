@@ -821,25 +821,13 @@ export function setOperationAuthority(operationId: string, authority: OperationA
     { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ authority }) }, 'Operation authority update')
 }
 
-// Host policy and governed-server configuration, edited in Control and applied by the host.
-export type HostPolicyVerdict = { ok: boolean; error: string | null; notes: string[]; rule: string | null; units?: Record<string, string[]>; groups?: string[]; systemd_tools?: string[]; shell_commands?: string[] }
-export type HostServersVerdict = { ok: boolean; error: string | null; servers: Array<{ id: string; family: string; transport: string; tools: string[] | null; configured: boolean; policies: string[] }> }
-export type HostPolicyStatus = {
-  policy: { path: string; text: string | null; exists: boolean; effective: HostPolicyVerdict | null }
-  servers: { path: string | null; text: string | null; exists: boolean; effective: HostServersVerdict | null }
-  pending: { requested_at: string; kinds: string[] } | null
-  last_result: { status: string; finished_at?: string; applied?: string[]; errors?: string[]; notes?: string[]; restart_required?: boolean; error?: string } | null
-  staging_dir: string
+export type HostFilesystemScopes = { read: string[]; write: string[]; delete: string[] }
+
+export function getHostFilesystemScopes(): Promise<HostFilesystemScopes> {
+  return notificationRequest('/api/control/host-scopes', undefined, 'Host filesystem scope load')
 }
 
-export function getHostPolicy(): Promise<HostPolicyStatus> {
-  return notificationRequest('/api/control/host', undefined, 'Host policy load')
-}
-
-export function validateHostPolicy(edit: { policy?: string; servers?: string }): Promise<{ policy: HostPolicyVerdict | null; servers: HostServersVerdict | null }> {
-  return notificationRequest('/api/control/host/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) }, 'Host policy validation')
-}
-
-export function applyHostPolicy(edit: { policy?: string; servers?: string }): Promise<HostPolicyStatus> {
-  return notificationRequest('/api/control/host', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) }, 'Host policy apply')
+export function setHostFilesystemScopes(scopes: HostFilesystemScopes): Promise<HostFilesystemScopes> {
+  return notificationRequest('/api/control/host-scopes',
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scopes) }, 'Host filesystem scope update')
 }

@@ -36,7 +36,7 @@ def test_status_reports_effective_files_with_rendered_envelope(tmp_path) -> None
     effective = status["policy"]["effective"]
     assert effective["ok"] and '"com.suse.gatekeeper.readlog": ["atlas-tools"]' in effective["rule"]
     assert effective["units"]["desktop-commander.service"] == ["start", "stop", "restart", "reset-failed"]
-    assert status["servers"]["effective"]["ok"] and {s["id"] for s in status["servers"]["effective"]["servers"]} == {"host.systemd", "host.shell"}
+    assert status["servers"]["effective"]["ok"] and {s["id"] for s in status["servers"]["effective"]["servers"]} == {"host.operations"}
     assert status["pending"] is None and status["last_result"] is None
 
 
@@ -79,27 +79,9 @@ async def _request(method: str, path: str, **kwargs):
 
 
 @pytest.mark.asyncio
-async def test_control_api_reads_validates_and_stages(tmp_path, monkeypatch) -> None:
-    import atlas.api.app as app_module
-
-    settings = _settings(tmp_path)
-    for name in ("state_dir", "host_policy_file", "mcp_servers_file", "host_policy_renderer"):
-        monkeypatch.setattr(app_module.settings, name, getattr(settings, name))
-    status = await _request("GET", "/api/control/host")
-    assert status.status_code == 200 and status.json()["policy"]["effective"]["ok"] is True
-    verdict = await _request("POST", "/api/control/host/validate", json={"policy": '[shell]\nallow_commands = ["bash"]\n'})
-    assert verdict.status_code == 200 and verdict.json()["policy"]["ok"] is False
-    rejected = await _request("PUT", "/api/control/host", json={"policy": '[shell]\nallow_commands = ["bash"]\n'})
-    assert rejected.status_code == 422 and "allow_risky_commands" in rejected.json()["detail"]
-    staged = await _request("PUT", "/api/control/host", json={"servers": EXAMPLE_SERVERS})
-    assert staged.status_code == 200 and staged.json()["pending"]["kinds"] == ["servers"]
-    assert (staging_dir(settings) / STAGED_SERVERS).is_file()
-
-
-@pytest.mark.asyncio
-async def test_host_policy_routes_sit_behind_the_owner_boundary(monkeypatch) -> None:
-    import atlas.api.app as app_module
-
-    monkeypatch.setattr(app_module.settings, "auth_required", True)
-    assert (await _request("GET", "/api/control/host")).status_code == 401
-    assert (await _request("PUT", "/api/control/host", json={"policy": "x"})).status_code == 401
+async def test_legacy_host_policy_control_routes_are_retired() -> None:
+    # Host authority now lives only in operation_authority + host-scopes.
+    # The old raw policy editor/staging API must not remain as a second control path.
+    assert (await _request("GET", "/api/control/host")).status_code == 404
+    assert (await _request("POST", "/api/control/host/validate", json={"policy": "x"})).status_code in {404, 405}
+    assert (await _request("PUT", "/api/control/host", json={"policy": "x"})).status_code in {404, 405}

@@ -112,26 +112,25 @@ def test_governed_mcp_servers_run_as_the_tools_identity_behind_group_sockets() -
     assert "EnvironmentFile=/etc/atlas-v5/config/atlas-mcp-shell.env" in shell_service
 
 
-def test_host_mcp_installer_pins_verifies_and_never_overwrites_owner_policy() -> None:
+def test_host_operations_installer_uses_structured_root_broker_without_polkit_policy() -> None:
     installer = (DEPLOYMENT / "install-host-mcp.sh").read_text()
-    assert 'if [[ ${EUID} -ne 0 ]]' in installer
-    assert "sha256sum -c" in installer and "SYSTEMD_MCP_SHA256=" in installer
-    assert "mcp-shell-server==${MCP_SHELL_SERVER_VERSION}" in installer and "MCP_SHELL_SERVER_VERSION=1.1.9" in installer
-    assert 'if [[ ! -f ${POLICY} ]]' in installer and 'if [[ ! -f ${MCP_SERVERS} ]]' in installer
-    assert "--check" in installer and "enable --now atlas-mcp-systemd.socket atlas-mcp-shell.socket" in installer
-    envelope = (DEPLOYMENT / "host-mcp" / "apply-host-envelope.sh").read_text()
-    assert "--print-groups" in envelope and "Refusing" not in installer  # groups come from the owner's policy
-    policy_xml = (DEPLOYMENT / "host-mcp" / "com.suse.gatekeeper.policy").read_text()
-    assert '<action id="com.suse.gatekeeper.readlog">' in policy_xml and "policykit.owner" not in policy_xml
-    assert "/usr/share/polkit-1/actions/com.suse.gatekeeper.policy" in installer
-    assert "--systemd-env-out" in envelope
-    assert "useradd --system --user-group --home-dir /nonexistent --shell /usr/sbin/nologin" in installer
-    assert 'setfacl -Rm "u:${TOOLS_USER}:rX" "${PYTHON_INSTALL_DIR}"' in installer
+    assert '[[ ${EUID} -eq 0 ]]' in installer
+    assert "atlas_host_operations_server.py" in installer
+    assert "enable --now atlas-host-operations.socket" in installer
+    assert "rm -f /etc/polkit-1/rules.d/50-atlas-tools.rules" in installer
+    assert "pkaction" not in installer and "systemd-mcp" not in installer and "mcp-shell-server" not in installer
+    assert "ATLAS_MCP_SERVERS_FILE" in installer and "ATLAS_HOST_POLICY_FILE" in installer and "unset_env" in installer
+    assert "host-scopes.json" in installer
+    broker = (DEPLOYMENT / "host-mcp" / "atlas_host_operations_server.py").read_text()
+    assert "shell=True" not in broker and "subprocess.run(argv" in broker
+    assert "filesystem_write" in broker and "packages_change" in broker and "host_shutdown" in broker
+    service = (DEPLOYMENT / "systemd" / "atlas-host-operations@.service").read_text()
+    assert "User=root" in service and "ExecStart=/usr/bin/python3 /opt/atlas-v5/bin/atlas_host_operations_server.py" in service
+    socket = (DEPLOYMENT / "systemd" / "atlas-host-operations.socket").read_text()
+    assert "SocketGroup=atlas-v5" in socket and "SocketMode=0660" in socket and "Accept=yes" in socket
     deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
     assert deploy.index("install-host-mcp.sh") > deploy.index("alembic upgrade head")
     assert deploy.index("install-host-mcp.sh") < deploy.index("systemctl start atlas-v5.service")
-    unit = (DEPLOYMENT / "systemd" / "atlas-v5.service").read_text()
-    assert "atlas-tools" not in unit and "ProtectHome=yes" in unit
 
 
 def test_proving_case_artifacts_are_safe_and_reproducible() -> None:
@@ -152,24 +151,18 @@ def test_proving_case_artifacts_are_safe_and_reproducible() -> None:
     assert ".disabled" in converter and "enable --now" in converter
 
 
-def test_control_edits_reach_the_host_only_through_the_root_apply_unit() -> None:
-    path_unit = (DEPLOYMENT / "systemd" / "atlas-host-policy.path").read_text()
-    apply_unit = (DEPLOYMENT / "systemd" / "atlas-host-policy-apply.service").read_text()
-    assert "PathChanged=/var/lib/atlas-v5/control/host/apply.request" in path_unit
-    assert "Unit=atlas-host-policy-apply.service" in path_unit
-    assert "Type=oneshot" in apply_unit and "ExecStart=/bin/bash /opt/atlas-v5/bin/apply-host-policy.sh" in apply_unit
-    assert "User=" not in apply_unit  # root by design: it edits /etc, polkit rules and groups
-    apply_script = (DEPLOYMENT / "host-mcp" / "apply-host-policy.sh").read_text()
-    assert apply_script.index("--check") < apply_script.index("install -o root -g atlas-v5 -m 0640 \"${STAGING}/host-policy.toml\"")
-    assert "parse_mcp_servers" in apply_script and "runuser -u \"${APP_USER}\"" in apply_script
-    assert "chown \"${APP_USER}:${APP_USER}\"" in apply_script and "previous host policy restored" in apply_script
-    envelope = (DEPLOYMENT / "host-mcp" / "apply-host-envelope.sh").read_text()
-    assert "gpasswd -d" in envelope and "systemctl restart" in envelope
+def test_host_authority_is_runtime_owned_and_broker_has_no_policy_engine() -> None:
     installer = (DEPLOYMENT / "install-host-mcp.sh").read_text()
-    assert "apply-host-envelope.sh" in installer and "enable --now atlas-host-policy.path" in installer
-    assert "install -d -o \"${APP_GROUP}\" -g \"${APP_GROUP}\" -m 0700 /var/lib/atlas-v5/control /var/lib/atlas-v5/control/host" in installer
+    assert "Authority is controlled in Atlas Control" in installer
+    assert "polkit is not part of this execution path" in installer
+    mcp = (DEPLOYMENT / "mcp-servers.example.toml").read_text()
+    assert 'id = "host.operations"' in mcp
+    assert "owner authority lives in control / operation_authority" in mcp.lower()
+    assert "authority_rules" not in mcp
+    broker = (DEPLOYMENT / "host-mcp" / "atlas_host_operations_server.py").read_text()
+    assert "operation_authority" not in broker and "approval_required" not in broker
     unit = (DEPLOYMENT / "systemd" / "atlas-v5.service").read_text()
-    assert "ReadWritePaths=/var/lib/atlas-v5" in unit  # the runtime can stage, never install
+    assert "ReadWritePaths=/var/lib/atlas-v5" in unit
 
 
 def test_observer_state_is_separate_and_owner_read_only() -> None:

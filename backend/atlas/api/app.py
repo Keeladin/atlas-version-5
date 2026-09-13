@@ -23,7 +23,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAIError
-from pydantic import BaseModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,7 +49,6 @@ from atlas.control import (
     save_google_connection,
     save_model_connection,
 )
-from atlas.control.host_policy import HostPolicyControl
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
 from atlas.memory.candidates import MemoryCandidateIntake
@@ -255,9 +254,10 @@ class OperationAuthoritySetting(BaseModel):
     authority: str | None = None
 
 
-class HostPolicyEdit(BaseModel):
-    policy: str | None = None
-    servers: str | None = None
+class HostFilesystemScopes(BaseModel):
+    read: list[str] = Field(default_factory=list)
+    write: list[str] = Field(default_factory=list)
+    delete: list[str] = Field(default_factory=list)
 
 
 class ModelCatalogRequest(BaseModel):
@@ -313,30 +313,39 @@ async def _operation_authority_items(session: AsyncSession) -> list[dict[str, An
     return items
 
 
-@app.get("/api/control/host")
-async def host_policy_status():
-    return await asyncio.to_thread(lambda: HostPolicyControl(settings).status())
-
-
-@app.post("/api/control/host/validate")
-async def host_policy_validate(edit: HostPolicyEdit):
-    control = HostPolicyControl(settings)
-    return {
-        "policy": control.validate_policy(edit.policy) if edit.policy is not None else None,
-        "servers": control.validate_servers(edit.servers) if edit.servers is not None else None,
-    }
-
-
-@app.put("/api/control/host")
-async def host_policy_apply(edit: HostPolicyEdit):
-    control = HostPolicyControl(settings)
+@app.get("/api/control/host-scopes")
+async def host_filesystem_scopes():
+    path = settings.state_dir / "control" / "host-scopes.json"
     try:
-        await asyncio.to_thread(control.stage, policy_text=edit.policy, servers_text=edit.servers)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stage the edit: {exc}") from exc
-    return await asyncio.to_thread(control.status)
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        raw = {"read": [], "write": [], "delete": []}
+    return {key: [str(item) for item in raw.get(key, []) if isinstance(item, str)] for key in ("read", "write", "delete")}
+
+
+@app.put("/api/control/host-scopes")
+async def set_host_filesystem_scopes(scopes: HostFilesystemScopes):
+    path = settings.state_dir / "control" / "host-scopes.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean: dict[str, list[str]] = {}
+    for key in ("read", "write", "delete"):
+        values: list[str] = []
+        for item in getattr(scopes, key):
+            raw = str(item).strip()
+            if not raw:
+                continue
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                raise HTTPException(status_code=422, detail=f"Filesystem {key} paths must be absolute: {raw}")
+            normalized = os.path.normpath(str(candidate))
+            if normalized not in values:
+                values.append(normalized)
+        clean[key] = values
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(clean, indent=2) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return clean
 
 
 @app.get("/api/control/operations")

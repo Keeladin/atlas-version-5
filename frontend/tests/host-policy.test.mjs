@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { applyHostPolicy, getHostPolicy, validateHostPolicy } from '../src/api.ts'
+import { getHostFilesystemScopes, setHostFilesystemScopes } from '../src/api.ts'
 
 async function capture(exercise, body) {
   const original = globalThis.fetch
@@ -12,14 +12,13 @@ async function capture(exercise, body) {
   try { return { result: await exercise(), get: () => request } } finally { globalThis.fetch = original }
 }
 
-test('host policy status, validation and apply use the control endpoints', async () => {
-  const status = await capture(() => getHostPolicy(), { policy: { exists: true }, pending: null })
-  assert.equal(status.get().url, '/api/control/host')
-  const verdict = await capture(() => validateHostPolicy({ policy: '[shell]' }), { policy: { ok: true }, servers: null })
-  assert.equal(verdict.get().url, '/api/control/host/validate')
-  assert.deepEqual(JSON.parse(verdict.get().options.body), { policy: '[shell]' })
-  const apply = await capture(() => applyHostPolicy({ servers: '[[servers]]' }), { pending: { kinds: ['servers'] } })
-  assert.equal(apply.get().url, '/api/control/host')
-  assert.equal(apply.get().options.method, 'PUT')
-  assert.deepEqual(JSON.parse(apply.get().options.body), { servers: '[[servers]]' })
+test('host filesystem scopes load and save through owner control', async () => {
+  const scopes = { read: ['/srv'], write: ['/srv/atlas'], delete: [] }
+  const loaded = await capture(() => getHostFilesystemScopes(), scopes)
+  assert.equal(loaded.get().url, '/api/control/host-scopes')
+  assert.deepEqual(loaded.result, scopes)
+  const saved = await capture(() => setHostFilesystemScopes(scopes), scopes)
+  assert.equal(saved.get().url, '/api/control/host-scopes')
+  assert.equal(saved.get().options.method, 'PUT')
+  assert.deepEqual(JSON.parse(saved.get().options.body), scopes)
 })

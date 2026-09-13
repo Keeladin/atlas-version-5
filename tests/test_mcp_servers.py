@@ -64,11 +64,12 @@ authority = "auto"
 def test_example_configuration_parses_and_pins_the_envelope_shape() -> None:
     servers = parse_mcp_servers(EXAMPLE.read_text())
     ids = {server.id for server in servers}
-    assert {"host.systemd", "host.shell"} <= ids
-    systemd = next(server for server in servers if server.id == "host.systemd")
-    assert systemd.transport == "socket" and "get_file" not in (systemd.tools or set())
-    policy = systemd.tool_policies["change_unit_state"]
-    assert policy.authority == AuthorityMode.AUTO and policy.rules[0].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert ids == {"host.operations"}
+    host = servers[0]
+    assert host.transport == "socket" and host.path == Path("/run/atlas-v5/mcp/host-operations.sock")
+    assert {"service_restart", "docker_start_restart", "filesystem_write", "packages_change", "host_shutdown"} <= set(host.tools or ())
+    assert host.tool_policies["service_restart"].authority == AuthorityMode.AUTO
+    assert host.tool_policies["service_stop"].authority == AuthorityMode.APPROVAL_REQUIRED
 
 
 @pytest.mark.parametrize("bad,message", [
