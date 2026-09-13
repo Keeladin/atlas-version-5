@@ -219,14 +219,17 @@ def apply_liveness(state: RdcState, alive: bool, config: RdcConfig, *, now: date
         state.process_alarm_open = True
         events.append(NotificationEvent(source=SOURCE, kind="process_missing", severity=Severity.WARNING.value,
             title=f"{config.title_prefix}{_label(state)} process is not running",
-            body=f"{config.body_prefix}No connector process has been seen since {missing_since.astimezone(ZoneInfo(config.timezone)).strftime('%H:%M')}. "
-                "Atlas does not restart it; check the unit on the host.",
+            body=f"{config.body_prefix}No connector process has been seen since {missing_since.astimezone(ZoneInfo(config.timezone)).strftime('%H:%M')}.",
             detail={"missing_since": _iso(missing_since), "open_url": "/"}, thread_key=thread))
     return state, events
 
 
-def journal_argv(unit: str, uid: int, cursor: str | None) -> list[str]:
-    argv = ["journalctl", "-o", "json", "-q", "--no-pager", f"_SYSTEMD_USER_UNIT={unit}", f"_UID={int(uid)}"]
+def journal_argv(unit: str, uid: int, cursor: str | None, *, scope: str = "user") -> list[str]:
+    argv = ["journalctl", "-o", "json", "-q", "--no-pager"]
+    if scope == "system":
+        argv.append(f"_SYSTEMD_UNIT={unit}")
+    else:
+        argv += [f"_SYSTEMD_USER_UNIT={unit}", f"_UID={int(uid)}"]
     if cursor:
         argv += ["--after-cursor", cursor]
     else:
@@ -258,10 +261,10 @@ def parse_journal_output(raw: bytes) -> tuple[list[JournalEntry], str | None]:
     return entries, cursor
 
 
-async def read_journal(unit: str, uid: int, cursor: str | None) -> tuple[list[JournalEntry], str | None]:
+async def read_journal(unit: str, uid: int, cursor: str | None, *, scope: str = "user") -> tuple[list[JournalEntry], str | None]:
     """Fixed-argv journal read. On a stale cursor, fall back once to the recent window."""
     for attempt_cursor in (cursor, None) if cursor else (None,):
-        process = await asyncio.create_subprocess_exec(*journal_argv(unit, uid, attempt_cursor),
+        process = await asyncio.create_subprocess_exec(*journal_argv(unit, uid, attempt_cursor, scope=scope),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, stdin=asyncio.subprocess.DEVNULL)
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=JOURNAL_TIMEOUT_SECONDS)
@@ -316,7 +319,8 @@ async def rdc_monitor_once(settings: Settings, factory, *, journal_reader=None, 
             session.add(row)
             await session.flush()
         state = RdcState.from_json(row.state)
-        reader = journal_reader or (lambda cursor: read_journal(settings.rdc_monitor_unit, settings.rdc_monitor_uid, cursor))
+        reader = journal_reader or (lambda cursor: read_journal(settings.rdc_monitor_unit, settings.rdc_monitor_uid, cursor,
+            scope=settings.rdc_monitor_scope))
         entries, cursor = await reader(row.cursor)
         state, events = apply_journal(state, entries, config, now=now)
         alive = liveness() if liveness is not None else process_alive(settings.rdc_monitor_uid)

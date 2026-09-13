@@ -1,0 +1,61 @@
+diff -ruN a/dist/remote-device/device.js b/dist/remote-device/device.js
+--- a/dist/remote-device/device.js	2026-09-13 11:50:21.957690130 +0200
++++ b/dist/remote-device/device.js	2026-09-13 11:50:21.959010948 +0200
+@@ -21,6 +21,11 @@
+         this.seenCallIds = new Set();
+         this.baseServerUrl = process.env.MCP_SERVER_URL || 'https://mcp.desktopcommander.app';
+         this.remoteChannel = new RemoteChannel();
++        // Atlas patch: GoTrue rotates the refresh token on every refresh; persist each rotation so a
++        // restart resumes the session instead of replaying a consumed token ("Already Used").
++        this.remoteChannel.onSessionRefreshed = () => {
++            this.savePersistedConfig().catch(() => { });
++        };
+         this.deviceId = undefined;
+         this.isShuttingDown = false;
+         this.configPath = path.join(os.homedir(), '.desktop-commander-device', 'device.json');
+@@ -332,6 +337,17 @@
+             return;
+         }
+         this.isShuttingDown = true;
++        // Atlas patch: persist the live session before going offline. Only when a refresh token exists,
++        // because savePersistedConfig() writes session: null otherwise and a failed startup also shuts down.
++        try {
++            const current = await this.remoteChannel.getSession();
++            if (current?.data?.session?.refresh_token) {
++                await this.savePersistedConfig();
++            }
++        }
++        catch {
++            // best effort; the periodic save on refresh is the primary path
++        }
+         console.log('\n🛑 Shutting down device...');
+         console.debug('[DEBUG] Shutdown initiated for device:', this.deviceId);
+         try {
+diff -ruN a/dist/remote-device/remote-channel.js b/dist/remote-device/remote-channel.js
+--- a/dist/remote-device/remote-channel.js	2026-09-13 11:50:21.957807781 +0200
++++ b/dist/remote-device/remote-channel.js	2026-09-13 11:50:21.958801553 +0200
+@@ -116,6 +116,8 @@
+         this.statusWriteChain = Promise.resolve();
+         /** Tokens from the last setSession / TOKEN_REFRESHED, for setOffline(). */
+         this.lastKnownSession = null;
++        // Atlas patch: called whenever the refresh token rotates so the device can persist it.
++        this.onSessionRefreshed = null;
+         /** Set by unsubscribe(): suppresses status/heartbeat writes so they can't
+          * land after setOffline()'s durable write. */
+         this.shuttingDown = false;
+@@ -242,6 +244,7 @@
+                         access_token: newSession.access_token,
+                         refresh_token: newSession.refresh_token ?? this.lastKnownSession?.refresh_token ?? null,
+                     };
++                    void this.onSessionRefreshed?.();
+                 }
+                 else if (event === 'SIGNED_OUT') {
+                     void this.handleSignedOut();
+@@ -287,6 +290,7 @@
+                                     access_token: renewed.access_token,
+                                     refresh_token: renewed.refresh_token ?? cached.refresh_token,
+                                 };
++                                void this.onSessionRefreshed?.();
+                             }
+                             console.log('   - ✅ Remote session restored after a transient sign-out');
+                             await captureRemote('remote_channel_signed_out_recovered', {});

@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply host policy edits staged from Atlas Control
+Documentation=file:///opt/atlas-v5/app/docs/27-host-operations.md
+
+[Path]
+PathChanged=/var/lib/atlas-v5/control/host/apply.request
+Unit=atlas-host-policy-apply.service
+MakeDirectory=no
+
+[Install]
+WantedBy=multi-user.target

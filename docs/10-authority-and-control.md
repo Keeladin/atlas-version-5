@@ -44,6 +44,8 @@ It may expose:
 - memory inspection/correction/forgetting and retention settings;
 - schedules and automation status;
 - owner notification inbox, push devices, and read-only host monitors (`26-notifications.md`);
+- governed MCP servers and the host policy that bounds them (`27-host-operations.md`);
+- per-operation authority (auto, ask, forbidden) set by the owner, overriding every default;
 - workspace/storage information;
 - runtime/service health, logs, errors, latency, tokens, and cost.
 

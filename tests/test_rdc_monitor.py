@@ -101,7 +101,7 @@ def test_liveness_grace_then_warning_then_resolution() -> None:
     state, events = apply_liveness(state, False, CONFIG, now=NOW + timedelta(seconds=121))
     assert [event.kind for event in events] == ["process_missing"]
     assert events[0].severity == "warning" and events[0].thread_key == "rdc.process"
-    assert "does not restart" in events[0].body
+    assert "No connector process has been seen" in events[0].body
     state, events = apply_liveness(state, False, CONFIG, now=NOW + timedelta(seconds=300))
     assert events == []
     state, events = apply_liveness(state, True, CONFIG, now=NOW + timedelta(seconds=400))
@@ -115,6 +115,8 @@ def test_journal_argv_is_fixed_and_cursor_conditional() -> None:
     assert without[:7] == ["journalctl", "-o", "json", "-q", "--no-pager", "_SYSTEMD_USER_UNIT=desktop-commander.service", "_UID=1000"]
     assert "--since" in without and "--after-cursor" not in without
     assert with_cursor[-2:] == ["--after-cursor", "s=abc;i=1"] and "--since" not in with_cursor
+    system = journal_argv("desktop-commander.service", 1000, None, scope="system")
+    assert "_SYSTEMD_UNIT=desktop-commander.service" in system and not any(item.startswith("_UID=") for item in system)
 
 
 def test_parse_journal_output_keeps_only_message_timestamp_and_cursor() -> None:

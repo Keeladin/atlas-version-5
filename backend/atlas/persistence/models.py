@@ -817,6 +817,7 @@ class NotificationRow(Base):
     push_quiet: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     push_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     push_result: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+    wake_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class PushSubscriptionRow(Base):
@@ -831,6 +832,16 @@ class PushSubscriptionRow(Base):
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class OperationAuthorityRow(Base):
+    """The owner's decision for one operation: auto, approval_required or forbidden. Absent means default."""
+
+    __tablename__ = "operation_authority"
+
+    operation_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    authority: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class HostMonitorStateRow(Base):

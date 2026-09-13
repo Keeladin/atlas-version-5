@@ -160,6 +160,12 @@ fi
 if ! grep -q '^ATLAS_RDC_MONITOR_POLL_SECONDS=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_RDC_MONITOR_POLL_SECONDS=30' >> /etc/atlas-v5/config/runtime.env
 fi
+if ! grep -q '^ATLAS_RDC_MONITOR_SCOPE=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_RDC_MONITOR_SCOPE=user' >> /etc/atlas-v5/config/runtime.env
+fi
+if ! grep -q '^ATLAS_HOST_MONITOR_POLL_SECONDS=' /etc/atlas-v5/config/runtime.env; then
+  echo 'ATLAS_HOST_MONITOR_POLL_SECONDS=30' >> /etc/atlas-v5/config/runtime.env
+fi
 if ! grep -q '^ATLAS_AUTH_REQUIRED=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_AUTH_REQUIRED=true' >> /etc/atlas-v5/config/runtime.env
 fi
@@ -247,6 +253,9 @@ runuser -u atlas-v5 -- /bin/bash -c '
   cd /opt/atlas-v5/app
   /opt/atlas-v5/venv/bin/alembic upgrade head
 '
+
+# Governed host MCP servers (atlas-tools identity, polkit envelope, socket activation).
+bash "${ROOT_DIR}/deployment/install-host-mcp.sh"
 
 install -o root -g root -m 0644 \
   "${ROOT_DIR}/deployment/systemd/atlas-v5.service" \

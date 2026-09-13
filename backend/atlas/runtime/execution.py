@@ -15,7 +15,7 @@ def action_status_for_result(result) -> ActionStatus:
     phase = result.output.get('failure_phase') if isinstance(result.output, dict) else None
     if result.status == 'succeeded':
         return ActionStatus.SUCCEEDED
-    if result.status in {'forbidden', 'unavailable'} or phase == 'before_dispatch':
+    if result.status in {'forbidden', 'unavailable'} or phase in {'before_dispatch', 'completed'}:
         return ActionStatus.FAILED
     return ActionStatus.UNCERTAIN
 
@@ -103,8 +103,14 @@ class RunExecutor:
                 await session.commit()
                 return proposal_id
 
+        authority = None
+        if descriptor is not None and validation_error is None:
+            try:
+                authority = await self.runtime.resolve_authority(operation, args)
+            except Exception:  # noqa: BLE001 - runtime.call reports the failure as a tool result
+                authority = None
         automatic_effect = (descriptor is not None and descriptor.effect != EffectKind.READ
-            and descriptor.authority == AuthorityMode.AUTO and validation_error is None)
+            and authority == AuthorityMode.AUTO and validation_error is None)
         if automatic_effect:
             async with self.factory() as session:
                 await require_live_run(session, self.run_id)
@@ -116,7 +122,7 @@ class RunExecutor:
         context_token = current_transcript_id.set(self.transcript_id)
         run_token = current_run_id.set(self.run_id)
         try:
-            result = await self.runtime.call(operation, args, proposal_sink=propose)
+            result = await self.runtime.call(operation, args, proposal_sink=propose, authority=authority)
         finally:
             current_run_id.reset(run_token)
             current_transcript_id.reset(context_token)

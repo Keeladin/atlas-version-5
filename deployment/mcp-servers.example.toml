@@ -1,0 +1,68 @@
+# Governed MCP servers for Atlas V5.
+#
+# Install as /etc/atlas-v5/config/mcp-servers.toml (root:atlas-v5 0640) and point
+# ATLAS_MCP_SERVERS_FILE at it. Each server becomes one capability (disabled until the
+# owner enables it in Control). Every tool becomes one operation named <id>.<tool>.
+#
+# Effect and authority come from MCP annotations by default (readOnlyHint → read/auto,
+# otherwise execute; destructiveHint absent or true → approval_required, false → auto).
+# Anything set here wins over the server's own hints, and `authority_rules` can refine
+# authority per call from the arguments. Atlas's ledger, approval flow and capability
+# enablement stay the safety guarantee; the identity the server runs as and polkit are
+# the OS envelope (see deployment/host-mcp/).
+
+[[servers]]
+id = "host.systemd"
+family = "Host services"
+description = "Inspect and change the state of the systemd units the owner listed in the host policy. Unit and verb authority are enforced by polkit for the atlas-tools identity; the model can only see and act on what that policy allows."
+transport = "socket"
+path = "/run/atlas-v5/mcp/systemd.sock"
+trust = "external"
+timeout_seconds = 60
+# openSUSE/systemd-mcp tool names. get_file and get_man_page are never listed.
+tools = ["list_loaded_units", "list_unit_files", "change_unit_state", "check_restart_reload", "list_log"]
+
+[servers.defaults]
+read_only_authority = "auto"
+destructive_authority = "approval_required"
+non_destructive_authority = "auto"
+
+[servers.tool.list_loaded_units]
+effect = "read"
+authority = "auto"
+
+[servers.tool.list_unit_files]
+effect = "read"
+authority = "auto"
+
+[servers.tool.check_restart_reload]
+effect = "read"
+authority = "auto"
+
+[servers.tool.list_log]
+effect = "read"
+authority = "auto"
+
+[servers.tool.change_unit_state]
+effect = "execute"
+authority = "auto"
+# systemd-mcp arguments: name (unit) and action. Restarting and starting are bounded
+# recoveries; stopping, killing and unit-file changes wait for the owner. Adjust to taste;
+# polkit still limits units and verbs regardless of what is written here.
+authority_rules = [
+  { when = { action = ["stop", "stop_kill", "restart_force", "enable", "enable_force", "disable"] }, authority = "approval_required" },
+]
+
+[[servers]]
+id = "host.shell"
+family = "Host diagnostics"
+description = "Read-only host diagnostics (journalctl, systemctl status, ps, df, free, ss, ls, stat, head, tail, grep) through an argv-only shell server running as the unprivileged atlas-tools identity. No shell interpretation, no writes, no secrets."
+transport = "socket"
+path = "/run/atlas-v5/mcp/shell.sock"
+trust = "external"
+timeout_seconds = 60
+tools = ["shell_execute"]
+
+[servers.tool.shell_execute]
+effect = "read"
+authority = "auto"

@@ -107,6 +107,9 @@ def resolve_thread_sync(session: Session, thread_key: str, *, now: datetime | No
     return len(rows)
 
 
+project_notification = _project
+
+
 class NotificationService:
     def __init__(self, session: AsyncSession, *, repeat_minutes: int = 60) -> None:
         self.session = session

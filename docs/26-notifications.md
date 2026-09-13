@@ -64,6 +64,8 @@ PWA Web Push with VAPID. The key is a runtime secret (`ATLAS_PUSH_VAPID_PRIVATE_
 
 Journal access is granted by adding the runtime user to the `systemd-journal` group (journal files are `root:systemd-journal 0640`); the unit keeps `ProtectHome=yes`.
 
+The monitor stays read-only. Acting on what it reports is the job of event-driven schedules through governed MCP servers under owner policy (`27-host-operations.md`); the generic unit health monitor (`runtime.units`) covers any listed unit the same way.
+
 Acceptance without provoking the defect: `python -m atlas.monitors.rdc --replay tests/fixtures/rdc_journal_auth_flow.jsonl` feeds recorded lines (timestamps rebased to now, code replaced) through the real parser, ledger and outbox under `rdc.replay.*` threads with a `[replay test]` prefix. A deliberate `systemctl --user restart desktop-commander.service` is a destructive test of the known upstream defect and is never part of normal validation.
 
-Upstream: the rotated refresh token is evidently not written back to `~/.desktop-commander-device/device.json` after a successful authorization; fixing that in Desktop Commander would make the reauthorization path rare. The monitor stays useful for genuine outages either way.
+Upstream: the rotated refresh token is not written back to `~/.desktop-commander-device/device.json` after a successful authorization (confirmed in `dist/remote-device/device.js`, which saves once at startup, and `remote-channel.js`, which rotates every 45 minutes in memory). `deployment/host/desktop-commander/` carries a local patch and the upstream issue is drafted in `20-implementation-notes.md`. The monitor stays useful for genuine outages either way.

@@ -1,0 +1,17 @@
+[Unit]
+Description=Atlas governed MCP server: systemd units (socket)
+Documentation=file:///opt/atlas-v5/app/docs/27-host-operations.md
+
+[Socket]
+ListenStream=/run/atlas-v5/mcp/systemd.sock
+RuntimeDirectory=atlas-v5/mcp
+RuntimeDirectoryPreserve=yes
+SocketUser=root
+SocketGroup=atlas-v5
+SocketMode=0660
+Accept=yes
+MaxConnections=4
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

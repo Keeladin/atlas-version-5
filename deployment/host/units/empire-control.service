@@ -1,0 +1,18 @@
+[Unit]
+Description=Empire Control Dashboard (owner app; a system unit so Atlas host policy can govern it)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jaco
+Group=jaco
+WorkingDirectory=/home/jaco/wow/empire-control
+EnvironmentFile=/home/jaco/wow/empire-control/.env
+ExecStart=/usr/bin/python3 /home/jaco/wow/empire-control/app.py
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/jaco
+
+[Install]
+WantedBy=multi-user.target

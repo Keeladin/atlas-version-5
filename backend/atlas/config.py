@@ -73,11 +73,18 @@ class Settings(BaseSettings):
     push_repeat_minutes: int = 60
     push_delivery_poll_seconds: int = 5
     notifications_model_emit_per_hour: int = 20
+    notifications_model_severities: str = "info,warning"
     rdc_monitor_enabled: bool = False
     rdc_monitor_unit: str = "desktop-commander.service"
     rdc_monitor_uid: int = 1000
     rdc_monitor_poll_seconds: int = 30
     rdc_monitor_process_grace_seconds: int = 120
+    rdc_monitor_scope: str = "user"
+    mcp_servers_file: Path | None = None
+    host_policy_file: Path = _DEV_CONFIG / "host-policy.toml"
+    host_policy_renderer: Path = Path("/opt/atlas-v5/bin/atlas_host_policy.py")
+    host_watch_units: str = ""
+    host_monitor_poll_seconds: int = 30
 
     @property
     def database_dsn(self) -> str:
@@ -109,6 +116,14 @@ class Settings(BaseSettings):
             and self.github_token_file is not None
             and self.github_token_file.is_file()
         )
+
+    @property
+    def notifications_model_severity_list(self) -> list[str]:
+        return [item.strip() for item in self.notifications_model_severities.split(",") if item.strip()]
+
+    @property
+    def host_watch_unit_list(self) -> list[str]:
+        return [item.strip() for item in self.host_watch_units.split(",") if item.strip()]
 
     @property
     def push_configured(self) -> bool:

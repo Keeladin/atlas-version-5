@@ -1,0 +1,26 @@
+[Unit]
+Description=Desktop Commander Remote Connector (owner session; a system unit so Atlas host policy can govern it)
+After=network-online.target
+Wants=network-online.target
+# An unattended re-authorization failure exits the connector after the 15 minute device code;
+# without a start limit systemd would request a fresh code every ~17 minutes indefinitely.
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=jaco
+Group=jaco
+ExecStart=/home/jaco/.local/node/bin/desktop-commander remote
+Restart=always
+RestartSec=5
+WorkingDirectory=/home/jaco
+Environment=HOME=/home/jaco
+Environment=USER=jaco
+Environment=LOGNAME=jaco
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+Environment=PATH=/home/jaco/.local/node/bin:/home/jaco/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

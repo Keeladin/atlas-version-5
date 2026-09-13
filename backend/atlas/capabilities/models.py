@@ -29,6 +29,18 @@ class OperationDescriptor(BaseModel):
     trust: str = "internal"
 
 
+class CapabilityFailure(RuntimeError):
+    """An executor's definite failure: the outcome is known, unlike an ambiguous transport error.
+
+    phase "completed": the operation ran and reported failure; "before_dispatch": nothing was started.
+    """
+
+    def __init__(self, message: str, *, phase: str = "completed", output: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.phase = phase if phase in {"completed", "before_dispatch"} else "completed"
+        self.output = dict(output or {})
+
+
 class CapabilityCallResult(BaseModel):
     status: str
     operation_id: str

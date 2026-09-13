@@ -5,17 +5,26 @@ from typing import Any
 from jsonschema import FormatChecker
 from jsonschema.validators import validator_for
 
-from .models import AuthorityMode, CapabilityCallResult, OperationDescriptor
+from .models import (
+    AuthorityMode,
+    CapabilityCallResult,
+    CapabilityFailure,
+    OperationDescriptor,
+)
 
 Executor = Callable[[dict[str, Any]], Any]
 ProposalSink = Callable[[OperationDescriptor, dict[str, Any]], Any]
+AuthorityResolver = Callable[[dict[str, Any]], Any]  # returns AuthorityMode, or an awaitable of one
 
 
 class CapabilityRuntime:
     def __init__(self, operations: list[OperationDescriptor] | None = None) -> None:
         self._operations: dict[str, OperationDescriptor] = {item.id: item for item in operations or []}
         self._executors: dict[str, Executor] = {}
+        self._authority_resolvers: dict[str, AuthorityResolver] = {}
         self.policy_reader = None
+        self.authority_reader = None  # async () -> {operation_id: authority}; the owner's per-operation decisions
+        self.external_servers: list[dict[str, Any]] = []
 
     async def enabled_capabilities(self) -> set[str]:
         if self.policy_reader is None:
@@ -26,22 +35,73 @@ class CapabilityRuntime:
         enabled = await self.enabled_capabilities()
         return [item for item in self.compact_index() if item["capability_id"] in enabled]
 
+    async def authority_overrides(self) -> dict[str, AuthorityMode]:
+        if self.authority_reader is None:
+            return {}
+        raw = await self.authority_reader()
+        overrides: dict[str, AuthorityMode] = {}
+        for operation_id, value in (raw or {}).items():
+            try:
+                overrides[str(operation_id)] = AuthorityMode(str(value))
+            except ValueError:
+                continue
+        return overrides
+
     async def search_cards_current(self, query: str, limit: int = 8):
         enabled = await self.enabled_capabilities()
-        return self.search_cards(query, limit, enabled=enabled)
+        overrides = await self.authority_overrides()
+        cards = self.search_cards(query, limit, enabled=enabled)
+        for card in cards:
+            override = overrides.get(str(card["id"]))
+            if override is not None:
+                card["authority"] = override.value
+        return cards
 
     async def descriptor_current(self, operation_id: str):
         item = self.descriptor(operation_id)
-        return item if item is not None and item.capability_id in await self.enabled_capabilities() else None
+        if item is None or item.capability_id not in await self.enabled_capabilities():
+            return None
+        override = (await self.authority_overrides()).get(operation_id)
+        return item.model_copy(update={"authority": override}) if override is not None else item
 
-    def register(self, descriptor: OperationDescriptor, executor: Executor) -> None:
+    def register(self, descriptor: OperationDescriptor, executor: Executor, *,
+            authority_resolver: AuthorityResolver | None = None) -> None:
         self._operations[descriptor.id] = descriptor
         self._executors[descriptor.id] = executor
+        self._set_resolver(descriptor.id, authority_resolver)
 
-    def register_executor(self, operation_id: str, executor: Executor) -> None:
+    def register_executor(self, operation_id: str, executor: Executor, *,
+            authority_resolver: AuthorityResolver | None = None) -> None:
         if operation_id not in self._operations:
             raise KeyError(f"Operation is not registered in the Environment Registry: {operation_id}")
         self._executors[operation_id] = executor
+        self._set_resolver(operation_id, authority_resolver)
+
+    def has_authority_resolver(self, operation_id: str) -> bool:
+        return operation_id in self._authority_resolvers
+
+    def _set_resolver(self, operation_id: str, resolver: AuthorityResolver | None) -> None:
+        if resolver is None:
+            self._authority_resolvers.pop(operation_id, None)
+        else:
+            self._authority_resolvers[operation_id] = resolver
+
+    async def resolve_authority(self, operation_id: str, arguments: dict[str, Any]) -> AuthorityMode:
+        """The owner's per-operation decision wins outright; otherwise the descriptor's default,
+        refined per call by a configured resolver (which never relaxes a static FORBIDDEN)."""
+        descriptor = self._operations.get(operation_id)
+        if descriptor is None:
+            raise KeyError(operation_id)
+        override = (await self.authority_overrides()).get(operation_id)
+        if override is not None:
+            return override
+        resolver = self._authority_resolvers.get(operation_id)
+        if resolver is None or descriptor.authority == AuthorityMode.FORBIDDEN:
+            return descriptor.authority
+        resolved = resolver(arguments)
+        if hasattr(resolved, "__await__"):
+            resolved = await resolved
+        return AuthorityMode(resolved)
 
     def operations(self) -> list[OperationDescriptor]:
         return sorted(self._operations.values(), key=lambda item: item.id)
@@ -130,6 +190,7 @@ class CapabilityRuntime:
         *,
         proposal_sink: ProposalSink | None = None,
         approval_granted: bool = False,
+        authority: AuthorityMode | None = None,
     ) -> CapabilityCallResult:
         descriptor = self._operations.get(operation_id)
         executor = self._executors.get(operation_id)
@@ -138,13 +199,22 @@ class CapabilityRuntime:
         if descriptor.capability_id not in await self.enabled_capabilities():
             return CapabilityCallResult(status="forbidden", operation_id=operation_id,
                 output={"failure_phase": "before_dispatch"}, message="The owner has not enabled this capability, or its current permission could not be verified.")
-        if descriptor.authority == AuthorityMode.FORBIDDEN:
+        if descriptor.authority == AuthorityMode.FORBIDDEN and authority is None and (
+                await self.authority_overrides()).get(operation_id) is None:
             return CapabilityCallResult(status="forbidden", operation_id=operation_id, message="Operation is outside current Atlas authority.")
         validation_error = self.validate_arguments(operation_id, arguments)
         if validation_error:
             return CapabilityCallResult(status="failed", operation_id=operation_id,
                 output={"failure_phase": "before_dispatch"}, message=validation_error)
-        if descriptor.authority == AuthorityMode.APPROVAL_REQUIRED and not approval_granted:
+        if authority is None:
+            try:
+                authority = await self.resolve_authority(operation_id, arguments)
+            except Exception as exc:  # noqa: BLE001 - an unresolvable authority fails closed before dispatch
+                return CapabilityCallResult(status="failed", operation_id=operation_id,
+                    output={"failure_phase": "before_dispatch"}, message=f"Authority could not be resolved: {exc}")
+        if authority == AuthorityMode.FORBIDDEN:
+            return CapabilityCallResult(status="forbidden", operation_id=operation_id, message="Operation is outside current Atlas authority.")
+        if authority == AuthorityMode.APPROVAL_REQUIRED and not approval_granted:
             if proposal_sink is None:
                 return CapabilityCallResult(status="approval_required", operation_id=operation_id, message="Owner approval is required before execution.")
             proposal_id = await proposal_sink(descriptor, arguments)
@@ -153,6 +223,9 @@ class CapabilityRuntime:
             output = await asyncio.to_thread(executor, arguments)
             if hasattr(output, "__await__"):
                 output = await output
+        except CapabilityFailure as exc:
+            return CapabilityCallResult(status="failed", operation_id=operation_id,
+                output={**exc.output, "failure_phase": exc.phase}, message=str(exc))
         except Exception as exc:  # noqa: BLE001 - capability boundary must return tool failures
             return CapabilityCallResult(
                 status="failed", operation_id=operation_id,

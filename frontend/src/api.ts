@@ -492,7 +492,7 @@ export type ScheduledTask = {
   id: string
   title: string
   prompt: string
-  schedule_kind: 'once' | 'interval' | 'cron'
+  schedule_kind: 'once' | 'interval' | 'cron' | 'event'
   schedule_value: string
   timezone: string
   enabled: boolean
@@ -792,4 +792,54 @@ export type PushTestResult = { push_status: string | null; results: Record<strin
 
 export function sendTestPush(): Promise<PushTestResult> {
   return notificationRequest('/api/push/test', { method: 'POST' }, 'Test notification')
+}
+
+// Per-operation authority: the owner's decision overrides every default.
+export type OperationAuthorityValue = 'auto' | 'approval_required' | 'forbidden'
+
+export type OperationAuthority = {
+  id: string
+  capability_id: string
+  family: string
+  description: string
+  effect: string
+  trust: string
+  default_authority: OperationAuthorityValue
+  override: OperationAuthorityValue | null
+  effective_authority: OperationAuthorityValue
+  argument_rules: boolean
+  enabled: boolean
+}
+
+export async function getOperationAuthorities(): Promise<OperationAuthority[]> {
+  const body = await notificationRequest<{ items: OperationAuthority[] }>('/api/control/operations', undefined, 'Operation authority load')
+  return body.items ?? []
+}
+
+export function setOperationAuthority(operationId: string, authority: OperationAuthorityValue | null): Promise<OperationAuthority> {
+  return notificationRequest(`/api/control/operations/${encodeURIComponent(operationId)}`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ authority }) }, 'Operation authority update')
+}
+
+// Host policy and governed-server configuration, edited in Control and applied by the host.
+export type HostPolicyVerdict = { ok: boolean; error: string | null; notes: string[]; rule: string | null; units?: Record<string, string[]>; groups?: string[]; systemd_tools?: string[]; shell_commands?: string[] }
+export type HostServersVerdict = { ok: boolean; error: string | null; servers: Array<{ id: string; family: string; transport: string; tools: string[] | null; configured: boolean; policies: string[] }> }
+export type HostPolicyStatus = {
+  policy: { path: string; text: string | null; exists: boolean; effective: HostPolicyVerdict | null }
+  servers: { path: string | null; text: string | null; exists: boolean; effective: HostServersVerdict | null }
+  pending: { requested_at: string; kinds: string[] } | null
+  last_result: { status: string; finished_at?: string; applied?: string[]; errors?: string[]; notes?: string[]; restart_required?: boolean; error?: string } | null
+  staging_dir: string
+}
+
+export function getHostPolicy(): Promise<HostPolicyStatus> {
+  return notificationRequest('/api/control/host', undefined, 'Host policy load')
+}
+
+export function validateHostPolicy(edit: { policy?: string; servers?: string }): Promise<{ policy: HostPolicyVerdict | null; servers: HostServersVerdict | null }> {
+  return notificationRequest('/api/control/host/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) }, 'Host policy validation')
+}
+
+export function applyHostPolicy(edit: { policy?: string; servers?: string }): Promise<HostPolicyStatus> {
+  return notificationRequest('/api/control/host', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) }, 'Host policy apply')
 }

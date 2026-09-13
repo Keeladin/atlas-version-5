@@ -5,11 +5,12 @@ from atlas.capabilities import AuthorityMode, EffectKind, OperationDescriptor
 from atlas.config import Settings
 from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.integrations.mcp_servers import register_mcp_servers
 from atlas.memory import MemoryService
 from atlas.memory.embeddings import OpenAIEmbeddingClient
 from atlas.notifications import NotificationEvent, NotificationService
-from atlas.notifications.models import MODEL_SEVERITIES
-from atlas.registry.repository import RegistryRepository
+from atlas.notifications.models import SEVERITIES
+from atlas.registry.repository import OperationAuthorityRepository, RegistryRepository
 from atlas.registry.service import EnvironmentRegistry
 from atlas.runtime.invocation import current_run_id
 from atlas.runtime.observations import EvidenceStore
@@ -70,6 +71,14 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
             return set()  # Failure to verify owner permission denies all capability dispatch.
     runtime.policy_reader = policy_reader
 
+    async def authority_reader():
+        try:
+            async with factory() as session:
+                return await OperationAuthorityRepository(session).overrides()
+        except SQLAlchemyError:
+            return {}  # policy_reader already denies every dispatch when the database is unreachable
+    runtime.authority_reader = authority_reader
+
     async def evidence_call(method, arguments):
         async with factory() as session:
             return await getattr(EvidenceStore(session, ArtifactStore(settings.artifact_dir)), method)(**arguments)
@@ -99,8 +108,9 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
 
     async def notifications_emit(arguments):
         severity = str(arguments.get("severity") or "info")
-        if severity not in MODEL_SEVERITIES:
-            raise ValueError("Model notifications may only be info or warning")
+        allowed = [item for item in settings.notifications_model_severity_list if item in SEVERITIES] or ["info"]
+        if severity not in allowed:
+            raise ValueError(f"Model notifications may only use the owner-allowed severities: {', '.join(allowed)}")
         async with factory() as session:
             service = NotificationService(session, repeat_minutes=settings.push_repeat_minutes)
             if not await service.model_emit_allowed(settings.notifications_model_emit_per_hour):
@@ -156,6 +166,7 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         "storage.projects.delete",
         lambda arguments: changes.delete_file(str(arguments.get("path") or ""), str(arguments.get("expected_sha256") or "")),
     )
+    runtime.external_servers = register_mcp_servers(settings, registry, runtime)
     if settings.github_configured and settings.github_token_file is not None:
         github = GitHubMCPService(
             settings.github_mcp_command,

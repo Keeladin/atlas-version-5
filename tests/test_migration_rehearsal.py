@@ -151,7 +151,7 @@ def test_rehearsal_restores_pre_25a13_snapshot_and_verifies_day_one_state(tmp_pa
         assert report["status"] == "passed"
         assert report["runtime_started"] is False
         assert report["alembic"]["before"] == "25a12"
-        assert report["alembic"]["after"] == "25a14"
+        assert report["alembic"]["after"] == "25a16"
         assert report["alembic"]["upgrade_returncode"] == 0
         assert report["alembic"]["check_returncode"] == 0
         assert report["counts_before"]["durable_memories_by_status"] == {"active": 2, "retired": 1}
@@ -206,7 +206,7 @@ def test_rehearsal_downgrade_branch_reports_refusal_after_review_resolution(tmp_
         assert branch["review_resolved_for_refusal_check"] == 1
         assert branch["refused_downgrade_returncode"] != 0
         assert branch["refused_downgrade_message_present"] is True
-        assert branch["version_after_refusal"] == "25a14"
+        assert branch["version_after_refusal"] == "25a16"
         assert target.artifact_dir.exists()
         with pytest.raises(rehearsal.RehearsalRefused, match="second disposable database"):
             rehearsal.rehearse(

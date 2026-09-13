@@ -4,8 +4,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
 import { MemoryObservabilityPanel } from './MemoryObservability'
+import { scheduleSummary } from './schedules'
 import { approvalFields } from './approval'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type OwnerNotification, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostPolicy, validateHostPolicy, applyHostPolicy, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostPolicyStatus, type HostPolicyVerdict, type HostServersVerdict, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -758,7 +759,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             <div className="activity-divider" />
             <section className="activity-section scheduled-section">
               <div className="activity-heading-row"><span className="activity-heading">Scheduled tasks</span><span className="activity-count">{scheduledTasks.filter((task) => task.enabled).length}</span></div>
-              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{task.enabled ? new Date(task.next_run_at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Paused'} · {task.schedule_kind}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
+              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{scheduleSummary(task)}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
             </section>
           </aside>
         </main>
@@ -827,6 +828,15 @@ function OwnerLogin({ status, onAuthenticated }: { status: AuthStatus; onAuthent
 
 function ControlPage({ health }: { health: Health | null }) {
   const [capabilities, setCapabilities] = useState<OwnerCapability[]>([])
+  const [operations, setOperations] = useState<OperationAuthority[]>([])
+  const [hostStatus, setHostStatus] = useState<HostPolicyStatus | null>(null)
+  const [policyDraft, setPolicyDraft] = useState<string | null>(null)
+  const [serversDraft, setServersDraft] = useState<string | null>(null)
+  const [hostVerdict, setHostVerdict] = useState<{ policy: HostPolicyVerdict | null; servers: HostServersVerdict | null } | null>(null)
+  const [hostBusy, setHostBusy] = useState(false)
+  const [hostMessage, setHostMessage] = useState<string | null>(null)
+  const [operationBusy, setOperationBusy] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const [capabilityBusy, setCapabilityBusy] = useState<string | null>(null)
   const [capabilityError, setCapabilityError] = useState<string | null>(null)
   const [configuration, setConfiguration] = useState<ControlConfiguration | null>(null)
@@ -857,6 +867,74 @@ function ControlPage({ health }: { health: Health | null }) {
   }
 
   useEffect(() => { void refreshPush() }, [])
+
+  function loadHostStatus(): Promise<void> {
+    return getHostPolicy().then(setHostStatus).catch((cause) => setHostMessage(cause instanceof Error ? cause.message : String(cause)))
+  }
+
+  useEffect(() => { void loadHostStatus() }, [])
+
+  useEffect(() => {
+    if (!hostStatus?.pending) return
+    const timer = window.setInterval(() => { void loadHostStatus() }, 3000)
+    return () => window.clearInterval(timer)
+  }, [hostStatus?.pending])
+
+  const policyText = policyDraft ?? hostStatus?.policy.text ?? ''
+  const serversText = serversDraft ?? hostStatus?.servers.text ?? ''
+  const hostDirty = policyDraft !== null || serversDraft !== null
+
+  async function handleHostValidate() {
+    setHostBusy(true); setHostMessage(null)
+    try { setHostVerdict(await validateHostPolicy({ policy: policyText, servers: serversText })) }
+    catch (cause) { setHostMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setHostBusy(false) }
+  }
+
+  async function handleHostApply() {
+    setHostBusy(true); setHostMessage(null)
+    try {
+      const edit: { policy?: string; servers?: string } = {}
+      if (policyDraft !== null) edit.policy = policyDraft
+      if (serversDraft !== null) edit.servers = serversDraft
+      const status = await applyHostPolicy(edit)
+      setHostStatus(status); setPolicyDraft(null); setServersDraft(null); setHostVerdict(null)
+      setHostMessage('Staged. The host applies it now; the result appears below.')
+    } catch (cause) { setHostMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setHostBusy(false) }
+  }
+
+  function renderHostPolicyCard() {
+    const effective = hostStatus?.policy.effective ?? null
+    const result = hostStatus?.last_result ?? null
+    return (
+      <section className="control-card control-full host-policy-card">
+        <div className="control-section-inline"><div><div className="panel-title">Host policy</div><p>The OS envelope, in your words: units and verbs, polkit grants, groups, server tools, and diagnostics commands. Validate shows what the host will enforce; Apply hands it to the host.</p></div><span>{hostStatus?.pending ? 'Applying…' : effective?.ok ? 'Effective' : hostStatus?.policy.exists ? 'Effective policy invalid' : 'No policy file'}</span></div>
+        {hostMessage ? <p className="connection-message">{hostMessage}</p> : null}
+        <div className="host-policy-editors">
+          <label>Host policy<textarea spellCheck={false} rows={18} value={policyText} onChange={(event) => setPolicyDraft(event.target.value)} /></label>
+          <label>Governed MCP servers<textarea spellCheck={false} rows={18} value={serversText} onChange={(event) => setServersDraft(event.target.value)} /></label>
+        </div>
+        <div className="push-actions">
+          <button type="button" disabled={hostBusy} onClick={() => { void handleHostValidate() }}>Validate</button>
+          <button type="button" className="control-primary-button" disabled={hostBusy || !hostDirty || Boolean(hostStatus?.pending)} onClick={() => { void handleHostApply() }}>Apply on host</button>
+          {hostDirty ? <button type="button" disabled={hostBusy} onClick={() => { setPolicyDraft(null); setServersDraft(null); setHostVerdict(null) }}>Discard edits</button> : null}
+        </div>
+        {hostVerdict ? <div className="host-verdict">
+          {hostVerdict.policy ? <div><strong className={hostVerdict.policy.ok ? 'healthy-text' : 'warning-text'}>{hostVerdict.policy.ok ? 'Policy valid' : `Policy rejected: ${hostVerdict.policy.error}`}</strong>{hostVerdict.policy.notes.map((note) => <p key={note}>Note: {note}</p>)}{hostVerdict.policy.rule ? <details><summary>Rendered polkit rule</summary><pre>{hostVerdict.policy.rule}</pre></details> : null}</div> : null}
+          {hostVerdict.servers ? <div><strong className={hostVerdict.servers.ok ? 'healthy-text' : 'warning-text'}>{hostVerdict.servers.ok ? `${hostVerdict.servers.servers.length} servers` : `Servers rejected: ${hostVerdict.servers.error}`}</strong>{hostVerdict.servers.servers.map((server) => <p key={server.id}>{server.id} · {server.transport} · {server.configured ? 'reachable' : 'not reachable now'}</p>)}</div> : null}
+        </div> : null}
+        {result ? <div className={`host-result${result.status === 'applied' ? ' ok' : ' bad'}`}>
+          <strong>Last apply: {result.status}{result.finished_at ? ` · ${new Date(result.finished_at).toLocaleString()}` : ''}</strong>
+          {(result.applied ?? []).length ? <p>Applied: {(result.applied ?? []).join(', ')}</p> : null}
+          {(result.errors ?? []).map((error) => <p className="warning-text" key={error}>{error}</p>)}
+          {(result.notes ?? []).map((note) => <p key={note}>Note: {note}</p>)}
+          {result.restart_required ? <p>Restart Atlas to load the new server configuration.</p> : null}
+        </div> : null}
+        {effective?.rule ? <details className="host-effective"><summary>Effective polkit rule on this host</summary><pre>{effective.rule}</pre></details> : null}
+      </section>
+    )
+  }
 
   async function handlePushEnable() {
     setPushBusy(true); setPushMessage(null)
@@ -890,9 +968,10 @@ function ControlPage({ health }: { health: Health | null }) {
   }
 
   async function refreshControl() {
-    const [nextCapabilities, nextConfiguration] = await Promise.all([getOwnerCapabilities(), getControlConfiguration()])
+    const [nextCapabilities, nextConfiguration, nextOperations] = await Promise.all([getOwnerCapabilities(), getControlConfiguration(), getOperationAuthorities().catch(() => [] as OperationAuthority[])])
     setCapabilities(nextCapabilities)
     setConfiguration(nextConfiguration)
+    setOperations(nextOperations)
     const model = nextConfiguration.connections.find((item) => item.id === 'model')
     const github = nextConfiguration.connections.find((item) => item.id === 'github')
     if (model?.model) setModelName(model.model)
@@ -900,9 +979,10 @@ function ControlPage({ health }: { health: Health | null }) {
   }
 
   useEffect(() => {
-    Promise.all([getOwnerCapabilities(), getControlConfiguration()]).then(([nextCapabilities, nextConfiguration]) => {
+    Promise.all([getOwnerCapabilities(), getControlConfiguration(), getOperationAuthorities().catch(() => [] as OperationAuthority[])]).then(([nextCapabilities, nextConfiguration, nextOperations]) => {
       setCapabilities(nextCapabilities)
       setConfiguration(nextConfiguration)
+      setOperations(nextOperations)
       const model = nextConfiguration.connections.find((item) => item.id === 'model')
       const github = nextConfiguration.connections.find((item) => item.id === 'github')
       if (model?.model) setModelName(model.model)
@@ -910,6 +990,47 @@ function ControlPage({ health }: { health: Health | null }) {
     }).catch((cause) => setConfigurationError(String(cause)))
     getConversationContextStats().then(setContextStats).catch((cause) => setContextStatsError(String(cause)))
   }, [])
+
+  async function changeOperationAuthority(item: OperationAuthority, value: string) {
+    const authority = value === 'default' ? null : value as OperationAuthorityValue
+    setOperationBusy(item.id); setOperationError(null)
+    try {
+      const updated = await setOperationAuthority(item.id, authority)
+      setOperations((current) => current.map((entry) => entry.id === updated.id ? updated : entry))
+    } catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setOperationBusy(null) }
+  }
+
+  function renderAuthorityCard() {
+    const families = Array.from(new Set(operations.map((item) => item.family)))
+    const overridden = operations.filter((item) => item.override !== null).length
+    const labels: Record<string, string> = { auto: 'Auto', approval_required: 'Ask me', forbidden: 'Forbidden' }
+    return (
+      <section className="control-card control-full authority-card">
+        <div className="control-section-inline"><div><div className="panel-title">Authority</div><p>Your decision per operation. Default follows the operation's own setting; anything you set here wins over it.</p></div><span>{overridden} overridden</span></div>
+        {operationError ? <p className="warning-text">{operationError}</p> : null}
+        {operations.length === 0 ? <p>No operations registered yet.</p> : families.map((family) => (
+          <div className="authority-family" key={family}>
+            <h3>{family}</h3>
+            <div className="authority-rows">
+              {operations.filter((item) => item.family === family).map((item) => (
+                <div className={`authority-row${item.enabled ? '' : ' disabled'}`} key={item.id}>
+                  <div className="authority-copy"><strong title={item.description}>{item.id}</strong><small>{item.effect}{item.argument_rules ? ' · argument rules' : ''}{item.trust === 'external' ? ' · external' : ''}{item.enabled ? '' : ' · capability off'}</small></div>
+                  <span className={`authority-effective authority-${item.effective_authority}`}>{labels[item.effective_authority] ?? item.effective_authority}</span>
+                  <select aria-label={`Authority for ${item.id}`} value={item.override ?? 'default'} disabled={operationBusy !== null} onChange={(event) => { void changeOperationAuthority(item, event.target.value) }}>
+                    <option value="default">Default ({labels[item.default_authority] ?? item.default_authority})</option>
+                    <option value="auto">Auto</option>
+                    <option value="approval_required">Ask me</option>
+                    <option value="forbidden">Forbidden</option>
+                  </select>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </section>
+    )
+  }
 
   async function toggleCapability(item: OwnerCapability) {
     setCapabilityBusy(item.id); setCapabilityError(null)
@@ -1039,6 +1160,10 @@ function ControlPage({ health }: { health: Health | null }) {
           {capabilityError ? <p className="warning-text">{capabilityError}</p> : null}
           <div className="capability-grid">{capabilities.map((item) => <button type="button" role="switch" aria-checked={item.enabled} className={`capability-switch${item.enabled ? ' enabled' : ''}`} key={item.id} disabled={capabilityBusy !== null} onClick={() => { void toggleCapability(item) }}><span className="capability-switch-copy"><strong>{item.family}</strong><small>{item.availability}</small></span><span className="capability-toggle"><i /></span></button>)}</div>
         </section>
+
+        {renderAuthorityCard()}
+
+        {renderHostPolicyCard()}
 
         <MemoryObservabilityPanel />
 
