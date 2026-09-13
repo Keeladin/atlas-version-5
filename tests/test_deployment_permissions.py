@@ -116,6 +116,8 @@ def test_host_operations_installer_uses_structured_root_broker_without_polkit_po
     installer = (DEPLOYMENT / "install-host-mcp.sh").read_text()
     assert '[[ ${EUID} -eq 0 ]]' in installer
     assert "atlas_host_operations_server.py" in installer
+    assert '"${BIN_DIR}/atlas_mcp_probe.py"' in installer
+    assert 'runuser -u atlas-v5 -- /usr/bin/python3 "${BIN_DIR}/atlas_mcp_probe.py"' in installer
     assert "enable --now atlas-host-operations.socket" in installer
     assert "rm -f /etc/polkit-1/rules.d/50-atlas-tools.rules" in installer
     assert "pkaction" not in installer and "systemd-mcp" not in installer and "mcp-shell-server" not in installer

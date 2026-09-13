@@ -19,6 +19,7 @@ command -v python3 >/dev/null 2>&1 || { echo "python3 is required." >&2; exit 1;
 install -d -o root -g "${APP_GROUP}" -m 0750 "${BIN_DIR}" "${CONFIG_DIR}"
 install -d -o "${APP_GROUP}" -g "${APP_GROUP}" -m 0700 /var/lib/atlas-v5/control
 install -o root -g root -m 0755 "${ROOT_DIR}/deployment/host-mcp/atlas_host_operations_server.py" "${BIN_DIR}/atlas_host_operations_server.py"
+install -o root -g "${APP_GROUP}" -m 0750 "${ROOT_DIR}/deployment/host-mcp/atlas_mcp_probe.py" "${BIN_DIR}/atlas_mcp_probe.py"
 if [[ ! -f ${MCP_SERVERS} ]]; then
   install -o root -g "${APP_GROUP}" -m 0640 "${ROOT_DIR}/deployment/mcp-servers.example.toml" "${MCP_SERVERS}"
 else
@@ -75,7 +76,7 @@ chown root:"${APP_GROUP}" "${RUNTIME_ENV}"
 chmod 0640 "${RUNTIME_ENV}"
 
 # Smoke-test through the same socket the runtime uses.
-if ! runuser -u atlas-v5 -- /usr/bin/python3 "${ROOT_DIR}/deployment/host-mcp/atlas_mcp_probe.py" "/run/atlas-v5/mcp/host-operations.sock"; then
+if ! runuser -u atlas-v5 -- /usr/bin/python3 "${BIN_DIR}/atlas_mcp_probe.py" "/run/atlas-v5/mcp/host-operations.sock"; then
   echo "Host operations MCP socket did not answer; check journalctl -u 'atlas-host-operations@*'." >&2
   exit 1
 fi
