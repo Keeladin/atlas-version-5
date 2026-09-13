@@ -6,7 +6,7 @@ import './App.css'
 import { MemoryObservabilityPanel } from './MemoryObservability'
 import { scheduleSummary } from './schedules'
 import { approvalFields } from './approval'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -102,6 +102,10 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [drive, setDrive] = useState<DriveStorageListing | null>(null)
   const [projectStorage, setProjectStorage] = useState<LocalStorageListing | null>(null)
   const [repositories, setRepositories] = useState<RepositoryListing | null>(null)
+  const [repositoryExpanded, setRepositoryExpanded] = useState<string | null>(null)
+  const [repositoryDetails, setRepositoryDetails] = useState<Record<string, RepositoryStatus>>({})
+  const [repositoryDetailLoading, setRepositoryDetailLoading] = useState<string | null>(null)
+  const [repositoryDetailErrors, setRepositoryDetailErrors] = useState<Record<string, string>>({})
   const [driveStack, setDriveStack] = useState<Array<{ id: string; name: string }>>([{ id: 'root', name: 'My Drive' }])
   const [storageLoading, setStorageLoading] = useState(false)
   const [storageError, setStorageError] = useState<string | null>(null)
@@ -338,6 +342,25 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       setRepositoryError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setRepositoryLoading(false)
+    }
+  }
+
+  async function toggleRepository(repo: RepositoryEntry) {
+    if (repositoryExpanded === repo.full_name) {
+      setRepositoryExpanded(null)
+      return
+    }
+    setRepositoryExpanded(repo.full_name)
+    if (repositoryDetails[repo.full_name]) return
+    setRepositoryDetailLoading(repo.full_name)
+    setRepositoryDetailErrors((current) => { const next = { ...current }; delete next[repo.full_name]; return next })
+    try {
+      const detail = await getRepositoryStatus(repo)
+      setRepositoryDetails((current) => ({ ...current, [repo.full_name]: detail }))
+    } catch (cause) {
+      setRepositoryDetailErrors((current) => ({ ...current, [repo.full_name]: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setRepositoryDetailLoading((current) => current === repo.full_name ? null : current)
     }
   }
 
@@ -682,8 +705,42 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                   <div className="storage-browser">
                     <div className="storage-summary"><span>{repositories.repositories.length} repositor{repositories.repositories.length === 1 ? 'y' : 'ies'}</span><span>Owner-authorized GitHub · remote state</span></div>
                     <div className="storage-table repository-table" role="table" aria-label="GitHub repositories">
-                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Visibility</span><span>State</span><span>Branch</span></div>
-                      {repositories.repositories.map((repo) => <button className="storage-row" type="button" role="row" key={repo.full_name} onClick={() => { if (repo.url) window.open(repo.url, '_blank', 'noopener,noreferrer') }}><span className="storage-name"><span className="storage-icon">⌘</span>{repo.name}</span><span>{repo.private ? 'private' : 'public'}</span><span>{repo.archived ? 'archived' : 'active'}</span><span>{repo.default_branch ?? '—'}</span></button>)}
+                      <div className="storage-row storage-header repository-summary-row" role="row"><span>Name</span><span>Visibility</span><span>State</span><span>Branch</span></div>
+                      {repositories.repositories.map((repo) => {
+                        const expanded = repositoryExpanded === repo.full_name
+                        const detail = repositoryDetails[repo.full_name]
+                        const detailError = repositoryDetailErrors[repo.full_name]
+                        return <div className={`repository-entry${expanded ? ' expanded' : ''}`} key={repo.full_name}>
+                          <button className="storage-row repository-summary-row" type="button" role="row" aria-expanded={expanded} onClick={() => { void toggleRepository(repo) }}>
+                            <span className="storage-name"><span className="storage-icon">{expanded ? '⌄' : '›'}</span>{repo.name}</span>
+                            <span>{repo.private ? 'private' : 'public'}</span><span>{repo.archived ? 'archived' : 'active'}</span><span>{repo.default_branch ?? '—'}</span>
+                          </button>
+                          {expanded ? <div className="repository-detail">
+                            {repositoryDetailLoading === repo.full_name ? <div className="repository-detail-loading">Reading local, remote and CI state…</div> : null}
+                            {detailError ? <div className="chat-error repository-detail-error">{detailError}</div> : null}
+                            {detail ? <>
+                              <div className="repository-detail-grid">
+                                <section className="repository-status-card">
+                                  <div className="repository-status-head"><span>Remote · {detail.remote.branch ?? repo.default_branch ?? 'default'}</span><span className={`repository-ci repository-ci-${detail.ci.state}`}>{detail.ci.state === 'success' ? 'CI passed' : detail.ci.state === 'failure' ? 'CI failed' : detail.ci.state === 'pending' ? 'CI running' : 'No CI'}</span></div>
+                                  <a href={detail.remote.url ?? repo.url ?? '#'} target="_blank" rel="noreferrer"><strong>{detail.remote.short_sha}</strong> {detail.remote.subject || 'No commit subject'}</a>
+                                  <small>{detail.remote.committed_at ? new Date(detail.remote.committed_at).toLocaleString() : 'Commit time unavailable'} · {detail.ci.checks} checks · {detail.ci.statuses} statuses</small>
+                                </section>
+                                <section className="repository-status-card">
+                                  <div className="repository-status-head"><span>Local</span><span>{detail.local.length} checkout{detail.local.length === 1 ? '' : 's'}</span></div>
+                                  {detail.local.length === 0 ? <p>No matching local checkout under Projects.</p> : detail.local.map((local) => <div className="repository-local" key={local.path}>
+                                    <div><strong>{local.branch}</strong><code>{local.short_sha}</code><span className={`repository-worktree ${local.dirty ? 'dirty' : 'clean'}`}>{local.dirty ? 'dirty' : 'clean'}</span></div>
+                                    <span className="repository-path">{local.path}</span>
+                                    <span>{local.subject || 'No commit subject'}</span>
+                                    <small>{local.relation === 'in_sync' ? 'In sync with remote' : local.relation === 'ahead' ? `${local.ahead ?? 0} ahead` : local.relation === 'behind' ? `${local.behind ?? 0} behind` : local.relation === 'diverged' ? `${local.ahead ?? 0} ahead · ${local.behind ?? 0} behind` : local.remote_tracking_current ? 'Remote tracking current' : 'Comparison needs a fresh remote object'}</small>
+                                  </div>)}
+                                </section>
+                              </div>
+                              {detail.ci.details.length ? <div className="repository-checks">{detail.ci.details.map((check) => <a href={check.url ?? '#'} target="_blank" rel="noreferrer" key={`${check.name}-${check.url ?? ''}`}><span>{check.name}</span><small>{check.conclusion ?? check.status ?? 'unknown'}</small></a>)}</div> : null}
+                              {repo.url ? <div className="repository-detail-actions"><a href={repo.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div> : null}
+                            </> : null}
+                          </div> : null}
+                        </div>
+                      })}
                     </div>
                     {repositories.repositories.length === 0 ? <div className="storage-empty">No repositories returned by GitHub.</div> : null}
                   </div>

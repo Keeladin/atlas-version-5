@@ -51,6 +51,7 @@ from atlas.control import (
 )
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.integrations.repository_status import repository_status
 from atlas.memory.candidates import MemoryCandidateIntake
 from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
@@ -1616,6 +1617,26 @@ def _repository_projection(output: Any) -> list[dict[str, Any]]:
             "description": item.get("description"),
         })
     return repositories
+
+
+@app.get("/api/repositories/{repo_name}/status")
+async def repository_detail_status(repo_name: str, default_branch: str | None = Query(default=None)):
+    await require_capability("github.mcp")
+    if settings.github_token_file is None or not settings.github_token_file.is_file():
+        raise HTTPException(status_code=503, detail="GitHub credential is unavailable")
+    full_name = f"{settings.github_owner}/{repo_name}"
+    try:
+        detail = await asyncio.to_thread(
+            repository_status,
+            token_file=settings.github_token_file,
+            projects_root=settings.projects_root,
+            projects_display_root=settings.projects_display_root,
+            full_name=full_name,
+            default_branch=default_branch,
+        )
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"name": repo_name, "full_name": full_name, **detail}
 
 
 @app.get("/api/repositories")

@@ -326,11 +326,41 @@ export type RepositoryEntry = {
 
 export type RepositoryListing = { owner: string; repositories: RepositoryEntry[] }
 
+export type RepositoryLocalCheckout = {
+  path: string
+  branch: string
+  sha: string
+  short_sha: string
+  subject: string
+  dirty: boolean
+  tracking_sha: string | null
+  remote_tracking_current: boolean
+  ahead: number | null
+  behind: number | null
+  relation: 'in_sync' | 'ahead' | 'behind' | 'diverged' | 'unknown'
+}
+
+export type RepositoryStatus = {
+  name: string
+  full_name: string
+  remote: { branch: string | null; sha: string; short_sha: string; subject: string; committed_at: string | null; url: string | null }
+  ci: { state: 'success' | 'failure' | 'pending' | 'none'; checks: number; statuses: number; details: Array<{ name: string; status: string | null; conclusion: string | null; url: string | null }> }
+  local: RepositoryLocalCheckout[]
+}
+
 export async function getRepositories(): Promise<RepositoryListing> {
   const response = await fetch('/api/repositories')
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Repository load failed (${response.status})`)
   return body as RepositoryListing
+}
+
+export async function getRepositoryStatus(repo: RepositoryEntry): Promise<RepositoryStatus> {
+  const branch = repo.default_branch ? `?default_branch=${encodeURIComponent(repo.default_branch)}` : ''
+  const response = await fetch(`/api/repositories/${encodeURIComponent(repo.name)}/status${branch}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Repository status failed (${response.status})`)
+  return body as RepositoryStatus
 }
 
 export type DriveStorageEntry = {
