@@ -439,7 +439,7 @@ async def test_pending_attention_renders_conflicts_and_review_backlog_bounded(pg
         [], memory_attention=rendered, suppressed_contents=[CURRENT],
     )
     assert messages[0]["role"] == "developer"
-    assert "Atlas pending owner memory attention" in messages[0]["content"]
+    assert "Memory attention (runtime state)" in messages[0]["content"]
     assert CURRENT not in messages[0]["content"]
     assert COMPETING in messages[0]["content"]
 
