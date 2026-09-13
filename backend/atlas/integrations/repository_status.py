@@ -141,9 +141,9 @@ def github_json(token_file: Path, path: str) -> Any:
 def _ci_state(checks: dict[str, Any], statuses: dict[str, Any]) -> dict[str, Any]:
     runs = [item for item in checks.get("check_runs", []) if isinstance(item, dict)]
     status_items = [item for item in statuses.get("statuses", []) if isinstance(item, dict)]
-    pending = any(item.get("status") != "completed" for item in runs) or statuses.get("state") == "pending"
+    pending = any(item.get("status") != "completed" for item in runs) or (bool(status_items) and statuses.get("state") == "pending")
     failed_conclusions = {"failure", "cancelled", "timed_out", "action_required", "stale", "startup_failure"}
-    failed = any(item.get("conclusion") in failed_conclusions for item in runs) or statuses.get("state") in {"failure", "error"}
+    failed = any(item.get("conclusion") in failed_conclusions for item in runs) or (bool(status_items) and statuses.get("state") in {"failure", "error"})
     if failed:
         state = "failure"
     elif pending:

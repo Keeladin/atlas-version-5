@@ -84,3 +84,16 @@ def test_ci_failure_wins_over_pending() -> None:
         {"state": "pending", "statuses": [{}]},
     )
     assert result["state"] == "failure"
+
+
+def test_empty_legacy_status_does_not_override_completed_successful_checks() -> None:
+    result = module._ci_state(
+        {"check_runs": [
+            {"name": "Backend", "status": "completed", "conclusion": "success"},
+            {"name": "Frontend", "status": "completed", "conclusion": "success"},
+        ]},
+        {"state": "pending", "statuses": []},
+    )
+    assert result["state"] == "success"
+    assert result["checks"] == 2
+    assert result["statuses"] == 0
