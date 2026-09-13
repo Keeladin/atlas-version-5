@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from atlas.runtime.conversation import (
@@ -88,8 +89,10 @@ def test_model_instructions_prioritize_semantic_judgment_and_proportional_verifi
 
     assert "Prioritize understanding his actual intent" in instructions
     assert "Use your own semantic judgment" in instructions
-    assert "say when you disagree" in instructions
-    assert "Do not wait for an explicit invitation when the value is clear" in instructions
+    assert "Say when you disagree" in instructions
+    assert "Relevance determines whether something is worth saying" in instructions
+    assert "confidence determines how strongly it is stated" in instructions
+    assert "rather than withholding it" in instructions
     assert "CONVERSATIONAL is the default" in instructions
     assert "PRECISE applies" in instructions
     assert "FORENSIC applies" in instructions
@@ -100,6 +103,36 @@ def test_model_instructions_prioritize_semantic_judgment_and_proportional_verifi
     assert "memory.obligations.resolve" not in instructions
     assert "Never bulk-confirm memory reviews" not in instructions
 
+
+
+def test_foreground_time_reference_uses_owner_timezone() -> None:
+    instructions = build_model_instructions(
+        [], active_task_enabled=False, owner_timezone="Africa/Johannesburg",
+        now=datetime(2026, 9, 13, 5, 10, tzinfo=UTC),
+    )
+
+    assert "Current owner-local date and time: 2026-09-13 07:10 SAST" in instructions
+    assert "Time is part of context" in instructions
+    assert "elapsed time relative to the situation" in instructions
+    assert "do not treat age alone" in instructions
+
+
+def test_only_owner_turns_receive_local_timestamps() -> None:
+    transcript_id = uuid4()
+    owner = Turn(
+        transcript_id=transcript_id, actor=Actor.OWNER, blocks=[TextBlock(text="hello")],
+        created_at=datetime(2026, 9, 12, 20, 30, tzinfo=UTC),
+    )
+    atlas = Turn(
+        transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text="hi")],
+        created_at=datetime(2026, 9, 12, 20, 31, tzinfo=UTC),
+    )
+
+    messages = turns_to_provider_messages([owner, atlas], owner_timezone="Africa/Johannesburg")
+
+    assert messages[0]["content"].startswith("[Owner turn timestamp: 2026-09-12 22:30 SAST]\n")
+    assert messages[0]["content"].endswith("hello")
+    assert messages[1] == {"role": "assistant", "content": "hi"}
 
 def test_owner_retirement_redacts_guarded_content_from_working_projection() -> None:
     phrase = "Roses are red, violets are blue."

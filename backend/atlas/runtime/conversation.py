@@ -1,5 +1,7 @@
 import json
+from datetime import UTC, datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from atlas.memory.guards import redact_guarded_text
 from atlas.runtime.bootstrap import build_seat_bootstrap
@@ -7,21 +9,31 @@ from atlas.runtime.evidence import attach_projection_metadata, bound_model_evide
 from atlas.transcript.models import Actor, Turn
 
 
+def _owner_local_timestamp(value: datetime, owner_timezone: str) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(ZoneInfo(owner_timezone)).strftime("%Y-%m-%d %H:%M %Z")
+
+
 def build_model_instructions(
-    capability_index: list[dict[str, str]] | None = None, *, active_task_enabled: bool = True
+    capability_index: list[dict[str, str]] | None = None, *, active_task_enabled: bool = True,
+    owner_timezone: str = "Africa/Johannesburg", now: datetime | None = None,
 ) -> str:
     seat = build_seat_bootstrap()
     capabilities = capability_index or []
     capability_text = ", ".join(item["family"] for item in capabilities) or "none"
+    owner_now = _owner_local_timestamp(now or datetime.now(UTC), owner_timezone)
 
     # Keep the always-on conversational constitution small. Runtime enforcement,
     # subsystem mechanics, and output contracts belong outside the behavioral core.
     base = (
         f"{seat.principle} "
         "You are speaking directly with your owner, Jaco. "
+        f"Current owner-local date and time: {owner_now}. "
         "Prioritize understanding his actual intent and producing the most useful outcome. "
-        "Use your own semantic judgment: form a view, say when you disagree, and surface a relevant observation, implication, question, or next step when it materially improves the conversation. Do not wait for an explicit invitation when the value is clear, and do not manufacture initiative when it is not. "
+        "Use your own semantic judgment: form a view, and surface relevant observations, implications, questions, or next steps when they could improve the conversation. Say when you disagree. Relevance determines whether something is worth saying; confidence determines how strongly it is stated and how much qualification it needs. When something is relevant but uncertain, say it with proportionate qualification rather than withholding it. "
         "Use familiarity earned from supplied context naturally, including ongoing projects, preferences, shared shorthand, and conversational tone. Keep the interaction genuine and proportional to the moment. "
+        "Time is part of context. Use the current time and owner-turn timestamps to judge elapsed time relative to the situation. Re-orient when a gap materially changes continuity, urgency, expectation, or freshness; do not treat age alone as evidence that stable information has changed. "
         "Commit to the best-supported useful answer. State genuine uncertainty clearly but once; uncertainty should calibrate the answer, not replace it. "
         "Match verification effort to consequence and precision. CONVERSATIONAL is the default for ordinary low-stakes continuity and prior-work references. PRECISE applies to exact values, current configuration, consequential project state, or conflicting context. FORENSIC applies to disputes, audits, provenance questions, and claims requiring structural historical coverage. "
         "Treat owner statements, prior Atlas/model statements, durable memory or continuity context, and runtime/tool observations as distinct sources. Prefer the source whose authority fits the claim, and use canonical evidence when exact reconstruction materially matters. "
@@ -223,6 +235,7 @@ def turns_to_provider_messages(
     evidence_handles: dict[str, tuple[UUID, str]] | None = None,
     memory_outcomes: str | None = None,
     memory_attention: str | None = None,
+    owner_timezone: str = "Africa/Johannesburg",
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     compact_ids = compact_tool_turn_ids or set()
@@ -273,9 +286,15 @@ def turns_to_provider_messages(
                 handle = reverse_handles.get((turn.id, f"text:{index}"))
                 parts.append(f"⟦{handle}⟧ {text}" if handle else text)
             if parts:
+                content = "\n".join(parts)
+                if turn.actor == Actor.OWNER:
+                    content = (
+                        f"[Owner turn timestamp: {_owner_local_timestamp(turn.created_at, owner_timezone)}]\n"
+                        + content
+                    )
                 messages.append({
                     "role": "user" if turn.actor == Actor.OWNER else "assistant",
-                    "content": "\n".join(parts),
+                    "content": content,
                 })
             for block in turn.blocks:
                 if getattr(block, "type", None) == "artifact_ref":

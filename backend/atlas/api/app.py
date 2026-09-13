@@ -786,7 +786,9 @@ async def _assemble_working_context(
     memory_outcomes: str | None = None,
     memory_attention: str | None = None,
 ):
-    instructions = build_model_instructions(await capability_runtime.compact_index_current())
+    instructions = build_model_instructions(
+        await capability_runtime.compact_index_current(), owner_timezone=settings.owner_timezone
+    )
     suppressed_contents = suppressed_contents or []
     exchange_limit = max(1, settings.working_context_exchanges)
     token_budget = max(1, int(min(settings.working_context_tokens, settings.openai_context_window) * 0.75))
@@ -808,6 +810,7 @@ async def _assemble_working_context(
             evidence_handles=evidence_handles,
             memory_outcomes=memory_outcomes,
             memory_attention=memory_attention,
+            owner_timezone=settings.owner_timezone,
         )
         task_message = active_task_provider_message(transcript.active_task_state)
         if task_message is not None:
@@ -1133,7 +1136,9 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
         capability_completion_reserve=settings.capability_completion_reserve,
         capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window),
     )
-    instructions = build_model_instructions(await capability_runtime.compact_index_current())
+    instructions = build_model_instructions(
+        await capability_runtime.compact_index_current(), owner_timezone=settings.owner_timezone
+    )
     static_tokens = await provider.count_input_tokens(instructions=instructions, messages=[])
     suppressed_contents = await _active_memory_suppression_contents(session)
     continuity_context, continuity_count = await recent_continuity_context(
@@ -1148,7 +1153,9 @@ async def conversation_context_stats(session: Annotated[AsyncSession, Depends(ge
     current_tokens = int(working_policy["input_tokens"])
     canonical_tokens = await provider.count_input_tokens(
         instructions=instructions,
-        messages=turns_to_provider_messages(turns, suppressed_contents=suppressed_contents),
+        messages=turns_to_provider_messages(
+            turns, suppressed_contents=suppressed_contents, owner_timezone=settings.owner_timezone
+        ),
     )
     windows = []
     for exchange_count in (5, 10, 15, 20):
@@ -1389,7 +1396,9 @@ async def stream_conversation(request: ChatRequest):
         try:
             async with maintain_heartbeat(factory, run_id):
                 async for delta in provider.stream_text(
-                    instructions=build_model_instructions(await capability_runtime.compact_index_current()),
+                    instructions=build_model_instructions(
+                        await capability_runtime.compact_index_current(), owner_timezone=settings.owner_timezone
+                    ),
                     messages=messages, tool_handler=tool_handler,
                     task_state_handler=task_state_handler,
                     memory_candidate_handler=memory_candidate_handler,

@@ -171,7 +171,7 @@ def test_working_context_trims_oldest_exchange_if_compaction_is_not_enough(monke
         turns.append(Turn(transcript_id=transcript_id, actor=Actor.ATLAS, blocks=[TextBlock(text="a" * 700)]))
 
     monkeypatch.setattr("atlas.api.app.settings.working_context_exchanges", 3)
-    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 2000)
+    monkeypatch.setattr("atlas.api.app.settings.working_context_tokens", 2100)
 
     _, policy = asyncio.run(_assemble_working_context(FakeProvider(), Transcript(id=transcript_id), turns))
 

@@ -96,7 +96,10 @@ async def _execute_task(run_id: UUID, settings: Settings, runtime: CapabilityRun
             messages = [{'role': 'user', 'content':
                 f"Scheduled owner intent for {snapshot['scheduled_for']} ({snapshot['timezone']}):\n{snapshot['prompt']}"}]
             chunks = []
-            async for delta in provider.stream_text(instructions=build_model_instructions(await runtime.compact_index_current(), active_task_enabled=False),
+            async for delta in provider.stream_text(instructions=build_model_instructions(
+                    await runtime.compact_index_current(), active_task_enabled=False,
+                    owner_timezone=settings.owner_timezone,
+                ),
                     messages=messages, tool_handler=executor.tool_handler, observation_handler=observation_handler):
                 chunks.append(delta)
         answer = ''.join(chunks).strip()

@@ -206,7 +206,11 @@ def test_system_turns_do_not_leak_into_provider_chat_history() -> None:
         _turn(Actor.SYSTEM, TextBlock(text="internal marker")),
         _turn(Actor.OWNER, TextBlock(text="hello")),
     ]
-    assert turns_to_provider_messages(turns) == [{"role": "user", "content": "hello"}]
+    messages = turns_to_provider_messages(turns)
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"].endswith("\nhello")
+    assert "internal marker" not in messages[0]["content"]
 
 
 def test_tool_evidence_is_bounded_before_projection() -> None:
