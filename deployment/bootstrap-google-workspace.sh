@@ -8,12 +8,13 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-GWS_SOURCE=${1:-/home/jaco/Projects/atlas-agent-state/production/bin/gws}
-CONFIG_SOURCE=${2:-/home/jaco/Projects/atlas-agent-state/production/google-workspace/config}
+[[ $# -ge 2 ]] || { echo "Usage: sudo $0 /path/to/gws /path/to/google-config" >&2; exit 2; }
+GWS_SOURCE=$1
+CONFIG_SOURCE=$2
 RUNTIME_ENV=/etc/atlas-v5/config/runtime.env
 GWS_TARGET=/opt/atlas-v5/bin/gws
 STATE_ROOT=/var/lib/atlas-v5/google-workspace
-CONFIG_TARGET=${STATE_ROOT}/config
+CONFIG_TARGET=/var/lib/atlas-v5/control/google-workspace-config
 
 [[ -x ${GWS_SOURCE} ]] || { echo "gws executable not found: ${GWS_SOURCE}" >&2; exit 1; }
 [[ -f ${CONFIG_SOURCE}/client_secret.json ]] || { echo "Google OAuth client config not found" >&2; exit 1; }
@@ -22,7 +23,8 @@ CONFIG_TARGET=${STATE_ROOT}/config
 [[ -f ${RUNTIME_ENV} ]] || { echo "Atlas runtime env not found: ${RUNTIME_ENV}" >&2; exit 1; }
 
 install -d -o root -g atlas-v5 -m 0750 /opt/atlas-v5/bin
-install -d -o atlas-v5 -g atlas-v5 -m 0750 "${CONFIG_TARGET}" "${STATE_ROOT}/workspace"
+install -d -o atlas-v5 -g atlas-v5 -m 0700 "${CONFIG_TARGET}"
+install -d -o atlas-v5 -g atlas-v5 -m 0750 "${STATE_ROOT}/workspace"
 install -o root -g atlas-v5 -m 0750 "${GWS_SOURCE}" "${GWS_TARGET}"
 for name in client_secret.json client_secret.web.json credentials.enc .encryption_key token_cache.json; do
   if [[ -f ${CONFIG_SOURCE}/${name} ]]; then
