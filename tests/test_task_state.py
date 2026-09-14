@@ -6,6 +6,7 @@ from atlas.runtime.task_state import (
     merge_semantic_delta,
     new_task_state,
     record_runtime_event,
+    remove_resolved_pending_actions,
 )
 from pydantic import ValidationError
 
@@ -49,6 +50,19 @@ def test_runtime_event_keeps_refs_but_not_sensitive_arguments() -> None:
     assert event["targets"]["path"] == "Atlas/README.md"
     assert "SECRET BODY" not in str(state)
     assert state["runtime"]["pending_actions"] == []
+
+
+def test_resolved_pending_actions_can_be_pruned_without_touching_unresolved_ones() -> None:
+    state = new_task_state("Continue")
+    state = record_runtime_event(state, operation="gmail.message.delete_permanently", phase="uncertain",
+        evidence_id="turn-1", action_id="old-action")
+    state = record_runtime_event(state, operation="gmail.message.delete_permanently", phase="uncertain",
+        evidence_id="turn-2", action_id="still-open")
+
+    pruned = remove_resolved_pending_actions(state, {"old-action"})
+
+    assert [item["action_id"] for item in pruned["runtime"]["pending_actions"]] == ["still-open"]
+    assert len(state["runtime"]["pending_actions"]) == 2
 
 
 def test_prepared_action_is_pending_until_terminal_event() -> None:

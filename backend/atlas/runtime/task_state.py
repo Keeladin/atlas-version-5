@@ -115,6 +115,18 @@ def begin_owner_turn(state: dict[str, Any] | None, owner_request: str) -> dict[s
     return result
 
 
+def remove_resolved_pending_actions(state: dict[str, Any] | None, resolved_action_ids: set[str]) -> dict[str, Any]:
+    result = deepcopy(state) if state else new_task_state()
+    if not resolved_action_ids:
+        return result
+    runtime = result.setdefault("runtime", {})
+    runtime["pending_actions"] = [
+        item for item in (runtime.get("pending_actions") or [])
+        if str(item.get("action_id") or "") not in resolved_action_ids
+    ]
+    return result
+
+
 def _safe_targets(arguments: dict[str, Any], detail: dict[str, Any]) -> dict[str, str]:
     found: dict[str, str] = {}
 

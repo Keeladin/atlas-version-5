@@ -63,6 +63,7 @@ from atlas.notifications.api import push_router
 from atlas.notifications.api import router as notifications_router
 from atlas.notifications.dispatcher import push_delivery_loop
 from atlas.persistence.models import (
+    ActionRow,
     DurableMemoryRow,
     MemoryCommandRow,
     OwnerAttentionRow,
@@ -103,6 +104,7 @@ from atlas.runtime.task_state import (
     active_task_provider_message,
     begin_owner_turn,
     merge_semantic_delta,
+    remove_resolved_pending_actions,
 )
 from atlas.schedules import ScheduleService
 from atlas.schedules.runner import scheduler_loop
@@ -1384,6 +1386,44 @@ def _begin_owner_checkpoint(state, request, owner_turn_id):
     return updated
 
 
+async def _reconcile_pending_action_checkpoint(session: AsyncSession, transcript_id: UUID) -> dict[str, Any]:
+    repository = TranscriptRepository(session)
+    state = await repository.get_active_task_state(transcript_id)
+    pending = list((state.get("runtime") or {}).get("pending_actions") or [])
+    action_ids: list[UUID] = []
+    for item in pending:
+        try:
+            action_ids.append(UUID(str(item.get("action_id") or "")))
+        except (TypeError, ValueError):
+            continue
+    if not action_ids:
+        return state
+
+    actions = (await session.execute(select(ActionRow).where(ActionRow.id.in_(action_ids)))).scalars().all()
+    attention_rows = (await session.execute(
+        select(OwnerAttentionRow.action_id, OwnerAttentionRow.resolved).where(OwnerAttentionRow.action_id.in_(action_ids))
+    )).all()
+    attention_seen = {str(action_id) for action_id, _resolved in attention_rows if action_id is not None}
+    attention_open = {str(action_id) for action_id, resolved in attention_rows if action_id is not None and not resolved}
+
+    resolved_action_ids: set[str] = set()
+    for action in actions:
+        action_id = str(action.id)
+        if action.status in {ActionStatus.SUCCEEDED.value, ActionStatus.FAILED.value, ActionStatus.CANCELLED.value}:
+            resolved_action_ids.add(action_id)
+        elif action.status == ActionStatus.UNCERTAIN.value:
+            acknowledged = bool((action.evidence or {}).get("owner_acknowledged_at"))
+            attention_resolved = action_id in attention_seen and action_id not in attention_open
+            if acknowledged or attention_resolved:
+                resolved_action_ids.add(action_id)
+
+    if not resolved_action_ids:
+        return state
+    return await repository.mutate_active_task_state(
+        transcript_id, lambda current: remove_resolved_pending_actions(current, resolved_action_ids)
+    )
+
+
 @app.post("/api/conversation/stream")
 async def stream_conversation(request: ChatRequest):
     text = request.text.strip()
@@ -1427,6 +1467,7 @@ async def stream_conversation(request: ChatRequest):
             OwnerAttentionRow.state == "interrupted", OwnerAttentionRow.resolved.is_(False)
         ).values(resolved=True, resolved_at=datetime.now(UTC)))
         owner_turn = await repository.append_turn(transcript.id, Actor.OWNER, blocks)
+        await _reconcile_pending_action_checkpoint(session, transcript.id)
         task_state = await repository.mutate_active_task_state(
             transcript.id, lambda state: _begin_owner_checkpoint(state, run_intent, owner_turn.id)
         )
@@ -1494,7 +1535,8 @@ async def stream_conversation(request: ChatRequest):
 
     async def checkpoint_reader():
         async with factory() as session:
-            state = await TranscriptRepository(session).get_active_task_state(transcript.id)
+            state = await _reconcile_pending_action_checkpoint(session, transcript.id)
+            await session.commit()
             return active_task_provider_message(state)
 
     async def generate() -> AsyncIterator[str]:
