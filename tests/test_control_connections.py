@@ -179,3 +179,19 @@ def test_google_legacy_split_layout_migrates_into_single_bundle(tmp_path):
     client = json.loads((paths["google_config"] / "client_secret.json").read_text())
     assert client["installed"]["client_id"] == "legacy-client"
     assert client["installed"]["client_secret"] == "legacy-secret"
+
+
+def test_managed_google_bundle_repairs_missing_client_secret(tmp_path):
+    from atlas.config import Settings
+    from atlas.control.connections import apply_managed_overrides, connection_paths
+
+    settings = Settings(state_dir=tmp_path, openai_api_key_file=None)
+    paths = connection_paths(settings)
+    paths["google_config"].mkdir(parents=True)
+    paths["google"].write_text('{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"refresh"}')
+
+    restarted = apply_managed_overrides(settings)
+
+    assert (paths["google_config"] / "client_secret.json").is_file()
+    assert restarted.gws_config_dir == paths["google_config"]
+    assert restarted.gws_credentials_file == paths["google"]

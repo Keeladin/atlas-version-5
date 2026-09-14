@@ -120,6 +120,14 @@ def apply_managed_overrides(settings):
         except (OSError, json.JSONDecodeError, ValueError):
             pass
     if paths["google"].is_file() and not paths["google"].is_symlink():
+        client_secret = paths["google_config"] / "client_secret.json"
+        if not client_secret.is_file():
+            try:
+                managed = json.loads(paths["google"].read_text())
+                if isinstance(managed, dict):
+                    _persist_google_bundle(paths, managed)
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
         settings.gws_credentials_file = paths["google"]
         settings.gws_config_dir = paths["google_config"]
     model = metadata.get("openai_model")
