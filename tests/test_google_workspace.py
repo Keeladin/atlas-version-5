@@ -169,3 +169,38 @@ def test_restart_with_managed_google_bundle_registers_drive_gmail_and_calendar(m
     build_capability_runtime(restarted, registry)
     operation_ids = {item.id for item in registry.operations()}
     assert {"drive.files.list", "gmail.messages.search", "calendar.agenda"} <= operation_ids
+
+
+def test_managed_encrypted_credentials_take_precedence_over_authorized_user(monkeypatch, tmp_path: Path) -> None:
+    seen = {}
+    credentials = tmp_path / "authorized_user.json"
+    credentials.write_text("{}")
+    (tmp_path / "credentials.enc").write_text("encrypted")
+
+    def fake_run(command, **kwargs):
+        seen["env"] = kwargs["env"]
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "msg-1"}), stderr="")
+
+    monkeypatch.setattr("atlas.integrations.google_workspace.subprocess.run", fake_run)
+    service = GoogleWorkspaceService(Path("/bin/gws"), credentials, tmp_path, tmp_path)
+    service.gmail_trash("msg-1")
+
+    assert "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE" not in seen["env"]
+    assert seen["env"]["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] == str(tmp_path)
+    assert seen["env"]["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] == "file"
+
+
+def test_authorized_user_is_fallback_without_encrypted_credentials(monkeypatch, tmp_path: Path) -> None:
+    seen = {}
+    credentials = tmp_path / "authorized_user.json"
+    credentials.write_text("{}")
+
+    def fake_run(command, **kwargs):
+        seen["env"] = kwargs["env"]
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"id": "msg-1"}), stderr="")
+
+    monkeypatch.setattr("atlas.integrations.google_workspace.subprocess.run", fake_run)
+    service = GoogleWorkspaceService(Path("/bin/gws"), credentials, tmp_path, tmp_path)
+    service.gmail_trash("msg-1")
+
+    assert seen["env"]["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] == str(credentials)

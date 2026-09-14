@@ -232,12 +232,19 @@ class GoogleWorkspaceService:
         params = {"calendarId": calendar_id or "primary", "eventId": event_id, "sendUpdates": "all"}
         return self._run_any("calendar", "events", "delete", "--params", json.dumps(params, separators=(",", ":")), "--format", "json")
 
-    def _run_any(self, *arguments: str) -> object:
-        env = {key: value for key, value in os.environ.items() if key not in {"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"}}
-        if self.credentials_file is not None:
+    def _command_env(self) -> dict[str, str]:
+        env = {key: value for key, value in os.environ.items() if key != "GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"}
+        # A successful `gws auth login` stores the current OAuth grant in the
+        # managed encrypted credential store. Prefer it when present so Atlas
+        # uses newly granted scopes instead of an older authorized_user fallback.
+        if not (self.config_dir / "credentials.enc").is_file() and self.credentials_file is not None:
             env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(self.credentials_file)
         env["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(self.config_dir)
         env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+        return env
+
+    def _run_any(self, *arguments: str) -> object:
+        env = self._command_env()
         completed = subprocess.run(
             [str(self.command), *arguments],
             cwd=self.workspace_dir, env=env, capture_output=True, text=True, timeout=45, check=False,
@@ -254,11 +261,7 @@ class GoogleWorkspaceService:
             return {"text": stdout}
 
     def _run(self, *arguments: str) -> dict[str, object]:
-        env = {key: value for key, value in os.environ.items() if key not in {"GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"}}
-        if self.credentials_file is not None:
-            env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(self.credentials_file)
-        env["GOOGLE_WORKSPACE_CLI_CONFIG_DIR"] = str(self.config_dir)
-        env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+        env = self._command_env()
         completed = subprocess.run(
             [str(self.command), *arguments],
             cwd=self.workspace_dir,
