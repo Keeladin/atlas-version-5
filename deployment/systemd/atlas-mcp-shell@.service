@@ -1,0 +1,30 @@
+[Unit]
+Description=Atlas governed MCP server: host diagnostics shell (connection %i)
+Documentation=file:///opt/atlas-v5/app/docs/27-host-operations.md
+CollectMode=inactive-or-failed
+
+[Service]
+# argv-only diagnostics as the unprivileged tools identity. The allow list and limits are
+# rendered into the environment file from /etc/atlas-v5/config/host-policy.toml.
+User=atlas-tools
+Group=atlas-tools
+EnvironmentFile=/etc/atlas-v5/config/atlas-mcp-shell.env
+ExecStart=/opt/atlas-v5/tools/mcp-shell-server/bin/mcp-shell-server
+WorkingDirectory=/
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+RuntimeMaxSec=600
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native

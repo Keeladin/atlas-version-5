@@ -101,7 +101,7 @@ async def test_25a13_marks_all_existing_memories_unverified_and_downgrades(pg_fa
     async with engine.begin() as connection:
         assert (
             await connection.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == '25a13'
+        ).scalar_one() == '25a16'
         assert (
             await connection.execute(text(
                 "SELECT count(*) FROM memory_obligations "
@@ -178,3 +178,39 @@ async def test_25a13_downgrade_refuses_after_review_resolution(pg_factory):
         )).one()
         assert row.grounding_status == "legacy_unverified"
         assert row.origin == "legacy_pre25a13"
+
+
+@pytest.mark.asyncio
+async def test_25a15_adds_wake_claims_and_downgrade_removes_event_tasks(pg_factory):
+    engine = pg_factory.kw['bind']
+    async with engine.begin() as connection:
+        schema = (await connection.execute(text('SELECT current_schema()'))).scalar_one()
+        await connection.run_sync(Base.metadata.drop_all)
+    env = {**os.environ, 'ATLAS_DATABASE_URL': os.environ['ATLAS_TEST_DATABASE_URL'],
+        'PGOPTIONS': f'-csearch_path={schema},public', 'PYTHONPATH': str(Path.cwd() / 'backend')}
+    env.pop('ATLAS_DATABASE_URL_FILE', None)
+
+    async def migrate(*args: str) -> None:
+        result = await asyncio.to_thread(subprocess.run, [sys.executable, '-m', 'alembic', *args], env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    await migrate('upgrade', 'head')
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "INSERT INTO scheduled_tasks (id, title, prompt, schedule_kind, schedule_value, timezone, enabled, next_run_at) VALUES "
+            "(:event, 'On event', 'act', 'event', '{\"source\": \"runtime.units\"}', 'UTC', true, '9999-12-31T00:00:00+00:00'), "
+            "(:cron, 'Daily', 'summarize', 'cron', '0 7 * * *', 'UTC', true, '2026-09-14T07:00:00+00:00')"),
+            {'event': uuid4(), 'cron': uuid4()})
+        columns = {row[0] for row in (await connection.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'notifications'"))).all()}
+        assert 'wake_claimed_at' in columns
+    await migrate('downgrade', '25a14')
+    async with engine.begin() as connection:
+        kinds = [row[0] for row in (await connection.execute(text('SELECT schedule_kind FROM scheduled_tasks'))).all()]
+        assert kinds == ['cron']
+        columns = {row[0] for row in (await connection.execute(text(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = 'notifications'"))).all()}
+        assert 'wake_claimed_at' not in columns
+    await migrate('upgrade', 'head')
+    async with engine.begin() as connection:
+        assert (await connection.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a16'

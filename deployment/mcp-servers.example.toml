@@ -1,0 +1,77 @@
+# Atlas V5 host operations. Owner authority lives in Control / operation_authority.
+# This file describes the structured broker surface only; it is not a second policy engine.
+
+[[servers]]
+id = "host.operations"
+family = "Host operations"
+description = "Structured host administration through Atlas's local root broker. No arbitrary shell command is exposed. Owner Auto / Ask me / Deny settings are enforced by Atlas before dispatch."
+transport = "socket"
+path = "/run/atlas-v5/mcp/host-operations.sock"
+trust = "external"
+timeout_seconds = 1200
+tools = [
+  "services_inspect", "service_logs", "service_start", "service_restart", "service_stop", "service_enable_disable",
+  "docker_inspect", "docker_start_restart", "docker_stop", "docker_create_remove",
+  "filesystem_read", "filesystem_write", "filesystem_delete",
+  "packages_inspect", "packages_change", "host_resources", "host_restart", "host_shutdown",
+]
+
+[servers.defaults]
+read_only_authority = "auto"
+destructive_authority = "approval_required"
+non_destructive_authority = "auto"
+
+[servers.tool.services_inspect]
+effect = "read"
+authority = "auto"
+[servers.tool.service_logs]
+effect = "read"
+authority = "auto"
+[servers.tool.service_start]
+effect = "execute"
+authority = "auto"
+[servers.tool.service_restart]
+effect = "execute"
+authority = "auto"
+[servers.tool.service_stop]
+effect = "execute"
+authority = "approval_required"
+[servers.tool.service_enable_disable]
+effect = "update"
+authority = "approval_required"
+[servers.tool.docker_inspect]
+effect = "read"
+authority = "auto"
+[servers.tool.docker_start_restart]
+effect = "execute"
+authority = "auto"
+[servers.tool.docker_stop]
+effect = "execute"
+authority = "approval_required"
+[servers.tool.docker_create_remove]
+effect = "update"
+authority = "approval_required"
+[servers.tool.filesystem_read]
+effect = "read"
+authority = "auto"
+[servers.tool.filesystem_write]
+effect = "update"
+authority = "auto"
+[servers.tool.filesystem_delete]
+effect = "delete"
+authority = "approval_required"
+[servers.tool.packages_inspect]
+effect = "read"
+authority = "auto"
+[servers.tool.packages_change]
+effect = "update"
+authority = "approval_required"
+[servers.tool.host_resources]
+effect = "read"
+authority = "auto"
+[servers.tool.host_restart]
+effect = "execute"
+authority = "approval_required"
+[servers.tool.host_shutdown]
+effect = "execute"
+authority = "approval_required"

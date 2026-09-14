@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas.persistence.models import ScheduledTaskRow
 
+from .events import EVENT_SENTINEL, parse_event_filter
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -38,7 +40,10 @@ def next_run(kind: str, value: str, timezone: str, *, now: datetime | None = Non
     if kind == "cron":
         local_now = current.astimezone(tz)
         return croniter(value, local_now).get_next(datetime).astimezone(UTC)
-    raise ValueError("schedule_kind must be once, interval, or cron")
+    if kind == "event":
+        parse_event_filter(value)
+        return EVENT_SENTINEL
+    raise ValueError("schedule_kind must be once, interval, cron, or event")
 
 
 class ScheduleService:
@@ -107,6 +112,8 @@ class ScheduleService:
         row.last_result = None
         if row.schedule_kind == "once":
             row.enabled = False
+        elif row.schedule_kind == "event":
+            row.next_run_at = EVENT_SENTINEL
         else:
             row.next_run_at = next_run(row.schedule_kind, row.schedule_value, row.timezone, now=current)
 

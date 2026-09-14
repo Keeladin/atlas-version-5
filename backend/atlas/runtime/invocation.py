@@ -5,3 +5,6 @@ from uuid import UUID
 current_transcript_id: ContextVar[UUID | None] = ContextVar(
     "atlas_current_transcript_id", default=None
 )
+current_run_id: ContextVar[UUID | None] = ContextVar(
+    "atlas_current_run_id", default=None
+)

@@ -2,7 +2,7 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from atlas.persistence.models import RegistryEntryRow
+from atlas.persistence.models import OperationAuthorityRow, RegistryEntryRow
 
 from .models import CapabilityAvailability, CapabilityEntry, CapabilitySource
 
@@ -67,3 +67,28 @@ class RegistryRepository:
         rows = (await self.session.execute(select(RegistryEntryRow).order_by(RegistryEntryRow.family))).scalars()
         return [{"id": row.id, "family": row.family, "description": row.description, "enabled": row.enabled,
             "provisioned": row.provisioned, "availability": row.availability} for row in rows]
+
+
+AUTHORITY_VALUES = ("auto", "approval_required", "forbidden")
+
+
+class OperationAuthorityRepository:
+    """Owner-set authority per operation. A row overrides every default; no row means default."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def overrides(self) -> dict[str, str]:
+        rows = await self.session.execute(select(OperationAuthorityRow.operation_id, OperationAuthorityRow.authority))
+        return {operation_id: authority for operation_id, authority in rows.all() if authority in AUTHORITY_VALUES}
+
+    async def set(self, operation_id: str, authority: str | None) -> None:
+        if authority is None:
+            row = await self.session.get(OperationAuthorityRow, operation_id)
+            if row is not None:
+                await self.session.delete(row)
+            return
+        if authority not in AUTHORITY_VALUES:
+            raise ValueError(f"authority must be one of {', '.join(AUTHORITY_VALUES)}")
+        statement = insert(OperationAuthorityRow).values(operation_id=operation_id, authority=authority)
+        await self.session.execute(statement.on_conflict_do_update(index_elements=["operation_id"], set_={"authority": authority}))

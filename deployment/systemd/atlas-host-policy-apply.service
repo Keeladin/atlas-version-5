@@ -1,0 +1,9 @@
+[Unit]
+Description=Apply host policy edits staged from Atlas Control
+Documentation=file:///opt/atlas-v5/app/docs/27-host-operations.md
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/atlas-v5/bin/apply-host-policy.sh
+# The apply script edits /etc/atlas-v5/config, /etc/polkit-1/rules.d, group membership and
+# restarts sockets; it runs as root by design and reports into the owner's control directory.

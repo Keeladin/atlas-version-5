@@ -11,6 +11,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Index,
+    Integer,
     LargeBinary,
     String,
     Text,
@@ -790,4 +791,65 @@ class ScheduledTaskRow(Base):
     last_status: Mapped[str | None] = mapped_column(String(32))
     last_result: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class NotificationRow(Base):
+    """Owner awareness ledger: structured events routed by policy to inbox and push."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    severity: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text, default="", server_default="")
+    detail: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+    sensitive_fields: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    thread_key: Mapped[str | None] = mapped_column(String(255), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", server_default="open", index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id", ondelete="SET NULL"), index=True)
+    push_status: Mapped[str] = mapped_column(String(16), default="none", server_default="none", index=True)
+    push_quiet: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    push_attempted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    push_result: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
+    wake_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class PushSubscriptionRow(Base):
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(Text)
+    auth: Mapped[str] = mapped_column(Text)
+    user_agent: Mapped[str] = mapped_column(Text, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class OperationAuthorityRow(Base):
+    """The owner's decision for one operation: auto, approval_required or forbidden. Absent means default."""
+
+    __tablename__ = "operation_authority"
+
+    operation_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    authority: Mapped[str] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class HostMonitorStateRow(Base):
+    """Durable cursor and state for deterministic runtime host monitors."""
+
+    __tablename__ = "host_monitor_state"
+
+    monitor_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    cursor: Mapped[str | None] = mapped_column(Text)
+    state: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -46,6 +46,19 @@ def test_project_write_authority_keeps_targeted_edits_auto_and_delete_gated() ->
     assert operations["storage.projects.delete"].authority == AuthorityMode.APPROVAL_REQUIRED
 
 
+def test_notifications_emit_is_auto_but_limited_to_informational_severities() -> None:
+    from atlas.capabilities import AuthorityMode, EffectKind
+    from atlas.registry.service import build_phase0_registry
+
+    operations = {item.id: item for item in build_phase0_registry().operations()}
+    emit = operations["notifications.emit"]
+    assert emit.effect == EffectKind.CREATE and emit.authority == AuthorityMode.AUTO
+    assert emit.input_schema["properties"]["severity"]["enum"] == ["info", "warning"]
+    assert emit.input_schema["additionalProperties"] is False
+    listing = operations["notifications.list"]
+    assert listing.effect == EffectKind.READ and listing.authority == AuthorityMode.AUTO
+
+
 def test_memory_search_is_bounded_read_capability() -> None:
     from atlas.capabilities import AuthorityMode, EffectKind
     from atlas.registry.service import build_phase0_registry

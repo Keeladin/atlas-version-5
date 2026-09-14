@@ -82,6 +82,91 @@ def test_deploy_quiesces_memory_worker_before_replacing_runtime() -> None:
     assert stop_worker < sync_dependencies
 
 
+def test_runtime_gets_journal_group_for_the_connector_monitor_and_push_defaults() -> None:
+    deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
+    assert "usermod -aG systemd-journal atlas-v5" in deploy
+    assert deploy.index("usermod -aG systemd-journal") < deploy.index("systemctl start atlas-v5.service")
+    assert "ATLAS_RDC_MONITOR_ENABLED=true" in deploy
+    assert "ATLAS_PUSH_VAPID_PRIVATE_KEY_FILE=/etc/atlas-v5/secrets/push-vapid-private-key" in deploy
+    bootstrap = (DEPLOYMENT / "bootstrap-push-vapid.sh").read_text()
+    assert "install -o root -g atlas-v5 -m 0640" in bootstrap
+    assert "prime256v1" in bootstrap
+    unit = (DEPLOYMENT / "systemd" / "atlas-v5.service").read_text()
+    assert "ProtectHome=yes" in unit  # the monitor reads the journal, never the owner's home
+
+
+def test_governed_mcp_servers_run_as_the_tools_identity_behind_group_sockets() -> None:
+    for name in ("atlas-mcp-systemd", "atlas-mcp-shell"):
+        socket = (DEPLOYMENT / "systemd" / f"{name}.socket").read_text()
+        service = (DEPLOYMENT / "systemd" / f"{name}@.service").read_text()
+        assert "SocketUser=root" in socket and "SocketGroup=atlas-v5" in socket and "SocketMode=0660" in socket
+        assert "Accept=yes" in socket and f"ListenStream=/run/atlas-v5/mcp/{name.split('-')[-1]}.sock" in socket
+        assert "User=atlas-tools" in service and "StandardInput=socket" in service and "StandardOutput=socket" in service
+        assert "sh -c" not in service and "NoNewPrivileges=yes" in service and "ProtectHome=yes" in service
+        assert "ProtectSystem=strict" in service and "RuntimeMaxSec=" in service
+    systemd_service = (DEPLOYMENT / "systemd" / "atlas-mcp-systemd@.service").read_text()
+    exec_start = next(line for line in systemd_service.splitlines() if line.startswith("ExecStart="))
+    assert "--enabled-tools ${SYSTEMD_MCP_ENABLED_TOOLS}" in exec_start  # the owner's policy decides which tools exist
+    assert "EnvironmentFile=/etc/atlas-v5/config/atlas-mcp-systemd.env" in systemd_service
+    shell_service = (DEPLOYMENT / "systemd" / "atlas-mcp-shell@.service").read_text()
+    assert "EnvironmentFile=/etc/atlas-v5/config/atlas-mcp-shell.env" in shell_service
+
+
+def test_host_operations_installer_uses_structured_root_broker_without_polkit_policy() -> None:
+    installer = (DEPLOYMENT / "install-host-mcp.sh").read_text()
+    assert '[[ ${EUID} -eq 0 ]]' in installer
+    assert "atlas_host_operations_server.py" in installer
+    assert '"${BIN_DIR}/atlas_mcp_probe.py"' in installer
+    assert 'runuser -u atlas-v5 -- /usr/bin/python3 "${BIN_DIR}/atlas_mcp_probe.py"' in installer
+    assert "enable --now atlas-host-operations.socket" in installer
+    assert "rm -f /etc/polkit-1/rules.d/50-atlas-tools.rules" in installer
+    assert "pkaction" not in installer and "systemd-mcp" not in installer and "mcp-shell-server" not in installer
+    assert "ATLAS_MCP_SERVERS_FILE" in installer and "ATLAS_HOST_POLICY_FILE" in installer and "unset_env" in installer
+    assert "host-scopes.json" in installer
+    broker = (DEPLOYMENT / "host-mcp" / "atlas_host_operations_server.py").read_text()
+    assert "shell=True" not in broker and "subprocess.run(argv" in broker
+    assert "filesystem_write" in broker and "packages_change" in broker and "host_shutdown" in broker
+    service = (DEPLOYMENT / "systemd" / "atlas-host-operations@.service").read_text()
+    assert "User=root" in service and "ExecStart=/usr/bin/python3 /opt/atlas-v5/bin/atlas_host_operations_server.py" in service
+    socket = (DEPLOYMENT / "systemd" / "atlas-host-operations.socket").read_text()
+    assert "SocketGroup=atlas-v5" in socket and "SocketMode=0660" in socket and "Accept=yes" in socket
+    deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
+    assert deploy.index("install-host-mcp.sh") > deploy.index("alembic upgrade head")
+    assert deploy.index("install-host-mcp.sh") < deploy.index("systemctl start atlas-v5.service")
+
+
+def test_proving_case_artifacts_are_safe_and_reproducible() -> None:
+    apply = (DEPLOYMENT / "host" / "desktop-commander" / "apply.sh").read_text()
+    assert 'if [[ ${EUID} -eq 0 ]]' in apply and "EXPECTED_VERSION=0.2.48" in apply
+    assert apply.index("--dry-run") < apply.index("patch -p1 -b -z .atlas-orig")
+    patch_text = (DEPLOYMENT / "host" / "desktop-commander" / "desktop-commander-0.2.48-persist-session.patch").read_text()
+    touched = {line.split()[1] for line in patch_text.splitlines() if line.startswith("+++ ")}
+    assert touched == {"b/dist/remote-device/device.js", "b/dist/remote-device/remote-channel.js"}
+    assert "onSessionRefreshed" in patch_text and "savePersistedConfig" in patch_text
+    for name in ("desktop-commander", "empire-control", "empire-account-portal"):
+        unit = (DEPLOYMENT / "host" / "units" / f"{name}.service").read_text()
+        assert "User=jaco" in unit and "WantedBy=multi-user.target" in unit and "sudo" not in unit
+    connector = (DEPLOYMENT / "host" / "units" / "desktop-commander.service").read_text()
+    assert "StartLimitIntervalSec=1h" in connector and "StartLimitBurst=3" in connector
+    converter = (DEPLOYMENT / "host" / "install-owner-units.sh").read_text()
+    assert 'if [[ ${EUID} -ne 0 ]]' in converter and "ATLAS_RDC_MONITOR_SCOPE=system" in converter
+    assert ".disabled" in converter and "enable --now" in converter
+
+
+def test_host_authority_is_runtime_owned_and_broker_has_no_policy_engine() -> None:
+    installer = (DEPLOYMENT / "install-host-mcp.sh").read_text()
+    assert "Authority is controlled in Atlas Control" in installer
+    assert "polkit is not part of this execution path" in installer
+    mcp = (DEPLOYMENT / "mcp-servers.example.toml").read_text()
+    assert 'id = "host.operations"' in mcp
+    assert "owner authority lives in control / operation_authority" in mcp.lower()
+    assert "authority_rules" not in mcp
+    broker = (DEPLOYMENT / "host-mcp" / "atlas_host_operations_server.py").read_text()
+    assert "operation_authority" not in broker and "approval_required" not in broker
+    unit = (DEPLOYMENT / "systemd" / "atlas-v5.service").read_text()
+    assert "ReadWritePaths=/var/lib/atlas-v5" in unit
+
+
 def test_observer_state_is_separate_and_owner_read_only() -> None:
     deploy = (DEPLOYMENT / "deploy-host.sh").read_text()
     bootstrap = (DEPLOYMENT / "bootstrap-host.sh").read_text()

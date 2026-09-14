@@ -4,8 +4,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
 import { MemoryObservabilityPanel } from './MemoryObservability'
+import { scheduleSummary } from './schedules'
 import { approvalFields } from './approval'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getPendingActions, getRecentActions, getScheduledTasks, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type PendingAction, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? 'ok' : 'bad'}`} aria-hidden="true" />
@@ -55,6 +57,10 @@ function formatBytes(value: number | null): string {
   return `${(value / 1024 ** 3).toFixed(1)} GB`
 }
 
+const SEVERITY_LABELS: Record<OwnerNotification['severity'], string> = {
+  info: 'Info', warning: 'Warning', action_required: 'Action needed', critical: 'Critical', resolved: 'Resolved',
+}
+
 function storageTitle(path: string): string {
   if (!path) return 'Workspace'
   return path.split('/').filter(Boolean).at(-1) ?? 'Workspace'
@@ -96,6 +102,10 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [drive, setDrive] = useState<DriveStorageListing | null>(null)
   const [projectStorage, setProjectStorage] = useState<LocalStorageListing | null>(null)
   const [repositories, setRepositories] = useState<RepositoryListing | null>(null)
+  const [repositoryExpanded, setRepositoryExpanded] = useState<string | null>(null)
+  const [repositoryDetails, setRepositoryDetails] = useState<Record<string, RepositoryStatus>>({})
+  const [repositoryDetailLoading, setRepositoryDetailLoading] = useState<string | null>(null)
+  const [repositoryDetailErrors, setRepositoryDetailErrors] = useState<Record<string, string>>({})
   const [driveStack, setDriveStack] = useState<Array<{ id: string; name: string }>>([{ id: 'root', name: 'My Drive' }])
   const [storageLoading, setStorageLoading] = useState(false)
   const [storageError, setStorageError] = useState<string | null>(null)
@@ -110,7 +120,9 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([])
-  const [mobileActivity, setMobileActivity] = useState<'chats' | 'needs' | 'latest' | null>(null)
+  const [mobileActivity, setMobileActivity] = useState<'chats' | 'needs' | 'updates' | 'latest' | null>(null)
+  const [notifications, setNotifications] = useState<OwnerNotification[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const composerFileInputRef = useRef<HTMLInputElement | null>(null)
   const [composerAttachments, setComposerAttachments] = useState<LocalStorageEntry[]>([])
@@ -131,6 +143,25 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     getPendingActions().then(setPendingActions).catch(() => setPendingActions([]))
     getRecentActions(4).then(setRecentActions).catch(() => setRecentActions([]))
     getScheduledTasks(true).then(setScheduledTasks).catch(() => setScheduledTasks([]))
+  }, [])
+
+  function refreshNotifications(): Promise<void> {
+    // Best-effort on the main surface; the Control page reports configuration problems.
+    return getNotifications(20).then((inbox) => { setNotifications(inbox.items); setUnreadCount(inbox.unread) }).catch(() => undefined)
+  }
+
+  useEffect(() => {
+    void refreshNotifications()
+    const interval = window.setInterval(() => { if (document.visibilityState === 'visible') void refreshNotifications() }, 60_000)
+    const onVisible = () => { if (document.visibilityState === 'visible') void refreshNotifications() }
+    const onMessage = (event: MessageEvent) => { if ((event.data as { type?: string } | null)?.type === 'notification') void refreshNotifications() }
+    document.addEventListener('visibilitychange', onVisible)
+    navigator.serviceWorker?.addEventListener('message', onMessage)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVisible)
+      navigator.serviceWorker?.removeEventListener('message', onMessage)
+    }
   }, [])
 
   const activeChat = useMemo(() => chats.find((chat) => chat.id === activeChatId) ?? null, [chats, activeChatId])
@@ -314,6 +345,25 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     }
   }
 
+  async function toggleRepository(repo: RepositoryEntry) {
+    if (repositoryExpanded === repo.full_name) {
+      setRepositoryExpanded(null)
+      return
+    }
+    setRepositoryExpanded(repo.full_name)
+    if (repositoryDetails[repo.full_name]) return
+    setRepositoryDetailLoading(repo.full_name)
+    setRepositoryDetailErrors((current) => { const next = { ...current }; delete next[repo.full_name]; return next })
+    try {
+      const detail = await getRepositoryStatus(repo)
+      setRepositoryDetails((current) => ({ ...current, [repo.full_name]: detail }))
+    } catch (cause) {
+      setRepositoryDetailErrors((current) => ({ ...current, [repo.full_name]: cause instanceof Error ? cause.message : String(cause) }))
+    } finally {
+      setRepositoryDetailLoading((current) => current === repo.full_name ? null : current)
+    }
+  }
+
   async function addFiles(files: FileList | File[]) {
     const items = Array.from(files)
     if (!items.length || uploading) return
@@ -438,6 +488,49 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     await submitOwnerMessage('continue', [], false)
   }
 
+  async function handleNotificationRead(item: OwnerNotification) {
+    try { await markNotificationRead(item.id); await refreshNotifications() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  async function handleNotificationsReadAll() {
+    try { await markAllNotificationsRead(); await refreshNotifications() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  async function handleNotificationResolve(item: OwnerNotification) {
+    try { await resolveNotification(item.id); await refreshNotifications() }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  function renderNotification(item: OwnerNotification) {
+    const code = typeof item.detail.code === 'string' ? item.detail.code : null
+    const link = typeof item.detail.open_url === 'string' && /^https?:\/\//.test(item.detail.open_url) ? item.detail.open_url : null
+    const expires = typeof item.detail.expires_at === 'string' ? new Date(item.detail.expires_at) : null
+    return (
+      <div className={`update-row severity-${item.severity}${item.status !== 'open' ? ' settled' : ''}${item.read ? '' : ' unread'}`} key={item.id}>
+        <div className="update-head"><span>{SEVERITY_LABELS[item.severity] ?? item.severity}</span><span>{item.created_at ? new Date(item.created_at).toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''}</span></div>
+        <strong>{item.title}</strong>
+        {item.body ? <p>{item.body}</p> : null}
+        {code ? <div className="update-code"><code>{code}</code><button type="button" onClick={() => { void navigator.clipboard?.writeText(code) }}>Copy</button>{expires ? <span>expires {expires.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span> : null}</div> : null}
+        <div className="approval-actions">
+          {link ? <a href={link} target="_blank" rel="noreferrer">Open</a> : null}
+          {!item.read ? <button type="button" onClick={() => { void handleNotificationRead(item) }}>Mark read</button> : null}
+          {item.status === 'open' && item.severity !== 'info' ? <button type="button" onClick={() => { void handleNotificationResolve(item) }}>Resolve</button> : null}
+        </div>
+      </div>
+    )
+  }
+
+  function renderUpdatesSection() {
+    return (
+      <section className="activity-section updates-section">
+        <div className="activity-heading-row"><span className="activity-heading">Updates</span><span className="activity-count">{unreadCount}</span>{unreadCount ? <button type="button" className="activity-inline-button" onClick={() => { void handleNotificationsReadAll() }}>Mark all read</button> : null}</div>
+        {notifications.length ? <div className="updates-list">{notifications.slice(0, 8).map(renderNotification)}</div> : <p className="activity-empty">No updates yet. Atlas posts status changes and alerts here and to your devices.</p>}
+      </section>
+    )
+  }
+
   function renderPendingAction(action: PendingAction) {
     const args = action.detail.arguments ?? {}
     const uncertain = action.state === 'uncertain'
@@ -491,6 +584,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         <div className="mobile-activity-controls" aria-label="Activity shortcuts">
           <button type="button" className={mobileActivity === 'chats' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'chats' ? null : 'chats')}>Chats</button>
           <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'needs' ? null : 'needs')}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
+          <button type="button" className={mobileActivity === 'updates' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'updates' ? null : 'updates')}>Updates <span>{unreadCount}</span></button>
           <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'latest' ? null : 'latest')}>Latest</button>
           <span className="mobile-token-count" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of Atlas working-context budget` : 'Working-context token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />{conversationContext ? `${formatTokens(conversationContext.input_tokens)}/${formatTokens(conversationContext.limit_tokens)}` : '—/64k'}</span>
           <button type="button" className="mobile-auth-control" onClick={() => { void onLogout() }}>Log out</button>
@@ -499,7 +593,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
       {mobileActivity ? <>
         <button className="mobile-activity-backdrop" type="button" aria-label="Close activity" onClick={() => setMobileActivity(null)} />
-        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'chats' ? 'Chats' : mobileActivity === 'needs' ? 'Needs You' : 'Latest activity'}>
+        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'chats' ? 'Chats' : mobileActivity === 'needs' ? 'Needs You' : mobileActivity === 'updates' ? 'Updates' : 'Latest activity'}>
           {mobileActivity === 'chats' ? <section className="mobile-chat-section">
             <div className="chat-rail-head"><strong>Chats</strong><button type="button" disabled={chatBusy || sending} onClick={() => { void startNewChat() }}>+ New chat</button></div>
             {renderChatEntries()}
@@ -508,7 +602,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             {error ? <p className="activity-empty">{error}</p> : null}
             {pendingActions.map(renderPendingAction)}
             {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
-          </section> : <section className="activity-section">
+          </section> : mobileActivity === 'updates' ? renderUpdatesSection() : <section className="activity-section">
             <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
             {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
           </section>}
@@ -611,8 +705,42 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                   <div className="storage-browser">
                     <div className="storage-summary"><span>{repositories.repositories.length} repositor{repositories.repositories.length === 1 ? 'y' : 'ies'}</span><span>Owner-authorized GitHub · remote state</span></div>
                     <div className="storage-table repository-table" role="table" aria-label="GitHub repositories">
-                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Visibility</span><span>State</span><span>Branch</span></div>
-                      {repositories.repositories.map((repo) => <button className="storage-row" type="button" role="row" key={repo.full_name} onClick={() => { if (repo.url) window.open(repo.url, '_blank', 'noopener,noreferrer') }}><span className="storage-name"><span className="storage-icon">⌘</span>{repo.name}</span><span>{repo.private ? 'private' : 'public'}</span><span>{repo.archived ? 'archived' : 'active'}</span><span>{repo.default_branch ?? '—'}</span></button>)}
+                      <div className="storage-row storage-header repository-summary-row" role="row"><span>Name</span><span>Visibility</span><span>State</span><span>Branch</span></div>
+                      {repositories.repositories.map((repo) => {
+                        const expanded = repositoryExpanded === repo.full_name
+                        const detail = repositoryDetails[repo.full_name]
+                        const detailError = repositoryDetailErrors[repo.full_name]
+                        return <div className={`repository-entry${expanded ? ' expanded' : ''}`} key={repo.full_name}>
+                          <button className="storage-row repository-summary-row" type="button" role="row" aria-expanded={expanded} onClick={() => { void toggleRepository(repo) }}>
+                            <span className="storage-name"><span className="storage-icon">{expanded ? '⌄' : '›'}</span>{repo.name}</span>
+                            <span>{repo.private ? 'private' : 'public'}</span><span>{repo.archived ? 'archived' : 'active'}</span><span>{repo.default_branch ?? '—'}</span>
+                          </button>
+                          {expanded ? <div className="repository-detail">
+                            {repositoryDetailLoading === repo.full_name ? <div className="repository-detail-loading">Reading local, remote and CI state…</div> : null}
+                            {detailError ? <div className="chat-error repository-detail-error">{detailError}</div> : null}
+                            {detail ? <>
+                              <div className="repository-detail-grid">
+                                <section className="repository-status-card">
+                                  <div className="repository-status-head"><span>Remote · {detail.remote.branch ?? repo.default_branch ?? 'default'}</span><span className={`repository-ci repository-ci-${detail.ci.state}`}>{detail.ci.state === 'success' ? 'CI passed' : detail.ci.state === 'failure' ? 'CI failed' : detail.ci.state === 'pending' ? 'CI running' : 'No CI'}</span></div>
+                                  <a href={detail.remote.url ?? repo.url ?? '#'} target="_blank" rel="noreferrer"><strong>{detail.remote.short_sha}</strong> {detail.remote.subject || 'No commit subject'}</a>
+                                  <small>{detail.remote.committed_at ? new Date(detail.remote.committed_at).toLocaleString() : 'Commit time unavailable'} · {detail.ci.checks} checks · {detail.ci.statuses} statuses</small>
+                                </section>
+                                <section className="repository-status-card">
+                                  <div className="repository-status-head"><span>Local</span><span>{detail.local.length} checkout{detail.local.length === 1 ? '' : 's'}</span></div>
+                                  {detail.local.length === 0 ? <p>No matching local checkout under Projects.</p> : detail.local.map((local) => <div className="repository-local" key={local.path}>
+                                    <div><strong>{local.branch}</strong><code>{local.short_sha}</code><span className={`repository-worktree ${local.dirty ? 'dirty' : 'clean'}`}>{local.dirty ? 'dirty' : 'clean'}</span></div>
+                                    <span className="repository-path">{local.path}</span>
+                                    <span>{local.subject || 'No commit subject'}</span>
+                                    <small>{local.relation === 'in_sync' ? 'In sync with remote' : local.relation === 'ahead' ? `${local.ahead ?? 0} ahead` : local.relation === 'behind' ? `${local.behind ?? 0} behind` : local.relation === 'diverged' ? `${local.ahead ?? 0} ahead · ${local.behind ?? 0} behind` : local.remote_tracking_current ? 'Remote tracking current' : 'Comparison needs a fresh remote object'}</small>
+                                  </div>)}
+                                </section>
+                              </div>
+                              {detail.ci.details.length ? <div className="repository-checks">{detail.ci.details.map((check) => <a href={check.url ?? '#'} target="_blank" rel="noreferrer" key={`${check.name}-${check.url ?? ''}`}><span>{check.name}</span><small>{check.conclusion ?? check.status ?? 'unknown'}</small></a>)}</div> : null}
+                              {repo.url ? <div className="repository-detail-actions"><a href={repo.url} target="_blank" rel="noreferrer">Open on GitHub ↗</a></div> : null}
+                            </> : null}
+                          </div> : null}
+                        </div>
+                      })}
                     </div>
                     {repositories.repositories.length === 0 ? <div className="storage-empty">No repositories returned by GitHub.</div> : null}
                   </div>
@@ -679,6 +807,8 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
               {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
             </section>
             <div className="activity-divider" />
+            {renderUpdatesSection()}
+            <div className="activity-divider" />
             <section className="activity-section latest-section">
               <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
               {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
@@ -686,7 +816,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
             <div className="activity-divider" />
             <section className="activity-section scheduled-section">
               <div className="activity-heading-row"><span className="activity-heading">Scheduled tasks</span><span className="activity-count">{scheduledTasks.filter((task) => task.enabled).length}</span></div>
-              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{task.enabled ? new Date(task.next_run_at).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Paused'} · {task.schedule_kind}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
+              {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 4).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{scheduleSummary(task)}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
             </section>
           </aside>
         </main>
@@ -755,6 +885,13 @@ function OwnerLogin({ status, onAuthenticated }: { status: AuthStatus; onAuthent
 
 function ControlPage({ health }: { health: Health | null }) {
   const [capabilities, setCapabilities] = useState<OwnerCapability[]>([])
+  const [operations, setOperations] = useState<OperationAuthority[]>([])
+  const [hostScopes, setHostScopes] = useState<HostFilesystemScopes>({ read: [], write: [], delete: [] })
+  const [hostScopesDraft, setHostScopesDraft] = useState<HostFilesystemScopes>({ read: [], write: [], delete: [] })
+  const [hostScopesBusy, setHostScopesBusy] = useState(false)
+  const [hostScopesMessage, setHostScopesMessage] = useState<string | null>(null)
+  const [operationBusy, setOperationBusy] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const [capabilityBusy, setCapabilityBusy] = useState<string | null>(null)
   const [capabilityError, setCapabilityError] = useState<string | null>(null)
   const [configuration, setConfiguration] = useState<ControlConfiguration | null>(null)
@@ -773,11 +910,68 @@ function ControlPage({ health }: { health: Health | null }) {
   const [githubToken, setGithubToken] = useState('')
   const [githubOwner, setGithubOwner] = useState('')
   const [googleCredential, setGoogleCredential] = useState('')
+  const [pushState, setPushState] = useState<PushSupport>(() => pushSupport())
+  const [pushDevices, setPushDevices] = useState<PushSubscriptionSummary[]>([])
+  const [pushMessage, setPushMessage] = useState<string | null>(null)
+  const [pushBusy, setPushBusy] = useState(false)
+  const [thisDeviceSubscribed, setThisDeviceSubscribed] = useState(false)
+
+  function refreshPush(): Promise<void> {
+    return Promise.all([getPushSubscriptions().catch(() => [] as PushSubscriptionSummary[]), currentPushEndpoint().catch(() => null)])
+      .then(([devices, endpoint]) => { setPushState(pushSupport()); setPushDevices(devices); setThisDeviceSubscribed(Boolean(endpoint)) })
+  }
+
+  useEffect(() => { void refreshPush() }, [])
+
+  useEffect(() => {
+    getHostFilesystemScopes().then((next) => { setHostScopes(next); setHostScopesDraft(next) }).catch((cause) => setHostScopesMessage(cause instanceof Error ? cause.message : String(cause)))
+  }, [])
+
+  async function saveHostScopes() {
+    setHostScopesBusy(true); setHostScopesMessage(null)
+    try {
+      const saved = await setHostFilesystemScopes(hostScopesDraft)
+      setHostScopes(saved); setHostScopesDraft(saved); setHostScopesMessage('Filesystem paths saved.')
+    } catch (cause) { setHostScopesMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setHostScopesBusy(false) }
+  }
+
+  async function handlePushEnable() {
+    setPushBusy(true); setPushMessage(null)
+    try { await enablePushOnThisDevice(); setPushMessage('Push enabled on this device.'); await refreshPush() }
+    catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)); setPushState(pushSupport()) }
+    finally { setPushBusy(false) }
+  }
+
+  async function handlePushDisable() {
+    setPushBusy(true); setPushMessage(null)
+    try { await disablePushOnThisDevice(); setPushMessage('Push disabled on this device.'); await refreshPush() }
+    catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPushBusy(false) }
+  }
+
+  async function handlePushTest() {
+    setPushBusy(true); setPushMessage('Sending test notification…')
+    try {
+      const result = await sendTestPush()
+      setPushMessage(!result.configured ? 'Push is not configured on the server yet: run deployment/bootstrap-push-vapid.sh.' : result.push_status === 'sent' ? 'Test notification delivered to the push service.' : result.push_status === 'skipped' ? 'No device is subscribed yet; the test landed in Updates only.' : `Test notification ${result.push_status ?? 'queued'}.`)
+      await refreshPush()
+    } catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPushBusy(false) }
+  }
+
+  async function handlePushRemove(device: PushSubscriptionSummary) {
+    setPushBusy(true)
+    try { await deletePushSubscription(device.id); await refreshPush() }
+    catch (cause) { setPushMessage(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setPushBusy(false) }
+  }
 
   async function refreshControl() {
-    const [nextCapabilities, nextConfiguration] = await Promise.all([getOwnerCapabilities(), getControlConfiguration()])
+    const [nextCapabilities, nextConfiguration, nextOperations] = await Promise.all([getOwnerCapabilities(), getControlConfiguration(), getOperationAuthorities().catch(() => [] as OperationAuthority[])])
     setCapabilities(nextCapabilities)
     setConfiguration(nextConfiguration)
+    setOperations(nextOperations)
     const model = nextConfiguration.connections.find((item) => item.id === 'model')
     const github = nextConfiguration.connections.find((item) => item.id === 'github')
     if (model?.model) setModelName(model.model)
@@ -785,9 +979,10 @@ function ControlPage({ health }: { health: Health | null }) {
   }
 
   useEffect(() => {
-    Promise.all([getOwnerCapabilities(), getControlConfiguration()]).then(([nextCapabilities, nextConfiguration]) => {
+    Promise.all([getOwnerCapabilities(), getControlConfiguration(), getOperationAuthorities().catch(() => [] as OperationAuthority[])]).then(([nextCapabilities, nextConfiguration, nextOperations]) => {
       setCapabilities(nextCapabilities)
       setConfiguration(nextConfiguration)
+      setOperations(nextOperations)
       const model = nextConfiguration.connections.find((item) => item.id === 'model')
       const github = nextConfiguration.connections.find((item) => item.id === 'github')
       if (model?.model) setModelName(model.model)
@@ -795,6 +990,77 @@ function ControlPage({ health }: { health: Health | null }) {
     }).catch((cause) => setConfigurationError(String(cause)))
     getConversationContextStats().then(setContextStats).catch((cause) => setContextStatsError(String(cause)))
   }, [])
+
+  async function changeOperationAuthority(item: OperationAuthority, value: string) {
+    const authority = value === 'default' ? null : value as OperationAuthorityValue
+    setOperationBusy(item.id); setOperationError(null)
+    try {
+      const updated = await setOperationAuthority(item.id, authority)
+      setOperations((current) => current.map((entry) => entry.id === updated.id ? updated : entry))
+    } catch (cause) { setOperationError(cause instanceof Error ? cause.message : String(cause)) }
+    finally { setOperationBusy(null) }
+  }
+
+  function renderAuthorityCard() {
+    const labels: Record<string, string> = { auto: 'Automatic', approval_required: 'Ask me', forbidden: 'Deny' }
+    const byId = new Map(operations.map((item) => [item.id, item]))
+    const hostId = (tool: string) => `host.operations.${tool}`
+    const rows = [
+      { section: 'System services', label: 'Inspect services', tool: 'services_inspect' },
+      { section: 'System services', label: 'Read service logs', tool: 'service_logs' },
+      { section: 'System services', label: 'Start service', tool: 'service_start' },
+      { section: 'System services', label: 'Restart service', tool: 'service_restart' },
+      { section: 'System services', label: 'Stop service', tool: 'service_stop' },
+      { section: 'System services', label: 'Enable / disable service', tool: 'service_enable_disable' },
+      { section: 'Docker', label: 'Inspect containers', tool: 'docker_inspect' },
+      { section: 'Docker', label: 'Start / restart container', tool: 'docker_start_restart' },
+      { section: 'Docker', label: 'Stop container', tool: 'docker_stop' },
+      { section: 'Docker', label: 'Create / remove container', tool: 'docker_create_remove' },
+      { section: 'Filesystem', label: 'Read', tool: 'filesystem_read' },
+      { section: 'Filesystem', label: 'Write', tool: 'filesystem_write' },
+      { section: 'Filesystem', label: 'Delete', tool: 'filesystem_delete' },
+      { section: 'Packages', label: 'Inspect', tool: 'packages_inspect' },
+      { section: 'Packages', label: 'Install / update / remove', tool: 'packages_change' },
+      { section: 'Host', label: 'View resources', tool: 'host_resources' },
+      { section: 'Host', label: 'Restart', tool: 'host_restart' },
+      { section: 'Host', label: 'Shutdown', tool: 'host_shutdown' },
+    ]
+    const sections = Array.from(new Set(rows.map((row) => row.section)))
+    const other = operations.filter((item) => !item.id.startsWith('host.operations.'))
+    function selector(item: OperationAuthority | undefined, label: string) {
+      if (!item) return <span className="authority-effective">Not installed</span>
+      return <select aria-label={`Authority for ${label}`} value={item.override ?? 'default'} disabled={operationBusy !== null || !item.enabled} onChange={(event) => { void changeOperationAuthority(item, event.target.value) }}>
+        <option value="default">{labels[item.default_authority] ?? item.default_authority}</option>
+        <option value="auto">Automatic</option><option value="approval_required">Ask me</option><option value="forbidden">Deny</option>
+      </select>
+    }
+    const scopeDirty = JSON.stringify(hostScopes) !== JSON.stringify(hostScopesDraft)
+    return (
+      <>
+        <section className="control-card control-full authority-card host-operations-card">
+          <div className="control-section-inline"><div><div className="panel-title">Host operations</div><p>You decide what Atlas may do on this server. Risk information informs the choice; it does not make the choice for you.</p></div><span>Owner policy</span></div>
+          {operationError ? <p className="warning-text">{operationError}</p> : null}
+          {sections.map((section) => <div className="host-operation-group" key={section}>
+            <h3>{section}</h3>
+            <div className="host-operation-rows">
+              {rows.filter((row) => row.section === section).map((row) => {
+                const item = byId.get(hostId(row.tool))
+                return <div className={`host-operation-row${item?.enabled ? '' : ' disabled'}`} key={row.tool}>
+                  <div><strong>{row.label}</strong>{item ? <small>{item.description}</small> : <small>Host operations broker not loaded yet.</small>}</div>
+                  {selector(item, row.label)}
+                </div>
+              })}
+            </div>
+            {section === 'Filesystem' ? <div className="host-path-scopes">
+              {(['read', 'write', 'delete'] as const).map((kind) => <label key={kind}><span>{kind[0].toUpperCase() + kind.slice(1)} paths</span><textarea rows={2} value={hostScopesDraft[kind].join('\n')} placeholder="One absolute path per line" onChange={(event) => setHostScopesDraft((current) => ({ ...current, [kind]: event.target.value.split('\n').map((value) => value.trim()).filter(Boolean) }))} /></label>)}
+              <div className="push-actions"><button type="button" disabled={hostScopesBusy || !scopeDirty} onClick={() => { void saveHostScopes() }}>Save paths</button>{hostScopesMessage ? <span>{hostScopesMessage}</span> : null}</div>
+            </div> : null}
+          </div>)}
+        </section>
+        {other.length ? <details className="control-card control-full control-advanced"><summary><span><span className="panel-title">Other operation authority</span><small>Non-host capabilities retain the same owner-controlled authority model</small></span><span>Expand</span></summary><div className="advanced-content"><section><div className="authority-rows">{other.map((item) => <div className={`authority-row${item.enabled ? '' : ' disabled'}`} key={item.id}><div className="authority-copy"><strong>{item.id}</strong><small>{item.family} · {item.effect}</small></div><span className={`authority-effective authority-${item.effective_authority}`}>{labels[item.effective_authority]}</span>{selector(item, item.id)}</div>)}</div></section></div></details> : null}
+      </>
+    )
+  }
 
   async function toggleCapability(item: OwnerCapability) {
     setCapabilityBusy(item.id); setCapabilityError(null)
@@ -902,6 +1168,21 @@ function ControlPage({ health }: { health: Health | null }) {
         <section className="control-card"><div className="panel-title">System</div><div className="control-hero-state"><StatusDot ok={Boolean(health?.database.ok)} /><strong>{health?.database.ok ? 'Healthy' : 'Degraded'}</strong></div><p>PostgreSQL {health?.database.ok ? 'connected' : 'unavailable'} · {health?.registry_entries ?? '—'} registry entries</p></section>
         <section className="control-card"><div className="panel-title">Working context</div><div className="control-hero-state"><ContextDot state={contextStats?.state ?? null} /><strong>{contextStats ? `${formatTokens(contextStats.current_context_tokens)} / ${formatTokens(contextStats.limit_tokens)}` : 'Measuring…'}</strong></div><p>{contextStats ? `${contextStats.policy.selected_exchanges} exchanges · ${contextStats.policy.compacted_tool_turns} compacted tool turns` : 'Bounded foreground context'}</p></section>
 
+        <section className="control-card control-full notifications-card">
+          <div className="control-section-inline"><div><div className="panel-title">Notifications</div><p>Atlas keeps you in the loop: status changes land in Updates and, when it matters, on your devices.</p></div><span className={configuration?.notifications?.push_configured ? 'healthy-text' : 'warning-text'}>{configuration?.notifications ? (configuration.notifications.push_configured ? 'Push configured' : 'Push not configured') : '…'}</span></div>
+          <div className="push-status-row">
+            <span>{!pushState.supported ? 'This browser cannot receive Web Push.' : pushState.permission === 'denied' ? 'Notifications are blocked for this site in the browser settings.' : thisDeviceSubscribed ? 'This device receives Atlas notifications.' : 'This device is not subscribed yet.'}</span>
+            {pushState.ios && !pushState.standalone ? <span>On iPhone or iPad, add Atlas to the Home Screen first; Safari only delivers push to installed apps.</span> : null}
+          </div>
+          <div className="push-actions">
+            {thisDeviceSubscribed ? <button type="button" disabled={pushBusy} onClick={() => { void handlePushDisable() }}>Disable on this device</button> : <button type="button" disabled={pushBusy || !pushState.supported || pushState.permission === 'denied' || !configuration?.notifications?.push_configured} onClick={() => { void handlePushEnable() }}>Enable on this device</button>}
+            <button type="button" disabled={pushBusy} onClick={() => { void handlePushTest() }}>Send test</button>
+          </div>
+          {pushMessage ? <p className="connection-message">{pushMessage}</p> : null}
+          <div className="push-devices">{pushDevices.length ? pushDevices.map((device) => <div className="push-device" key={device.id}><div><strong>{device.host}</strong><small>{device.user_agent || 'unknown device'} · {device.disabled ? 'disabled by the push service' : device.last_success_at ? `last delivered ${new Date(device.last_success_at).toLocaleString()}` : 'nothing delivered yet'}</small></div><button type="button" disabled={pushBusy} onClick={() => { void handlePushRemove(device) }}>Remove</button></div>) : <p>No devices registered yet.</p>}</div>
+          {configuration?.notifications ? <p className="control-note">Connector monitor {configuration.notifications.rdc_monitor_enabled ? `watching ${configuration.notifications.rdc_monitor_unit} (read only)` : 'off'} · repeat pushes stay quiet for {configuration.notifications.push_repeat_minutes} min.</p> : null}
+        </section>
+
         <div className="control-section-heading"><div><span className="eyebrow">CONNECTIONS</span><h2>Setup & integrations</h2></div><span>Configure, verify and reconnect the services Atlas depends on.</span></div>
         {configurationError ? <section className="control-card control-full"><p className="warning-text">{configurationError}</p></section> : configuration ? configuration.connections.map(connectionCard) : <section className="control-card control-full"><p>Checking connections…</p></section>}
 
@@ -909,6 +1190,9 @@ function ControlPage({ health }: { health: Health | null }) {
           {capabilityError ? <p className="warning-text">{capabilityError}</p> : null}
           <div className="capability-grid">{capabilities.map((item) => <button type="button" role="switch" aria-checked={item.enabled} className={`capability-switch${item.enabled ? ' enabled' : ''}`} key={item.id} disabled={capabilityBusy !== null} onClick={() => { void toggleCapability(item) }}><span className="capability-switch-copy"><strong>{item.family}</strong><small>{item.availability}</small></span><span className="capability-toggle"><i /></span></button>)}</div>
         </section>
+
+        {renderAuthorityCard()}
+
 
         <MemoryObservabilityPanel />
 

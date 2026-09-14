@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Declares the polkit action that openSUSE/systemd-mcp consults for every read-only tool
+  (list_loaded_units, list_unit_files, list_log, check_restart_reload). Copied from the
+  upstream project's configs/com.suse.gatekeeper.policy (MIT) without the gatekeeper owner
+  annotation, because Atlas does not run the gatekeeper service. The action defaults to
+  auth_admin; the owner's host policy grants it to the tools identity through the rendered
+  rule when it is listed under polkit.extra_actions.
+-->
+<policyconfig>
+  <vendor>Gatekeeper Service</vendor>
+  <vendor_url>http://suse.com/</vendor_url>
+
+  <action id="com.suse.gatekeeper.readlog">
+    <description>Read systemd unit state and the system log via systemd-mcp</description>
+    <message>Authentication is required to read the system log.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

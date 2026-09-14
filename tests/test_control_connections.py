@@ -31,6 +31,18 @@ def test_managed_connections_survive_restart_without_exposing_secret_paths(tmp_p
     assert restarted.gws_credentials_file == paths["google"]
     assert restarted.gws_config_dir == paths["google_config"]
     assert not (restarted.gws_config_dir / "credentials.enc").exists()
+    client_config = json.loads((restarted.gws_config_dir / "client_secret.json").read_text())
+    assert client_config == {
+        "installed": {
+            "client_id": "client",
+            "client_secret": "secret",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+    assert stat.S_IMODE((restarted.gws_config_dir / "client_secret.json").stat().st_mode) == 0o600
+    assert restarted.gws_credentials_file.parent == restarted.gws_config_dir
     metadata = json.loads(paths["metadata"].read_text())
     assert metadata == {"github_owner": "fixture-owner", "openai_model": "fixture-model"}
 
@@ -145,3 +157,25 @@ async def test_existing_model_key_can_change_model_without_returning_secret(monk
         provider="openai", model="selected-model"))
     assert [item[0] for item in calls] == ["verify", "save"]
     assert "protected-existing-key" not in json.dumps(result)
+
+
+def test_google_legacy_split_layout_migrates_into_single_bundle(tmp_path):
+    settings = Settings(state_dir=tmp_path, gws_credentials_file=None)
+    paths = connection_paths(settings)
+    paths["google_legacy"].parent.mkdir(parents=True, exist_ok=True)
+    paths["google_legacy"].write_text(json.dumps({
+        "type": "authorized_user",
+        "client_id": "legacy-client",
+        "client_secret": "legacy-secret",
+        "refresh_token": "legacy-refresh",
+    }))
+
+    restarted = apply_managed_overrides(Settings(state_dir=tmp_path, gws_credentials_file=None))
+
+    assert restarted.gws_credentials_file == paths["google"]
+    assert restarted.gws_config_dir == paths["google_config"]
+    assert restarted.gws_credentials_file.parent == restarted.gws_config_dir
+    assert json.loads(paths["google"].read_text())["refresh_token"] == "legacy-refresh"
+    client = json.loads((paths["google_config"] / "client_secret.json").read_text())
+    assert client["installed"]["client_id"] == "legacy-client"
+    assert client["installed"]["client_secret"] == "legacy-secret"

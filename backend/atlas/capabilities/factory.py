@@ -5,10 +5,14 @@ from atlas.capabilities import AuthorityMode, EffectKind, OperationDescriptor
 from atlas.config import Settings
 from atlas.db import get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.integrations.mcp_servers import register_mcp_servers
 from atlas.memory import MemoryService
 from atlas.memory.embeddings import OpenAIEmbeddingClient
-from atlas.registry.repository import RegistryRepository
+from atlas.notifications import NotificationEvent, NotificationService
+from atlas.notifications.models import SEVERITIES
+from atlas.registry.repository import OperationAuthorityRepository, RegistryRepository
 from atlas.registry.service import EnvironmentRegistry
+from atlas.runtime.invocation import current_run_id
 from atlas.runtime.observations import EvidenceStore
 from atlas.schedules import ScheduleService
 from atlas.storage import LocalStorageService, ProjectFolderService
@@ -67,6 +71,14 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
             return set()  # Failure to verify owner permission denies all capability dispatch.
     runtime.policy_reader = policy_reader
 
+    async def authority_reader():
+        try:
+            async with factory() as session:
+                return await OperationAuthorityRepository(session).overrides()
+        except SQLAlchemyError:
+            return {}  # policy_reader already denies every dispatch when the database is unreachable
+    runtime.authority_reader = authority_reader
+
     async def evidence_call(method, arguments):
         async with factory() as session:
             return await getattr(EvidenceStore(session, ArtifactStore(settings.artifact_dir)), method)(**arguments)
@@ -86,6 +98,35 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     runtime.register_executor("schedules.create", lambda arguments: schedule_call("create", arguments))
     runtime.register_executor("schedules.update", lambda arguments: schedule_call("update", arguments))
     runtime.register_executor("schedules.delete", lambda arguments: schedule_call("delete", arguments))
+
+    async def notifications_list(arguments):
+        async with factory() as session:
+            service = NotificationService(session, repeat_minutes=settings.push_repeat_minutes)
+            items = await service.list(limit=int(arguments.get("limit") or 20),
+                include_superseded=bool(arguments.get("include_superseded", False)), audience="model")
+            return {"items": items, "unread": await service.unread_count()}
+
+    async def notifications_emit(arguments):
+        severity = str(arguments.get("severity") or "info")
+        allowed = [item for item in settings.notifications_model_severity_list if item in SEVERITIES] or ["info"]
+        if severity not in allowed:
+            raise ValueError(f"Model notifications may only use the owner-allowed severities: {', '.join(allowed)}")
+        async with factory() as session:
+            service = NotificationService(session, repeat_minutes=settings.push_repeat_minutes)
+            if not await service.model_emit_allowed(settings.notifications_model_emit_per_hour):
+                raise ValueError("Notification budget exhausted for this hour; the owner inbox already has recent model notifications")
+            thread_key = str(arguments.get("thread_key") or "").strip() or None
+            item = await service.emit(NotificationEvent(
+                source="model", kind=str(arguments.get("kind") or "model").strip()[:64] or "model", severity=severity,
+                title=str(arguments.get("title") or "").strip()[:160], body=str(arguments.get("body") or "").strip()[:1000],
+                thread_key=f"model:{thread_key}" if thread_key else None, run_id=current_run_id.get(),
+                detail={"open_url": "/"},
+            ))
+            await session.commit()
+            return item
+
+    runtime.register_executor("notifications.list", notifications_list)
+    runtime.register_executor("notifications.emit", notifications_emit)
 
     projects = ProjectFolderService(settings.projects_root, settings.projects_display_root, settings.project_checkpoint_root)
     runtime.register_executor(
@@ -125,6 +166,7 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
         "storage.projects.delete",
         lambda arguments: changes.delete_file(str(arguments.get("path") or ""), str(arguments.get("expected_sha256") or "")),
     )
+    runtime.external_servers = register_mcp_servers(settings, registry, runtime)
     if settings.github_configured and settings.github_token_file is not None:
         github = GitHubMCPService(
             settings.github_mcp_command,

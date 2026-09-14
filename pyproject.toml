@@ -17,6 +17,7 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "pydantic-settings>=2.10",
   "python-multipart>=0.0.20",
+  "pywebpush>=2.0",
   "sqlalchemy>=2.0.43",
   "uvicorn[standard]>=0.35",
   "webauthn>=3.0.0",

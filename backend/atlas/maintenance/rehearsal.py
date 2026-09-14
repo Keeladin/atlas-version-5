@@ -31,7 +31,7 @@ from .backup import restore, verify_artifacts
 PRODUCTION_URL_FILE = Path("/etc/atlas-v5/secrets/database-url")
 PRODUCTION_DATABASE_NAMES = frozenset({"atlas_v5"})
 PRODUCTION_STATE_ROOT = Path("/var/lib/atlas-v5")
-EXPECTED_HEAD = "25a13"
+EXPECTED_HEAD = "25a16"
 DOWNGRADE_TARGET = "25a12"
 
 _RECONCILABLE = "('pending', 'leased', 'retained_short_term', 'awaiting_owner')"

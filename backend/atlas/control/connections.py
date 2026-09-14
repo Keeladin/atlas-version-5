@@ -10,14 +10,16 @@ from typing import Any
 
 def connection_paths(settings) -> dict[str, Path]:
     root = settings.state_dir / "control"
+    google_config = root / "google-workspace-config"
     return {
         "root": root,
         "secrets": root / "secrets",
         "metadata": root / "connections.json",
         "openai": root / "secrets" / "openai-api-key",
         "github": root / "secrets" / "github-token",
-        "google": root / "secrets" / "google-workspace-authorized-user.json",
-        "google_config": root / "google-workspace-config",
+        "google": google_config / "authorized_user.json",
+        "google_legacy": root / "secrets" / "google-workspace-authorized-user.json",
+        "google_config": google_config,
     }
 
 
@@ -70,6 +72,39 @@ def _write_metadata(path: Path, metadata: dict[str, Any]) -> None:
     _atomic_write(path, (json.dumps(metadata, indent=2, sort_keys=True) + "\n").encode())
 
 
+def _google_safe_payload(credentials: dict[str, Any]) -> dict[str, str]:
+    required = {"client_id", "client_secret", "refresh_token"}
+    if credentials.get("type") != "authorized_user" or not required.issubset(credentials):
+        raise ValueError("Google credential must be an authorized_user JSON with client_id, client_secret and refresh_token")
+    if not all(isinstance(credentials.get(key), str) and credentials[key].strip() for key in required):
+        raise ValueError("Google authorized_user credential contains empty required fields")
+    safe = {
+        "type": "authorized_user",
+        "client_id": credentials["client_id"].strip(),
+        "client_secret": credentials["client_secret"].strip(),
+        "refresh_token": credentials["refresh_token"].strip(),
+    }
+    if isinstance(credentials.get("quota_project_id"), str) and credentials["quota_project_id"].strip():
+        safe["quota_project_id"] = credentials["quota_project_id"].strip()
+    return safe
+
+
+def _persist_google_bundle(paths: dict[str, Path], credentials: dict[str, Any]) -> None:
+    safe = _google_safe_payload(credentials)
+    _ensure_private_dir(paths["google_config"])
+    _atomic_write(paths["google"], (json.dumps(safe, separators=(",", ":")) + "\n").encode())
+    desktop_client = {
+        "installed": {
+            "client_id": safe["client_id"],
+            "client_secret": safe["client_secret"],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": ["http://localhost"],
+        }
+    }
+    _atomic_write(paths["google_config"] / "client_secret.json", (json.dumps(desktop_client, separators=(",", ":")) + "\n").encode())
+
+
 def apply_managed_overrides(settings):
     paths = connection_paths(settings)
     metadata = _read_metadata(paths["metadata"])
@@ -77,6 +112,13 @@ def apply_managed_overrides(settings):
         settings.openai_api_key_file = paths["openai"]
     if paths["github"].is_file() and not paths["github"].is_symlink():
         settings.github_token_file = paths["github"]
+    if not paths["google"].is_file() and paths["google_legacy"].is_file() and not paths["google_legacy"].is_symlink():
+        try:
+            legacy = json.loads(paths["google_legacy"].read_text())
+            if isinstance(legacy, dict):
+                _persist_google_bundle(paths, legacy)
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
     if paths["google"].is_file() and not paths["google"].is_symlink():
         settings.gws_credentials_file = paths["google"]
         settings.gws_config_dir = paths["google_config"]
@@ -124,21 +166,7 @@ def save_github_connection(settings, token: str, owner: str) -> None:
 
 
 def save_google_connection(settings, credentials: dict[str, Any]) -> None:
-    required = {"client_id", "client_secret", "refresh_token"}
-    if credentials.get("type") != "authorized_user" or not required.issubset(credentials):
-        raise ValueError("Google credential must be an authorized_user JSON with client_id, client_secret and refresh_token")
-    if not all(isinstance(credentials.get(key), str) and credentials[key].strip() for key in required):
-        raise ValueError("Google authorized_user credential contains empty required fields")
     paths = connection_paths(settings)
-    safe = {
-        "type": "authorized_user",
-        "client_id": credentials["client_id"].strip(),
-        "client_secret": credentials["client_secret"].strip(),
-        "refresh_token": credentials["refresh_token"].strip(),
-    }
-    if isinstance(credentials.get("quota_project_id"), str) and credentials["quota_project_id"].strip():
-        safe["quota_project_id"] = credentials["quota_project_id"].strip()
-    _ensure_private_dir(paths["google_config"])
-    _atomic_write(paths["google"], (json.dumps(safe, separators=(",", ":")) + "\n").encode())
+    _persist_google_bundle(paths, credentials)
     settings.gws_credentials_file = paths["google"]
     settings.gws_config_dir = paths["google_config"]

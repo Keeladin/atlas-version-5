@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import RunKind
@@ -13,7 +13,8 @@ from atlas.artifacts.store import ArtifactStore
 from atlas.capabilities.service import CapabilityRuntime
 from atlas.config import Settings
 from atlas.db import get_session_factory
-from atlas.persistence.models import RunRow, ScheduledTaskRow
+from atlas.notifications.service import project_notification
+from atlas.persistence.models import NotificationRow, RunRow, ScheduledTaskRow
 from atlas.providers import OpenAIProvider
 from atlas.runtime.conversation import build_model_instructions
 from atlas.runtime.execution import RunExecutor
@@ -22,9 +23,35 @@ from atlas.runtime.recovery import interrupt_run, maintain_heartbeat, require_li
 from atlas.transcript.models import Actor, TextBlock
 from atlas.transcript.repository import TranscriptRepository
 
+from .events import EVENT_WAKE_MAX_AGE, compose_event_prompt, parse_event_filter
 from .service import ScheduleService
 
 logger = logging.getLogger(__name__)
+OUTSTANDING = ['queued', 'running', 'waiting_for_owner', 'uncertain']
+
+
+async def _outstanding(session, task_id: UUID) -> bool:
+    return (await session.execute(select(RunRow.id).where(
+        RunRow.schedule_id == task_id, RunRow.status.in_(OUTSTANDING)).limit(1))).scalar_one_or_none() is not None
+
+
+async def _queue_run(session, task: ScheduledTaskRow, snapshot: dict, scheduled_for: datetime) -> UUID:
+    """One immutable queued occurrence: transcript, run, and the trigger as a system turn."""
+    repo = TranscriptRepository(session)
+    transcript = await repo.create(kind='scheduled')
+    run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id,
+        intent=task.prompt, kind=RunKind.SCHEDULED)
+    run = await session.get(RunRow, run_id)
+    run.schedule_id = task.id
+    run.scheduled_for = scheduled_for
+    run.trigger_snapshot = snapshot
+    run.status = 'queued'
+    run.inference_status = 'queued'
+    run.inference_active = False
+    run.heartbeat_at = None
+    await repo.append_turn(transcript.id, Actor.SYSTEM,
+        [TextBlock(text=f"Scheduled occurrence: {snapshot}")])
+    return run_id
 
 
 async def claim_due(settings: Settings) -> int:
@@ -34,30 +61,79 @@ async def claim_due(settings: Settings) -> int:
     async with factory() as session:
         service = ScheduleService(session, settings.owner_timezone)
         for task in await service.due():
-            outstanding = (await session.execute(select(RunRow.id).where(
-                RunRow.schedule_id == task.id, RunRow.status.in_(['queued', 'running', 'waiting_for_owner', 'uncertain'])
-            ).limit(1))).scalar_one_or_none()
-            if outstanding is not None:
+            if await _outstanding(session, task.id):
                 continue
             snapshot = {'task_id': str(task.id), 'title': task.title, 'prompt': task.prompt,
                 'timezone': task.timezone, 'scheduled_for': task.next_run_at.isoformat()}
-            repo = TranscriptRepository(session)
-            transcript = await repo.create(kind='scheduled')
-            run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id,
-                intent=task.prompt, kind=RunKind.SCHEDULED)
-            run = await session.get(RunRow, run_id)
-            run.schedule_id = task.id
-            run.scheduled_for = task.next_run_at
-            run.trigger_snapshot = snapshot
-            run.status = 'queued'
-            run.inference_status = 'queued'
-            run.inference_active = False
-            run.heartbeat_at = None
-            await repo.append_turn(transcript.id, Actor.SYSTEM,
-                [TextBlock(text=f"Scheduled occurrence: {snapshot}")])
+            await _queue_run(session, task, snapshot, task.next_run_at)
             service.advance_before_run(task)
             task.last_status = 'queued'
             count += 1
+        await session.commit()
+    return count
+
+
+async def claim_events(settings: Settings, *, now: datetime | None = None) -> int:
+    """Wake event tasks once per matching owner notification; claiming and queueing commit together.
+
+    A notification is claimed only once every matching task has a run (or none matches);
+    a task with an outstanding run defers the notification to the next poll. Superseded,
+    stale, pre-task and self-originated notifications are claimed without a run; the model's
+    own notifications wake a task only when its filter opts in with include_model.
+    """
+    factory = get_session_factory()
+    now = now or datetime.now(UTC)
+    count = 0
+    async with factory() as session:
+        service = ScheduleService(session, settings.owner_timezone)
+        tasks = list((await session.execute(select(ScheduledTaskRow).where(
+            ScheduledTaskRow.enabled.is_(True), ScheduledTaskRow.schedule_kind == 'event'
+        ).with_for_update(skip_locked=True))).scalars().all())
+        filters = {}
+        for task in tasks:
+            try:
+                filters[task.id] = parse_event_filter(task.schedule_value)
+            except ValueError as exc:
+                logger.warning('Event schedule %s has an invalid filter: %s', task.id, exc)
+        cutoff = now - EVENT_WAKE_MAX_AGE
+        await session.execute(update(NotificationRow).where(
+            NotificationRow.wake_claimed_at.is_(None), NotificationRow.created_at < cutoff).values(wake_claimed_at=now))
+        if not filters:
+            await session.commit()
+            return 0
+        notifications = list((await session.execute(select(NotificationRow).where(
+            NotificationRow.wake_claimed_at.is_(None), NotificationRow.created_at >= cutoff,
+        ).order_by(NotificationRow.created_at).limit(20).with_for_update(skip_locked=True))).scalars().all())
+        for row in notifications:
+            event = project_notification(row, audience='model')
+            deferred = False
+            for task in tasks:
+                event_filter = filters.get(task.id)
+                if event_filter is None or not event_filter.matches(event) or row.status == 'superseded':
+                    continue
+                if task.created_at is not None and row.created_at < task.created_at:
+                    continue
+                if row.run_id is not None:
+                    origin = await session.get(RunRow, row.run_id)
+                    if origin is not None and origin.schedule_id == task.id:
+                        continue
+                if await _outstanding(session, task.id):
+                    deferred = True
+                    continue
+                scheduled_for = row.created_at
+                while (await session.execute(select(RunRow.id).where(
+                        RunRow.schedule_id == task.id, RunRow.scheduled_for == scheduled_for).limit(1))).scalar_one_or_none() is not None:
+                    scheduled_for = scheduled_for + timedelta(microseconds=1)
+                snapshot = {'task_id': str(task.id), 'title': task.title, 'trigger': 'event',
+                    'task_prompt': task.prompt, 'prompt': compose_event_prompt(task.prompt, event),
+                    'timezone': task.timezone, 'scheduled_for': scheduled_for.isoformat(),
+                    'notification_id': str(row.id), 'event': event}
+                await _queue_run(session, task, snapshot, scheduled_for)
+                service.advance_before_run(task)
+                task.last_status = 'queued'
+                count += 1
+            if not deferred:
+                row.wake_claimed_at = now
         await session.commit()
     return count
 
@@ -125,6 +201,7 @@ async def run_due_once(settings: Settings, runtime: CapabilityRuntime) -> int:
     if settings.openai_api_key is None or "atlas.schedules" not in await runtime.enabled_capabilities():
         return 0
     await claim_due(settings)
+    await claim_events(settings)
     async with get_session_factory()() as session:
         queued = (await session.execute(select(RunRow.id).where(RunRow.kind == 'scheduled',
             RunRow.inference_status == 'queued').order_by(RunRow.scheduled_for).limit(10))).scalars().all()

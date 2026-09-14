@@ -326,11 +326,41 @@ export type RepositoryEntry = {
 
 export type RepositoryListing = { owner: string; repositories: RepositoryEntry[] }
 
+export type RepositoryLocalCheckout = {
+  path: string
+  branch: string
+  sha: string
+  short_sha: string
+  subject: string
+  dirty: boolean
+  tracking_sha: string | null
+  remote_tracking_current: boolean
+  ahead: number | null
+  behind: number | null
+  relation: 'in_sync' | 'ahead' | 'behind' | 'diverged' | 'unknown'
+}
+
+export type RepositoryStatus = {
+  name: string
+  full_name: string
+  remote: { branch: string | null; sha: string; short_sha: string; subject: string; committed_at: string | null; url: string | null }
+  ci: { state: 'success' | 'failure' | 'pending' | 'none'; checks: number; statuses: number; details: Array<{ name: string; status: string | null; conclusion: string | null; url: string | null }> }
+  local: RepositoryLocalCheckout[]
+}
+
 export async function getRepositories(): Promise<RepositoryListing> {
   const response = await fetch('/api/repositories')
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(body?.detail ?? `Repository load failed (${response.status})`)
   return body as RepositoryListing
+}
+
+export async function getRepositoryStatus(repo: RepositoryEntry): Promise<RepositoryStatus> {
+  const branch = repo.default_branch ? `?default_branch=${encodeURIComponent(repo.default_branch)}` : ''
+  const response = await fetch(`/api/repositories/${encodeURIComponent(repo.name)}/status${branch}`)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Repository status failed (${response.status})`)
+  return body as RepositoryStatus
 }
 
 export type DriveStorageEntry = {
@@ -387,10 +417,19 @@ export type ControlConnection = {
   owner?: string
 }
 
+export type ControlNotificationSettings = {
+  push_configured: boolean
+  push_subject: string
+  push_repeat_minutes: number
+  rdc_monitor_enabled: boolean
+  rdc_monitor_unit: string
+}
+
 export type ControlConfiguration = {
   connections: ControlConnection[]
   credentials: ControlCredential[]
   mcps: ControlMcp[]
+  notifications?: ControlNotificationSettings
 }
 
 export async function getControlConfiguration(): Promise<ControlConfiguration> {
@@ -483,7 +522,7 @@ export type ScheduledTask = {
   id: string
   title: string
   prompt: string
-  schedule_kind: 'once' | 'interval' | 'cron'
+  schedule_kind: 'once' | 'interval' | 'cron' | 'event'
   schedule_value: string
   timezone: string
   enabled: boolean
@@ -696,4 +735,129 @@ export function streamMemoryObservability(
     onSnapshot(snapshot)
   })
   return () => source.close()
+}
+
+// Owner notifications: the awareness ledger and the Web Push channel.
+export type NotificationSeverity = 'info' | 'warning' | 'action_required' | 'critical' | 'resolved'
+
+export type OwnerNotification = {
+  id: string
+  source: string
+  kind: string
+  severity: NotificationSeverity
+  title: string
+  body: string
+  detail: { url?: string; code?: string; expires_at?: string; open_url?: string; message?: string; download_url?: string; [key: string]: unknown }
+  sensitive_fields: string[]
+  thread_key: string | null
+  status: 'open' | 'superseded' | 'resolved'
+  read: boolean
+  created_at: string | null
+  resolved_at: string | null
+  run_id: string | null
+  push_status: string
+}
+
+export type NotificationInbox = { items: OwnerNotification[]; unread: number }
+
+async function notificationRequest<T>(url: string, init: RequestInit | undefined, label: string): Promise<T> {
+  const response = await fetch(url, init)
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `${label} failed (${response.status})`)
+  return body as T
+}
+
+export function getNotifications(limit = 30, includeSuperseded = false): Promise<NotificationInbox> {
+  return notificationRequest(`/api/notifications?limit=${limit}&include_superseded=${includeSuperseded ? 'true' : 'false'}`, undefined, 'Notifications load')
+}
+
+export function markNotificationRead(notificationId: string): Promise<OwnerNotification> {
+  return notificationRequest(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: 'POST' }, 'Notification update')
+}
+
+export function markAllNotificationsRead(): Promise<{ updated: number }> {
+  return notificationRequest('/api/notifications/read-all', { method: 'POST' }, 'Notification update')
+}
+
+export function resolveNotification(notificationId: string): Promise<OwnerNotification> {
+  return notificationRequest(`/api/notifications/${encodeURIComponent(notificationId)}/resolve`, { method: 'POST' }, 'Notification update')
+}
+
+export type VapidInfo = { configured: boolean; public_key: string | null; subject: string }
+
+export function getVapidPublicKey(): Promise<VapidInfo> {
+  return notificationRequest('/api/push/vapid-public-key', undefined, 'Push configuration load')
+}
+
+export type PushSubscriptionSummary = {
+  id: string
+  host: string
+  user_agent: string
+  created_at: string | null
+  last_success_at: string | null
+  failure_count: number
+  disabled: boolean
+}
+
+export async function getPushSubscriptions(): Promise<PushSubscriptionSummary[]> {
+  const body = await notificationRequest<{ items: PushSubscriptionSummary[] }>('/api/push/subscriptions', undefined, 'Push devices load')
+  return body.items ?? []
+}
+
+export type PushSubscriptionPayload = { endpoint: string; keys: { p256dh: string; auth: string }; user_agent?: string }
+
+export function subscribePush(subscription: PushSubscriptionPayload): Promise<PushSubscriptionSummary> {
+  return notificationRequest('/api/push/subscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(subscription) }, 'Push subscription')
+}
+
+export function unsubscribePush(endpoint: string): Promise<{ removed: boolean }> {
+  return notificationRequest('/api/push/unsubscribe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint }) }, 'Push unsubscribe')
+}
+
+export function deletePushSubscription(subscriptionId: string): Promise<{ removed: boolean }> {
+  return notificationRequest(`/api/push/subscriptions/${encodeURIComponent(subscriptionId)}`, { method: 'DELETE' }, 'Push device removal')
+}
+
+export type PushTestResult = { push_status: string | null; results: Record<string, { status: number; at: string }>; configured: boolean }
+
+export function sendTestPush(): Promise<PushTestResult> {
+  return notificationRequest('/api/push/test', { method: 'POST' }, 'Test notification')
+}
+
+// Per-operation authority: the owner's decision overrides every default.
+export type OperationAuthorityValue = 'auto' | 'approval_required' | 'forbidden'
+
+export type OperationAuthority = {
+  id: string
+  capability_id: string
+  family: string
+  description: string
+  effect: string
+  trust: string
+  default_authority: OperationAuthorityValue
+  override: OperationAuthorityValue | null
+  effective_authority: OperationAuthorityValue
+  argument_rules: boolean
+  enabled: boolean
+}
+
+export async function getOperationAuthorities(): Promise<OperationAuthority[]> {
+  const body = await notificationRequest<{ items: OperationAuthority[] }>('/api/control/operations', undefined, 'Operation authority load')
+  return body.items ?? []
+}
+
+export function setOperationAuthority(operationId: string, authority: OperationAuthorityValue | null): Promise<OperationAuthority> {
+  return notificationRequest(`/api/control/operations/${encodeURIComponent(operationId)}`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ authority }) }, 'Operation authority update')
+}
+
+export type HostFilesystemScopes = { read: string[]; write: string[]; delete: string[] }
+
+export function getHostFilesystemScopes(): Promise<HostFilesystemScopes> {
+  return notificationRequest('/api/control/host-scopes', undefined, 'Host filesystem scope load')
+}
+
+export function setHostFilesystemScopes(scopes: HostFilesystemScopes): Promise<HostFilesystemScopes> {
+  return notificationRequest('/api/control/host-scopes',
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scopes) }, 'Host filesystem scope update')
 }

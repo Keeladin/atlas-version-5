@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import atlas.notifications.bridge  # noqa: F401 - attention rows are mirrored into owner notifications on flush
 from atlas.persistence.models import (
     ActionRow,
     OwnerAttentionRow,
@@ -84,6 +85,10 @@ def _owner_action_context(action: ActionRow) -> dict[str, Any]:
     if operation.startswith("calendar."):
         title = str(arguments.get("summary") or arguments.get("title") or "")
         return {"display_label": "Update calendar", "target": title or None}
+    if operation.startswith("host."):
+        tool = operation.rsplit(".", 1)[-1].replace("_", " ")
+        parts = [str(arguments[key]) for key in ("action", "state", "name", "unit", "command") if arguments.get(key)]
+        return {"display_label": f"Host: {tool}", "target": (" ".join(parts)[:160] or None)}
     return {"display_label": (evidence.get("summary") or operation), "target": None}
 
 

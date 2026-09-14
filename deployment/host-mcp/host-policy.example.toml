@@ -1,0 +1,64 @@
+# Atlas host policy: the OS-level envelope for governed host operations. The owner decides.
+#
+# Install as /etc/atlas-v5/config/host-policy.toml. deployment/install-host-mcp.sh renders it into
+#   /etc/polkit-1/rules.d/50-atlas-tools.rules   (unit + verb authority for the tools identity and the owner)
+#   /etc/atlas-v5/config/atlas-mcp-shell.env     (argv allow list and limits for the diagnostics shell server)
+#   /etc/atlas-v5/config/atlas-mcp-systemd.env   (which systemd-mcp tools exist for Atlas)
+# and re-renders on every deploy. Everything below is a default you can change; choices that carry
+# real risk have an explicit flag so they are made deliberately, never silently. Renderer notes are
+# printed on install.
+
+[identity]
+# The unprivileged identity every governed MCP server runs as (created by the installer).
+user = "atlas-tools"
+# The owner is granted the same unit verbs, so `systemctl restart <unit>` works without sudo.
+owner_user = "jaco"
+# Supplementary groups for the tools identity. systemd-journal reads logs. Adding docker makes the
+# identity root-equivalent on this host; the renderer notes it and proceeds if you list it.
+groups = ["systemd-journal"]
+
+# Units Atlas may act on. Polkit only governs the system manager, so these must be system units
+# (User=<owner> inside the unit file), not `systemctl --user` units.
+# Unit verbs (scoped per unit): start, stop, restart, reload, try-restart, reload-or-restart, reset-failed, kill, set-property.
+# Unit-file verbs (enable, disable, mask, unmask, preset, link, revert) can only be granted for all
+# units at once, because systemd does not tell polkit which unit they concern.
+[[managed_units]]
+unit = "desktop-commander.service"
+verbs = ["start", "stop", "restart", "reset-failed"]
+
+[[managed_units]]
+unit = "empire-control.service"
+verbs = ["start", "stop", "restart", "reset-failed"]
+
+[[managed_units]]
+unit = "empire-account-portal.service"
+verbs = ["start", "stop", "restart", "reset-failed"]
+
+# Further polkit actions, each granted to exactly the identities listed (the tools user by
+# default; the owner may be added). com.suse.gatekeeper.readlog is the read gate of systemd-mcp:
+# every read-only tool (listing units, unit files, logs, job status) asks polkit for it. Remove
+# this grant and the systemd server can only change unit state, never look. The installer
+# declares the action (deployment/host-mcp/com.suse.gatekeeper.policy); undeclared actions
+# fail as "not registered", declared but ungranted ones default to admin authentication.
+[[polkit.grants]]
+action = "com.suse.gatekeeper.readlog"
+identities = ["atlas-tools"]
+
+[systemd]
+# Tools of openSUSE/systemd-mcp that exist for Atlas. get_file and get_man_page are available if you
+# add them; get_file reads any file the tools identity can read.
+enabled_tools = ["list_loaded_units", "list_unit_files", "change_unit_state", "check_restart_reload", "list_log"]
+polkit_timeout_seconds = 5
+
+[shell]
+# Diagnostics through the argv-only shell server. The server adds its own argument hardening
+# (no find -exec, no git -c, ...). Commands that can write, escalate or interpret (shells, editors,
+# package managers, docker, rm, ...) are accepted only with allow_risky_commands = true.
+allow_commands = [
+  "journalctl", "systemctl", "ps", "df", "free", "uptime", "ss", "ip",
+  "ls", "stat", "head", "tail", "grep", "wc", "date", "hostname", "id", "cat",
+]
+allow_risky_commands = false
+default_timeout_seconds = 20
+max_timeout_seconds = 60
+output_limit_bytes = 262144

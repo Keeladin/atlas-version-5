@@ -23,7 +23,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import AsyncOpenAI, OpenAIError
-from pydantic import BaseModel, SecretStr, ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,11 +51,17 @@ from atlas.control import (
 )
 from atlas.db import database_health, get_session_factory
 from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.integrations.repository_status import repository_status
 from atlas.memory.candidates import MemoryCandidateIntake
 from atlas.memory.continuity import recent_continuity_context
 from atlas.memory.durable import DurableMemoryRepository
 from atlas.memory.lifecycle import MemoryLifecycleCommands
 from atlas.memory.observability import MemoryObservabilityService
+from atlas.monitors.rdc import rdc_monitor_loop
+from atlas.monitors.units import units_monitor_loop
+from atlas.notifications.api import push_router
+from atlas.notifications.api import router as notifications_router
+from atlas.notifications.dispatcher import push_delivery_loop
 from atlas.persistence.models import (
     DurableMemoryRow,
     MemoryCommandRow,
@@ -63,7 +69,11 @@ from atlas.persistence.models import (
     RunRow,
 )
 from atlas.providers import OpenAIProvider
-from atlas.registry.repository import RegistryRepository
+from atlas.registry.repository import (
+    AUTHORITY_VALUES,
+    OperationAuthorityRepository,
+    RegistryRepository,
+)
 from atlas.registry.service import build_phase0_registry
 from atlas.runtime.bootstrap import build_seat_bootstrap
 from atlas.runtime.conversation import (
@@ -135,13 +145,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await reconcile_once(settings)
     scheduler_task = asyncio.create_task(scheduler_loop(settings, capability_runtime)) if settings.scheduler_enabled else None
     reconciliation_task = asyncio.create_task(reconciliation_loop(settings))
+    push_task = asyncio.create_task(push_delivery_loop(settings))
+    rdc_task = asyncio.create_task(rdc_monitor_loop(settings)) if settings.rdc_monitor_enabled else None
+    units_task = asyncio.create_task(units_monitor_loop(settings)) if settings.host_watch_unit_list else None
+    background = (scheduler_task, reconciliation_task, push_task, rdc_task, units_task)
     try:
         yield
     finally:
-        for task in (scheduler_task, reconciliation_task):
+        for task in background:
             if task is not None:
                 task.cancel()
-        for task in (scheduler_task, reconciliation_task):
+        for task in background:
             if task is not None:
                 with suppress(asyncio.CancelledError):
                     await task
@@ -149,6 +163,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="Atlas V5", version=__version__, lifespan=lifespan)
 app.include_router(auth_router)
+app.include_router(notifications_router)
+app.include_router(push_router)
 
 
 def _auth_service(session: AsyncSession) -> AuthService:
@@ -235,6 +251,16 @@ class CapabilitySetting(BaseModel):
     enabled: bool
 
 
+class OperationAuthoritySetting(BaseModel):
+    authority: str | None = None
+
+
+class HostFilesystemScopes(BaseModel):
+    read: list[str] = Field(default_factory=list)
+    write: list[str] = Field(default_factory=list)
+    delete: list[str] = Field(default_factory=list)
+
+
 class ModelCatalogRequest(BaseModel):
     provider: str = "openai"
     api_key: SecretStr | None = None
@@ -269,6 +295,76 @@ async def set_owner_capability(capability_id: str, setting: CapabilitySetting,
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await session.commit()
     return {"id": capability_id, "enabled": setting.enabled}
+
+
+async def _operation_authority_items(session: AsyncSession) -> list[dict[str, Any]]:
+    overrides = await OperationAuthorityRepository(session).overrides()
+    enabled = await capability_runtime.enabled_capabilities()
+    items = []
+    for item in capability_runtime.operations():
+        override = overrides.get(item.id)
+        items.append({
+            "id": item.id, "capability_id": item.capability_id, "family": item.family,
+            "description": item.description[:200], "effect": item.effect.value, "trust": item.trust,
+            "default_authority": item.authority.value, "override": override,
+            "effective_authority": override or item.authority.value,
+            "argument_rules": capability_runtime.has_authority_resolver(item.id),
+            "enabled": item.capability_id in enabled,
+        })
+    return items
+
+
+@app.get("/api/control/host-scopes")
+async def host_filesystem_scopes():
+    path = settings.state_dir / "control" / "host-scopes.json"
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        raw = {"read": [], "write": [], "delete": []}
+    return {key: [str(item) for item in raw.get(key, []) if isinstance(item, str)] for key in ("read", "write", "delete")}
+
+
+@app.put("/api/control/host-scopes")
+async def set_host_filesystem_scopes(scopes: HostFilesystemScopes):
+    path = settings.state_dir / "control" / "host-scopes.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean: dict[str, list[str]] = {}
+    for key in ("read", "write", "delete"):
+        values: list[str] = []
+        for item in getattr(scopes, key):
+            raw = str(item).strip()
+            if not raw:
+                continue
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                raise HTTPException(status_code=422, detail=f"Filesystem {key} paths must be absolute: {raw}")
+            normalized = os.path.normpath(str(candidate))
+            if normalized not in values:
+                values.append(normalized)
+        clean[key] = values
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(clean, indent=2) + "\n")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return clean
+
+
+@app.get("/api/control/operations")
+async def owner_operations(session: Annotated[AsyncSession, Depends(get_session)]):
+    return {"items": await _operation_authority_items(session), "authorities": list(AUTHORITY_VALUES)}
+
+
+@app.put("/api/control/operations/{operation_id}")
+async def set_operation_authority(operation_id: str, setting: OperationAuthoritySetting,
+        session: Annotated[AsyncSession, Depends(get_session)]):
+    if capability_runtime.descriptor(operation_id) is None:
+        raise HTTPException(status_code=404, detail="Operation is not registered")
+    if setting.authority is not None and setting.authority not in AUTHORITY_VALUES:
+        raise HTTPException(status_code=422, detail=f"authority must be one of {', '.join(AUTHORITY_VALUES)} or null for the default")
+    await OperationAuthorityRepository(session).set(operation_id, setting.authority)
+    await session.commit()
+    item = next(entry for entry in await _operation_authority_items(session) if entry["id"] == operation_id)
+    return item
 
 
 def _model_api_key(submitted: SecretStr | None) -> str:
@@ -522,6 +618,16 @@ async def control_configuration():
             google_oauth,
             _credential_projection("GitHub MCP token", settings.github_token_file),
         ],
+        "notifications": {
+            "push_configured": settings.push_configured,
+            "push_subject": settings.push_vapid_subject,
+            "push_repeat_minutes": settings.push_repeat_minutes,
+            "rdc_monitor_enabled": settings.rdc_monitor_enabled,
+            "rdc_monitor_unit": settings.rdc_monitor_unit,
+            "rdc_monitor_scope": settings.rdc_monitor_scope,
+            "watched_units": settings.host_watch_unit_list,
+            "mcp_servers_file": str(settings.mcp_servers_file) if settings.mcp_servers_file else None,
+        },
         "mcps": [
             {
                 "id": "google.workspace",
@@ -541,6 +647,7 @@ async def control_configuration():
                 "operations": github.executable_operations if github else [],
                 "transport": "official GitHub MCP · stdio · read only",
             },
+            *[{**server, "enabled": server["id"] in enabled} for server in capability_runtime.external_servers],
         ],
     }
 
@@ -1510,6 +1617,26 @@ def _repository_projection(output: Any) -> list[dict[str, Any]]:
             "description": item.get("description"),
         })
     return repositories
+
+
+@app.get("/api/repositories/{repo_name}/status")
+async def repository_detail_status(repo_name: str, default_branch: str | None = Query(default=None)):
+    await require_capability("github.mcp")
+    if settings.github_token_file is None or not settings.github_token_file.is_file():
+        raise HTTPException(status_code=503, detail="GitHub credential is unavailable")
+    full_name = f"{settings.github_owner}/{repo_name}"
+    try:
+        detail = await asyncio.to_thread(
+            repository_status,
+            token_file=settings.github_token_file,
+            projects_root=settings.projects_root,
+            projects_display_root=settings.projects_display_root,
+            full_name=full_name,
+            default_branch=default_branch,
+        )
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"name": repo_name, "full_name": full_name, **detail}
 
 
 @app.get("/api/repositories")

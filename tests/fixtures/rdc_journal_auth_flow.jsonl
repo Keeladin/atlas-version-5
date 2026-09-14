@@ -1,0 +1,18 @@
+{"MESSAGE": "🚀 Starting MCP Device...", "__REALTIME_TIMESTAMP": "1789281876233820", "__CURSOR": "fixture-0"}
+{"MESSAGE": "💾 Found persisted session for device 11111111-2222-4333-8444-555555555555", "__REALTIME_TIMESTAMP": "1789281877364346", "__CURSOR": "fixture-1"}
+{"MESSAGE": "   - ⚠️ Persisted session invalid: Invalid Refresh Token: Already Used", "__REALTIME_TIMESTAMP": "1789281877617849", "__CURSOR": "fixture-2"}
+{"MESSAGE": "🔐 Starting device authorization flow...", "__REALTIME_TIMESTAMP": "1789281877617992", "__CURSOR": "fixture-3"}
+{"MESSAGE": "   - 📡 Requesting device code...", "__REALTIME_TIMESTAMP": "1789281877618539", "__CURSOR": "fixture-4"}
+{"MESSAGE": "   - ✅ Device code received", "__REALTIME_TIMESTAMP": "1789281881047670", "__CURSOR": "fixture-5"}
+{"MESSAGE": "📋 Please complete authentication:", "__REALTIME_TIMESTAMP": "1789281881048009", "__CURSOR": "fixture-6"}
+{"MESSAGE": "   1. Open this URL in your browser:", "__REALTIME_TIMESTAMP": "1789281881048009", "__CURSOR": "fixture-7"}
+{"MESSAGE": "      https://mcp.desktopcommander.app/device/verify", "__REALTIME_TIMESTAMP": "1789281881048009", "__CURSOR": "fixture-8"}
+{"MESSAGE": "   2. Enter this code when prompted:", "__REALTIME_TIMESTAMP": "1789281881048009", "__CURSOR": "fixture-9"}
+{"MESSAGE": "      AB12-CD34", "__REALTIME_TIMESTAMP": "1789281881048009", "__CURSOR": "fixture-10"}
+{"MESSAGE": "   Code expires in 15 minutes.", "__REALTIME_TIMESTAMP": "1789281881048009", "__CURSOR": "fixture-11"}
+{"MESSAGE": "   - ✅ Device ID authenticated: 11111111-2222-4333-8444-555555555555", "__REALTIME_TIMESTAMP": "1789281983906248", "__CURSOR": "fixture-12"}
+{"MESSAGE": "🔌 Device marked as online", "__REALTIME_TIMESTAMP": "1789281992276978", "__CURSOR": "fixture-13"}
+{"MESSAGE": "👋 Presence tracked (device 11111111-2222-4333-8444-555555555555 visible as online)", "__REALTIME_TIMESTAMP": "1789281992717932", "__CURSOR": "fixture-14"}
+{"MESSAGE": "✅ Device ready:", "__REALTIME_TIMESTAMP": "1789281996193689", "__CURSOR": "fixture-15"}
+{"MESSAGE": "   - Device ID:    11111111-2222-4333-8444-555555555555", "__REALTIME_TIMESTAMP": "1789281996193689", "__CURSOR": "fixture-16"}
+{"MESSAGE": "   - Device Name:  ubuntuserver", "__REALTIME_TIMESTAMP": "1789281996193689", "__CURSOR": "fixture-17"}
