@@ -173,19 +173,93 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
                     effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="external",
                 ),
                 OperationDescriptor(
+                    id="gmail.labels.list", capability_id="google.workspace", family="Gmail",
+                    description="List Gmail labels available in the owner's mailbox.",
+                    input_schema={"type":"object","properties":{},"additionalProperties":False},
+                    effect=EffectKind.READ, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.draft.create", capability_id="google.workspace", family="Gmail",
+                    description="Create a Gmail draft without sending it.",
+                    input_schema={"type":"object","properties":{"to":{"type":"string"},"subject":{"type":"string"},"body":{"type":"string"},"cc":{"type":"string"},"bcc":{"type":"string"}},"required":["to","subject","body"],"additionalProperties":False},
+                    effect=EffectKind.CREATE, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.reply.draft", capability_id="google.workspace", family="Gmail",
+                    description="Create a threaded Gmail reply draft without sending it.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"},"body":{"type":"string"},"reply_all":{"type":"boolean"},"to":{"type":"string"},"cc":{"type":"string"},"bcc":{"type":"string"}},"required":["message_id","body"],"additionalProperties":False},
+                    effect=EffectKind.CREATE, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.forward.draft", capability_id="google.workspace", family="Gmail",
+                    description="Create a Gmail forward draft without sending it.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"},"to":{"type":"string"},"body":{"type":"string"},"cc":{"type":"string"},"bcc":{"type":"string"},"include_original_attachments":{"type":"boolean"}},"required":["message_id","to"],"additionalProperties":False},
+                    effect=EffectKind.CREATE, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.message.labels.modify", capability_id="google.workspace", family="Gmail",
+                    description="Add or remove Gmail labels on one message by label name or ID.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"},"add_labels":{"type":"array","items":{"type":"string"}},"remove_labels":{"type":"array","items":{"type":"string"}}},"required":["message_id"],"additionalProperties":False},
+                    effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.message.archive", capability_id="google.workspace", family="Gmail",
+                    description="Archive one Gmail message by removing it from the inbox.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":False},
+                    effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.message.restore", capability_id="google.workspace", family="Gmail",
+                    description="Restore one Gmail message from Trash.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":False},
+                    effect=EffectKind.UPDATE, authority=AuthorityMode.AUTO, trust="external",
+                ),
+                OperationDescriptor(
                     id="gmail.message.send", capability_id="google.workspace", family="Gmail",
                     description="Send an email from the owner's connected Gmail account using the exact prepared recipients, subject, and body.",
                     input_schema={"type":"object","properties":{"to":{"type":"string"},"subject":{"type":"string"},"body":{"type":"string"},"cc":{"type":"string"},"bcc":{"type":"string"}},"required":["to","subject","body"],"additionalProperties":False},
                     effect=EffectKind.CREATE, authority=AuthorityMode.APPROVAL_REQUIRED, trust="external",
                 ),
+                OperationDescriptor(
+                    id="gmail.message.reply", capability_id="google.workspace", family="Gmail",
+                    description="Send a threaded Gmail reply to an existing message.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"},"body":{"type":"string"},"reply_all":{"type":"boolean"},"to":{"type":"string"},"cc":{"type":"string"},"bcc":{"type":"string"}},"required":["message_id","body"],"additionalProperties":False},
+                    effect=EffectKind.CREATE, authority=AuthorityMode.APPROVAL_REQUIRED, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.message.forward", capability_id="google.workspace", family="Gmail",
+                    description="Forward an existing Gmail message to new recipients.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"},"to":{"type":"string"},"body":{"type":"string"},"cc":{"type":"string"},"bcc":{"type":"string"},"include_original_attachments":{"type":"boolean"}},"required":["message_id","to"],"additionalProperties":False},
+                    effect=EffectKind.CREATE, authority=AuthorityMode.APPROVAL_REQUIRED, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.message.trash", capability_id="google.workspace", family="Gmail",
+                    description="Move one Gmail message to Trash.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":False},
+                    effect=EffectKind.DELETE, authority=AuthorityMode.APPROVAL_REQUIRED, trust="external",
+                ),
+                OperationDescriptor(
+                    id="gmail.message.delete_permanently", capability_id="google.workspace", family="Gmail",
+                    description="Immediately and permanently delete one Gmail message. This cannot be undone.",
+                    input_schema={"type":"object","properties":{"message_id":{"type":"string"}},"required":["message_id"],"additionalProperties":False},
+                    effect=EffectKind.DELETE, authority=AuthorityMode.APPROVAL_REQUIRED, trust="external",
+                ),
             ]
             executors = {
                 "gmail.messages.search": lambda arguments: drive.gmail_search(str(arguments.get("query") or "is:unread"), int(arguments.get("max_results") or 20)),
                 "gmail.message.read": lambda arguments: drive.gmail_read(str(arguments.get("message_id") or "")),
-                "gmail.message.send": lambda arguments: drive.gmail_send(
-                    to=str(arguments.get("to") or ""), subject=str(arguments.get("subject") or ""),
-                    body=str(arguments.get("body") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or ""),
-                ),
+                "gmail.labels.list": lambda arguments: drive.gmail_labels(),
+                "gmail.draft.create": lambda arguments: drive.gmail_draft(to=str(arguments.get("to") or ""), subject=str(arguments.get("subject") or ""), body=str(arguments.get("body") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or "")),
+                "gmail.reply.draft": lambda arguments: drive.gmail_reply(message_id=str(arguments.get("message_id") or ""), body=str(arguments.get("body") or ""), reply_all=bool(arguments.get("reply_all", False)), to=str(arguments.get("to") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or ""), draft=True),
+                "gmail.forward.draft": lambda arguments: drive.gmail_forward(message_id=str(arguments.get("message_id") or ""), to=str(arguments.get("to") or ""), body=str(arguments.get("body") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or ""), include_original_attachments=bool(arguments.get("include_original_attachments", True)), draft=True),
+                "gmail.message.labels.modify": lambda arguments: drive.gmail_modify_labels(message_id=str(arguments.get("message_id") or ""), add_labels=[str(item) for item in arguments.get("add_labels", [])] if isinstance(arguments.get("add_labels"), list) else [], remove_labels=[str(item) for item in arguments.get("remove_labels", [])] if isinstance(arguments.get("remove_labels"), list) else []),
+                "gmail.message.archive": lambda arguments: drive.gmail_archive(str(arguments.get("message_id") or "")),
+                "gmail.message.restore": lambda arguments: drive.gmail_restore(str(arguments.get("message_id") or "")),
+                "gmail.message.send": lambda arguments: drive.gmail_send(to=str(arguments.get("to") or ""), subject=str(arguments.get("subject") or ""), body=str(arguments.get("body") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or "")),
+                "gmail.message.reply": lambda arguments: drive.gmail_reply(message_id=str(arguments.get("message_id") or ""), body=str(arguments.get("body") or ""), reply_all=bool(arguments.get("reply_all", False)), to=str(arguments.get("to") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or "")),
+                "gmail.message.forward": lambda arguments: drive.gmail_forward(message_id=str(arguments.get("message_id") or ""), to=str(arguments.get("to") or ""), body=str(arguments.get("body") or ""), cc=str(arguments.get("cc") or ""), bcc=str(arguments.get("bcc") or ""), include_original_attachments=bool(arguments.get("include_original_attachments", True))),
+                "gmail.message.trash": lambda arguments: drive.gmail_trash(str(arguments.get("message_id") or "")),
+                "gmail.message.delete_permanently": lambda arguments: drive.gmail_delete_permanently(str(arguments.get("message_id") or "")),
             }
             for descriptor in gmail_operations:
                 registry.register_operation(descriptor)

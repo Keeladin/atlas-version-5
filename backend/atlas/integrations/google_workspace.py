@@ -77,6 +77,110 @@ class GoogleWorkspaceService:
             arguments.extend(["--bcc", bcc])
         return self._run_any(*arguments)
 
+    def gmail_draft(self, *, to: str, subject: str, body: str, cc: str = "", bcc: str = "") -> object:
+        if not to.strip():
+            raise ValueError("At least one recipient is required")
+        arguments = ["gmail", "+send", "--to", to, "--subject", subject, "--body", body, "--format", "json", "--draft"]
+        if cc.strip():
+            arguments.extend(["--cc", cc])
+        if bcc.strip():
+            arguments.extend(["--bcc", bcc])
+        return self._run_any(*arguments)
+
+    def gmail_reply(self, *, message_id: str, body: str, reply_all: bool = False, to: str = "", cc: str = "", bcc: str = "", draft: bool = False) -> object:
+        if not message_id.strip():
+            raise ValueError("A Gmail message ID is required")
+        helper = "+reply-all" if reply_all else "+reply"
+        arguments = ["gmail", helper, "--message-id", message_id, "--body", body, "--format", "json"]
+        if to.strip():
+            arguments.extend(["--to", to])
+        if cc.strip():
+            arguments.extend(["--cc", cc])
+        if bcc.strip():
+            arguments.extend(["--bcc", bcc])
+        if draft:
+            arguments.append("--draft")
+        return self._run_any(*arguments)
+
+    def gmail_forward(self, *, message_id: str, to: str, body: str = "", cc: str = "", bcc: str = "", include_original_attachments: bool = True, draft: bool = False) -> object:
+        if not message_id.strip():
+            raise ValueError("A Gmail message ID is required")
+        if not to.strip():
+            raise ValueError("At least one recipient is required")
+        arguments = ["gmail", "+forward", "--message-id", message_id, "--to", to, "--format", "json"]
+        if body:
+            arguments.extend(["--body", body])
+        if cc.strip():
+            arguments.extend(["--cc", cc])
+        if bcc.strip():
+            arguments.extend(["--bcc", bcc])
+        if not include_original_attachments:
+            arguments.append("--no-original-attachments")
+        if draft:
+            arguments.append("--draft")
+        return self._run_any(*arguments)
+
+    def gmail_labels(self) -> object:
+        return self._run_any("gmail", "users", "labels", "list", "--params", json.dumps({"userId": "me"}, separators=(",", ":")), "--format", "json")
+
+    def _gmail_label_ids(self, names: list[str]) -> list[str]:
+        wanted = [name.strip() for name in names if name.strip()]
+        if not wanted:
+            return []
+        payload = self.gmail_labels()
+        labels = payload.get("labels", []) if isinstance(payload, dict) else []
+        lookup: dict[str, str] = {}
+        for item in labels:
+            if not isinstance(item, dict):
+                continue
+            label_id = str(item.get("id") or "")
+            name = str(item.get("name") or "")
+            if label_id:
+                lookup[label_id.casefold()] = label_id
+            if name and label_id:
+                lookup[name.casefold()] = label_id
+        resolved: list[str] = []
+        for name in wanted:
+            label_id = lookup.get(name.casefold())
+            if label_id is None:
+                raise ValueError(f"Unknown Gmail label: {name}")
+            if label_id not in resolved:
+                resolved.append(label_id)
+        return resolved
+
+    def gmail_modify_labels(self, *, message_id: str, add_labels: list[str] | None = None, remove_labels: list[str] | None = None) -> object:
+        if not message_id.strip():
+            raise ValueError("A Gmail message ID is required")
+        add_ids = self._gmail_label_ids(add_labels or [])
+        remove_ids = self._gmail_label_ids(remove_labels or [])
+        if not add_ids and not remove_ids:
+            raise ValueError("At least one Gmail label change is required")
+        params = {"userId": "me", "id": message_id}
+        body = {"addLabelIds": add_ids, "removeLabelIds": remove_ids}
+        return self._run_any("gmail", "users", "messages", "modify", "--params", json.dumps(params, separators=(",", ":")), "--json", json.dumps(body, separators=(",", ":")), "--format", "json")
+
+    def gmail_archive(self, message_id: str) -> object:
+        if not message_id.strip():
+            raise ValueError("A Gmail message ID is required")
+        params = {"userId": "me", "id": message_id}
+        body = {"removeLabelIds": ["INBOX"]}
+        return self._run_any("gmail", "users", "messages", "modify", "--params", json.dumps(params, separators=(",", ":")), "--json", json.dumps(body, separators=(",", ":")), "--format", "json")
+
+    def gmail_trash(self, message_id: str) -> object:
+        return self._gmail_message_lifecycle("trash", message_id)
+
+    def gmail_restore(self, message_id: str) -> object:
+        return self._gmail_message_lifecycle("untrash", message_id)
+
+    def gmail_delete_permanently(self, message_id: str) -> object:
+        return self._gmail_message_lifecycle("delete", message_id)
+
+    def _gmail_message_lifecycle(self, command: str, message_id: str) -> object:
+        if not message_id.strip():
+            raise ValueError("A Gmail message ID is required")
+        params = {"userId": "me", "id": message_id}
+        return self._run_any("gmail", "users", "messages", command, "--params", json.dumps(params, separators=(",", ":")), "--format", "json")
+
     def calendar_agenda(self, *, days: int = 7, calendar: str = "", timezone: str = "") -> object:
         arguments = ["calendar", "+agenda", "--days", str(max(1, min(days, 31))), "--format", "json"]
         if calendar.strip():

@@ -69,6 +69,18 @@ def _owner_action_context(action: ActionRow) -> dict[str, Any]:
         subject = str(arguments.get("subject") or "")
         target = " · ".join(part for part in (recipient, subject) if part)
         return {"display_label": "Send email", "target": target or None}
+    if operation == "gmail.message.reply":
+        message_id = str(arguments.get("message_id") or "")
+        return {"display_label": "Reply to email", "target": message_id or None}
+    if operation == "gmail.message.forward":
+        recipient = str(arguments.get("to") or "")
+        message_id = str(arguments.get("message_id") or "")
+        target = " · ".join(part for part in (recipient, message_id) if part)
+        return {"display_label": "Forward email", "target": target or None}
+    if operation == "gmail.message.trash":
+        return {"display_label": "Move email to Trash", "target": str(arguments.get("message_id") or "") or None}
+    if operation == "gmail.message.delete_permanently":
+        return {"display_label": "Permanently delete email", "target": str(arguments.get("message_id") or "") or None}
     if operation.startswith("calendar."):
         title = str(arguments.get("summary") or arguments.get("title") or "")
         return {"display_label": "Update calendar", "target": title or None}

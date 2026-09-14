@@ -157,3 +157,17 @@ async def test_stale_executing_action_reconciles_to_uncertain() -> None:
     assert action.status == ActionStatus.UNCERTAIN.value
     assert run.status == RunStatus.UNCERTAIN.value
     assert session.added[0].state == "uncertain"
+
+
+def test_gmail_destructive_action_labels_are_owner_readable() -> None:
+    from types import SimpleNamespace
+
+    from atlas.actions.authority import _owner_action_context
+
+    trash = SimpleNamespace(operation="gmail.message.trash", evidence={"proposal": {"arguments": {"message_id": "m-1"}}})
+    permanent = SimpleNamespace(operation="gmail.message.delete_permanently", evidence={"proposal": {"arguments": {"message_id": "m-2"}}})
+    reply = SimpleNamespace(operation="gmail.message.reply", evidence={"proposal": {"arguments": {"message_id": "m-3", "body": "OK"}}})
+
+    assert _owner_action_context(trash) == {"display_label": "Move email to Trash", "target": "m-1"}
+    assert _owner_action_context(permanent) == {"display_label": "Permanently delete email", "target": "m-2"}
+    assert _owner_action_context(reply) == {"display_label": "Reply to email", "target": "m-3"}
