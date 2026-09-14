@@ -419,6 +419,8 @@ class OpenAIProvider:
                 else:
                     # Discovery must recheck owner policy even for identical searches.
                     result = await tool_handler(call.name, arguments)
+                    if call.name == "atlas_capability_search":
+                        budget.remember_search(result)
                 new_suppressions = _context_suppression_contents(result)
                 if new_suppressions:
                     suppressed_contents = guarded_contents([*suppressed_contents, *new_suppressions])
