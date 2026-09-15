@@ -33,6 +33,20 @@ class RunExecutor:
     def __init__(self, factory, runtime, artifacts, *, run_id: UUID, transcript_id: UUID, checkpoint: bool = True):
         self.factory, self.runtime, self.artifacts = factory, runtime, artifacts
         self.run_id, self.transcript_id, self.checkpoint = run_id, transcript_id, checkpoint
+        self.output_artifacts: list[dict[str, Any]] = []
+        self._output_artifact_ids: set[str] = set()
+
+    def remember_output_artifact(self, result) -> None:
+        if result.status != 'succeeded' or not isinstance(result.output, dict):
+            return
+        artifact = result.output.get('artifact')
+        if not isinstance(artifact, dict):
+            return
+        artifact_id = str(artifact.get('artifact_id') or '')
+        if not artifact_id or artifact_id in self._output_artifact_ids:
+            return
+        self._output_artifact_ids.add(artifact_id)
+        self.output_artifacts.append({**artifact, 'operation': result.operation_id})
 
     async def record(self, session, operation, phase, detail, *, action_id=None, arguments=None, trust='external'):
         return await EvidenceStore(session, self.artifacts).record(self.transcript_id,
@@ -126,6 +140,7 @@ class RunExecutor:
         finally:
             current_run_id.reset(run_token)
             current_transcript_id.reset(context_token)
+        self.remember_output_artifact(result)
         if proposal_evidence is not None:
             evidence_id = proposal_evidence
             frozen = result.model_dump(mode='json')

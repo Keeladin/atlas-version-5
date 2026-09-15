@@ -49,6 +49,19 @@ function turnText(turn: Turn): string {
     .replace(/\n\n\[Attached local workspace files?: .*?\]$/s, '')
 }
 
+type TurnImageArtifact = { artifact_id: string; filename?: string | null; media_type?: string | null }
+
+function turnImageArtifacts(turn: Turn): TurnImageArtifact[] {
+  return turn.blocks.flatMap((block) => {
+    if (block.type !== 'artifact_ref') return []
+    const candidate = block as Record<string, unknown>
+    const artifactId = typeof candidate.artifact_id === 'string' ? candidate.artifact_id : ''
+    const mediaType = typeof candidate.media_type === 'string' ? candidate.media_type : null
+    if (!artifactId || !mediaType?.startsWith('image/')) return []
+    return [{ artifact_id: artifactId, filename: typeof candidate.filename === 'string' ? candidate.filename : null, media_type: mediaType }]
+  })
+}
+
 function formatBytes(value: number | null): string {
   if (value === null) return '—'
   if (value < 1024) return `${value} B`
@@ -807,6 +820,18 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                         <article className={`chat-turn ${turn.actor}`} key={turn.id}>
                           <div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div>
                           <div className="turn-body"><MarkdownBody text={turnText(turn)} /></div>
+                          {turnImageArtifacts(turn).map((artifact) => {
+                            const url = `/api/artifacts/${encodeURIComponent(artifact.artifact_id)}`
+                            const filename = artifact.filename ?? 'atlas-image.png'
+                            return (
+                              <figure className="turn-image-artifact" key={artifact.artifact_id}>
+                                <a className="turn-image-link" href={url} target="_blank" rel="noreferrer">
+                                  <img src={url} alt={filename} loading="lazy" />
+                                </a>
+                                <figcaption><span>{filename}</span><a href={url} download={filename}>Save image</a></figcaption>
+                              </figure>
+                            )
+                          })}
                           {turn.actor === 'atlas' ? (
                             <div className="turn-actions" aria-label="Atlas response actions">
                               <button className="turn-action" type="button" onClick={() => { void copyAtlasTurn(turn) }} aria-label="Copy Atlas response" title="Copy">

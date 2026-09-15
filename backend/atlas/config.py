@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     action_stale_after_seconds: int = 300
     openai_api_key_file: Path | None = None
     openai_model: str = "gpt-5.6-sol"
+    openai_image_model: str = "gpt-image-2.5-sunburst"
     openai_context_window: int = 1_000_000
     working_context_exchanges: int = 10
     working_context_tokens: int = 64_000

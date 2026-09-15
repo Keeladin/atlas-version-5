@@ -832,6 +832,39 @@ textarea:disabled {
   font-size: 15px;
 }
 
+.turn-image-artifact {
+  width: min(720px, 100%);
+  margin: 12px 0 4px;
+}
+
+.turn-image-link {
+  display: block;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--bg-inset);
+}
+
+.turn-image-link img {
+  display: block;
+  width: 100%;
+  max-height: 68vh;
+  object-fit: contain;
+}
+
+.turn-image-artifact figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.turn-image-artifact figcaption a { color: #58a6ff; text-decoration: none; }
+.turn-image-artifact figcaption a:hover { text-decoration: underline; }
+
 .turn-actions {
   display: flex;
   align-items: center;

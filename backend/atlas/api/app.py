@@ -64,6 +64,7 @@ from atlas.notifications.api import router as notifications_router
 from atlas.notifications.dispatcher import push_delivery_loop
 from atlas.persistence.models import (
     ActionRow,
+    ArtifactRow,
     DurableMemoryRow,
     MemoryCommandRow,
     OwnerAttentionRow,
@@ -1559,8 +1560,16 @@ async def stream_conversation(request: ChatRequest):
             async with factory() as session:
                 await require_live_run(session, run_id)
                 repository = TranscriptRepository(session)
-                if answer:
-                    await repository.append_turn(transcript.id, Actor.ATLAS, [TextBlock(text=answer)])
+                response_blocks = [TextBlock(text=answer)] if answer else []
+                for artifact in executor.output_artifacts:
+                    response_blocks.append(ArtifactRefBlock(
+                        artifact_id=UUID(str(artifact["artifact_id"])),
+                        filename=artifact.get("filename"),
+                        media_type=artifact.get("media_type"),
+                        provenance={"source": "capability_output", "operation": artifact.get("operation")},
+                    ))
+                if response_blocks:
+                    await repository.append_turn(transcript.id, Actor.ATLAS, response_blocks)
                 await AuthorityStore(session).finish_run(run_id)
                 await session.commit()
             completed = True
@@ -1710,6 +1719,23 @@ async def upload_local_storage(file: UploadFile, path: str = ""):
         raise HTTPException(status_code=400, detail="Requested path is not a directory") from exc
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+@app.get("/api/artifacts/{artifact_id}")
+async def artifact_content(
+    artifact_id: UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+):
+    row = await session.get(ArtifactRow, artifact_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    try:
+        path = artifact_store.path_for(row.storage_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Artifact not found") from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Artifact content is unavailable")
+    return FileResponse(path, media_type=row.media_type)
+
 
 @app.post("/api/artifacts")
 async def upload_artifact(

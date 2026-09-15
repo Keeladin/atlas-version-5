@@ -63,12 +63,13 @@ export type Health = {
 }
 
 export type TextBlock = { type: 'text'; text: string }
+export type ArtifactRefBlock = { type: 'artifact_ref'; artifact_id: string; filename?: string | null; media_type?: string | null; provenance?: Record<string, unknown> }
 export type Turn = {
   sequence?: number
   id: string
   transcript_id: string
   actor: 'owner' | 'atlas' | 'tool' | 'system'
-  blocks: Array<TextBlock | Record<string, unknown>>
+  blocks: Array<TextBlock | ArtifactRefBlock | Record<string, unknown>>
   created_at: string
 }
 

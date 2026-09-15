@@ -44,8 +44,20 @@ class ArtifactStore:
             source=source,
         )
 
+    def path_for(self, storage_key: str) -> Path:
+        root = self.root.resolve()
+        path = (root / storage_key).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("Artifact storage key escapes the configured root") from exc
+        return path
+
+    def read(self, storage_key: str) -> bytes:
+        return self.path_for(storage_key).read_bytes()
+
     def delete(self, storage_key: str) -> None:
-        path = self.root / storage_key
+        path = self.path_for(storage_key)
         path.unlink(missing_ok=True)
         try:
             path.parent.rmdir()

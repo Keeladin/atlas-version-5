@@ -22,6 +22,7 @@ class ArtifactRefBlock(BaseModel):
     type: Literal["artifact_ref"] = "artifact_ref"
     artifact_id: UUID
     filename: str | None = None
+    media_type: str | None = None
     provenance: dict[str, object] = Field(default_factory=dict)
 
 

@@ -4,7 +4,11 @@ from atlas.artifacts.store import ArtifactStore
 from atlas.capabilities import AuthorityMode, EffectKind, OperationDescriptor
 from atlas.config import Settings
 from atlas.db import get_session_factory
-from atlas.integrations import GitHubMCPService, GoogleWorkspaceService
+from atlas.integrations import (
+    GitHubMCPService,
+    GoogleWorkspaceService,
+    OpenAIImageService,
+)
 from atlas.integrations.mcp_servers import register_mcp_servers
 from atlas.memory import MemoryService
 from atlas.memory.embeddings import OpenAIEmbeddingClient
@@ -86,6 +90,16 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     runtime.register_executor("evidence.task.read", lambda arguments: evidence_call("task_read", arguments))
     runtime.register_executor("evidence.read", lambda arguments: evidence_call("read", arguments))
     runtime.register_executor("evidence.resource.acquire", lambda arguments: evidence_call("acquire", arguments))
+
+    if settings.openai_api_key is not None:
+        images = OpenAIImageService(
+            api_key=settings.openai_api_key,
+            model=settings.openai_image_model,
+            factory=factory,
+            store=ArtifactStore(settings.artifact_dir),
+        )
+        runtime.register_executor("image.generate", images.generate)
+        runtime.register_executor("image.edit", images.edit)
 
     async def schedule_call(method: str, arguments):
         async with factory() as session:

@@ -78,6 +78,16 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
             trust="external",
         ),
         CapabilityEntry(
+            id="openai.images",
+            family="Image generation",
+            description="Generate new images and edit existing image artifacts using the configured OpenAI image provider.",
+            source=CapabilitySource.PROVIDER,
+            enabled=bool(settings and settings.openai_api_key is not None),
+            availability=(CapabilityAvailability.AVAILABLE if settings and settings.openai_api_key is not None else CapabilityAvailability.AUTHENTICATION_REQUIRED),
+            executable_operations=["image.generate", "image.edit"],
+            trust="external",
+        ),
+        CapabilityEntry(
             id="atlas.local_storage",
             family="Storage",
             description="Browse the owner-approved local workspace root.",
@@ -147,6 +157,30 @@ def build_phase0_registry(settings: Settings | None = None) -> EnvironmentRegist
         ),
     ]
     registry = EnvironmentRegistry(entries)
+    registry.register_operation(OperationDescriptor(
+        id="image.generate", capability_id="openai.images", family="Image generation",
+        description="Generate one new image from a prompt and return it as a first-class Atlas image artifact. Optional size is auto, 1024x1024, 1536x1024, or 1024x1536.",
+        input_schema={"type":"object","properties":{
+            "prompt":{"type":"string","minLength":1,"maxLength":32000},
+            "size":{"type":"string","enum":["auto","1024x1024","1536x1024","1024x1536"]},
+            "quality":{"type":"string","enum":["auto","low","medium","high"]},
+            "background":{"type":"string","enum":["auto","opaque","transparent"]},
+            "output_format":{"type":"string","enum":["png","jpeg","webp"]}},
+            "required":["prompt"],"additionalProperties":False},
+        effect=EffectKind.CREATE, authority=AuthorityMode.AUTO, trust="external"))
+    registry.register_operation(OperationDescriptor(
+        id="image.edit", capability_id="openai.images", family="Image generation",
+        description="Edit one existing Atlas image artifact using a prompt. Use the artifact_id from the owner's attachment or an acquired image resource; input_fidelity defaults to high.",
+        input_schema={"type":"object","properties":{
+            "artifact_id":{"type":"string","format":"uuid"},
+            "prompt":{"type":"string","minLength":1,"maxLength":32000},
+            "size":{"type":"string","enum":["auto","1024x1024","1536x1024","1024x1536"]},
+            "quality":{"type":"string","enum":["auto","low","medium","high"]},
+            "background":{"type":"string","enum":["auto","opaque","transparent"]},
+            "output_format":{"type":"string","enum":["png","jpeg","webp"]},
+            "input_fidelity":{"type":"string","enum":["high","low"]}},
+            "required":["artifact_id","prompt"],"additionalProperties":False},
+        effect=EffectKind.CREATE, authority=AuthorityMode.AUTO, trust="external"))
     registry.register_operation(OperationDescriptor(
         id="evidence.task.read", capability_id="atlas.evidence", family="Evidence",
         description="Page the exact current task checkpoint, including all unresolved action references. Pin expected_revision across pages; restart if it changes.",
