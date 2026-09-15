@@ -1,47 +1,92 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ForegroundConflictError, dismissAttention, streamMessage } from '../src/api.ts'
+import { ForegroundConflictError, RunInterruptedError, dismissAttention, streamMessage } from '../src/api.ts'
 
-async function withResponse(response, exercise) {
-  const original = globalThis.fetch
-  globalThis.fetch = async () => response
-  try { await exercise() } finally { globalThis.fetch = original }
+let eventScript = () => {}
+
+class FakeEventSource {
+  constructor(url) {
+    this.url = url
+    this.listeners = new Map()
+    this.closed = false
+    queueMicrotask(() => eventScript(this))
+  }
+  addEventListener(type, callback) {
+    const callbacks = this.listeners.get(type) ?? []
+    callbacks.push(callback)
+    this.listeners.set(type, callbacks)
+  }
+  emit(type, data = '{}') {
+    for (const callback of this.listeners.get(type) ?? []) callback({ data })
+  }
+  close() { this.closed = true }
+  fail() { this.onerror?.(new Event('error')) }
 }
 
+async function withTransport(response, script, exercise) {
+  const originalFetch = globalThis.fetch
+  const originalEventSource = globalThis.EventSource
+  globalThis.fetch = async () => response
+  globalThis.EventSource = FakeEventSource
+  eventScript = script
+  try { await exercise() } finally {
+    globalThis.fetch = originalFetch
+    globalThis.EventSource = originalEventSource
+  }
+}
+
+const accepted = () => new Response(JSON.stringify({
+  run_id: 'run-1', transcript_id: 'chat-1', events_url: '/api/runs/run-1/events',
+}), { status: 202, headers: { 'Content-Type': 'application/json' } })
+
 test('busy foreground is an explicit conflict that lets the UI preserve the draft', async () => {
-  await withResponse(new Response(JSON.stringify({ detail: 'Another message is running' }), { status: 409 }), async () => {
+  await withTransport(new Response(JSON.stringify({ detail: 'Another message is running' }), { status: 409 }), () => {}, async () => {
     await assert.rejects(streamMessage('Unsent draft', ['note.txt'], () => assert.fail('No stream should start')),
       (error) => error instanceof ForegroundConflictError && error.message === 'Another message is running')
   })
 })
 
-test('server failure is not classified as an unaccepted foreground conflict', async () => {
-  await withResponse(new Response(JSON.stringify({ detail: 'Server interrupted' }), { status: 500 }), async () => {
+test('server failure before run acceptance is not classified as a foreground conflict', async () => {
+  await withTransport(new Response(JSON.stringify({ detail: 'Server unavailable' }), { status: 500 }), () => {}, async () => {
     await assert.rejects(streamMessage('Message', [], () => {}),
       (error) => error instanceof Error && !(error instanceof ForegroundConflictError))
   })
 })
 
-test('accepted stream preserves content across transport chunk boundaries', async () => {
-  const data = new TextEncoder().encode('{"type":"delta","text":"héllo"}\n{"type":"delta","text":" 世界"}\n')
-  const body = new ReadableStream({ start(controller) {
-    for (let offset = 0; offset < data.length; offset += 3) controller.enqueue(data.slice(offset, offset + 3))
-    controller.close()
-  } })
-  await withResponse(new Response(body), async () => {
-    const chunks = []
+test('accepted run is observed through SSE until durable completion', async () => {
+  const chunks = []
+  await withTransport(accepted(), (source) => {
+    assert.equal(source.url, '/api/runs/run-1/events')
+    source.emit('delta', JSON.stringify({ text: 'héllo' }))
+    source.emit('delta', JSON.stringify({ text: ' 世界' }))
+    source.emit('completed', JSON.stringify({ transcript_id: 'chat-1' }))
+  }, async () => {
     await streamMessage('Message', [], (chunk) => chunks.push(chunk))
     assert.equal(chunks.join(''), 'héllo 世界')
   })
 })
 
-test('an interrupted accepted stream reports interruption without classifying it as unsent', async () => {
-  await withResponse(new Response('{"type":"error","message":"Task state was retained"}\n'), async () => {
-    await assert.rejects(streamMessage('Message', [], () => {}),
-      (error) => !(error instanceof ForegroundConflictError) && error.message === 'Task state was retained')
+test('transient SSE network errors do not redefine the Atlas run as failed', async () => {
+  const chunks = []
+  await withTransport(accepted(), (source) => {
+    source.fail()
+    source.emit('delta', JSON.stringify({ text: 'reconnected' }))
+    source.emit('completed')
+  }, async () => {
+    await streamMessage('Message', [], (chunk) => chunks.push(chunk))
+    assert.equal(chunks.join(''), 'reconnected')
   })
 })
 
+test('durable interrupted event reports task retention without classifying the message as unsent', async () => {
+  await withTransport(accepted(), (source) => {
+    source.emit('interrupted', JSON.stringify({ message: 'Task state was retained' }))
+  }, async () => {
+    await assert.rejects(streamMessage('Message', [], () => {}),
+      (error) => error instanceof RunInterruptedError && !(error instanceof ForegroundConflictError)
+        && error.message === 'Task state was retained')
+  })
+})
 
 test('interruption dismissal targets the durable attention item', async () => {
   const original = globalThis.fetch

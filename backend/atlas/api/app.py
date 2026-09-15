@@ -99,6 +99,7 @@ from atlas.runtime.execution import (
 )
 from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import interrupt_run, maintain_heartbeat, require_live_run
+from atlas.runtime.run_events import append_run_event, run_events_after
 from atlas.runtime.startup import initialize_phase0
 from atlas.runtime.task_state import (
     TaskStateDelta,
@@ -120,6 +121,7 @@ settings = get_settings()
 registry = build_phase0_registry(settings)
 artifact_store = ArtifactStore(settings.artifact_dir)
 capability_runtime = build_capability_runtime(settings, registry)
+_foreground_tasks: set[asyncio.Task[None]] = set()
 
 
 class ChatRequest(BaseModel):
@@ -155,10 +157,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        for task in background:
+        foreground = tuple(_foreground_tasks)
+        for task in (*background, *foreground):
             if task is not None:
                 task.cancel()
-        for task in background:
+        for task in (*background, *foreground):
             if task is not None:
                 with suppress(asyncio.CancelledError):
                     await task
@@ -1377,8 +1380,20 @@ async def conversation(session: Annotated[AsyncSession, Depends(get_session)],
     repository = TranscriptRepository(session)
     transcript = await _owner_chat(repository, chat_id)
     turns = await repository.list_turns(transcript.id, before_sequence=before_sequence, limit=limit)
+    active_run = (await session.execute(
+        select(RunRow).where(
+            RunRow.transcript_id == transcript.id,
+            RunRow.kind == "foreground",
+            RunRow.inference_active.is_(True),
+        ).order_by(RunRow.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
     await session.commit()
-    return {"transcript": transcript, "turns": turns, "next_before_sequence": turns[0].sequence if len(turns) == limit and turns[0].sequence > 1 else None}
+    return {
+        "transcript": transcript,
+        "turns": turns,
+        "next_before_sequence": turns[0].sequence if len(turns) == limit and turns[0].sequence > 1 else None,
+        "active_run": _run_projection(active_run) if active_run is not None else None,
+    }
 
 
 def _begin_owner_checkpoint(state, request, owner_turn_id):
@@ -1425,17 +1440,172 @@ async def _reconcile_pending_action_checkpoint(session: AsyncSession, transcript
     )
 
 
-@app.post("/api/conversation/stream")
-async def stream_conversation(request: ChatRequest):
+def _run_projection(run: RunRow) -> dict[str, Any]:
+    return {
+        "id": str(run.id),
+        "transcript_id": str(run.transcript_id) if run.transcript_id else None,
+        "status": run.status,
+        "inference_status": run.inference_status,
+        "inference_active": run.inference_active,
+        "created_at": run.created_at,
+        "finished_at": run.finished_at,
+        "events_url": f"/api/runs/{run.id}/events",
+    }
+
+
+async def _append_foreground_event(run_id: UUID, event_type: str, payload: dict[str, Any] | None = None) -> None:
+    async with get_session_factory()() as session:
+        await append_run_event(session, run_id, event_type, payload)
+        await session.commit()
+
+
+def _launch_foreground_run(run_id: UUID, transcript_id: UUID, owner_turn_id: UUID) -> None:
+    task = asyncio.create_task(
+        _execute_foreground_run(run_id, transcript_id, owner_turn_id),
+        name=f"atlas-foreground-{run_id}",
+    )
+    _foreground_tasks.add(task)
+
+    def settled(done: asyncio.Task[None]) -> None:
+        _foreground_tasks.discard(done)
+        if not done.cancelled():
+            done.exception()  # retrieve unexpected exceptions so asyncio does not hide them
+
+    task.add_done_callback(settled)
+
+
+async def _execute_foreground_run(run_id: UUID, transcript_id: UUID, owner_turn_id: UUID) -> None:
+    factory = get_session_factory()
+    api_key = settings.openai_api_key
+    try:
+        if api_key is None:
+            raise RuntimeError("OpenAI provider is not configured")
+
+        await _append_foreground_event(run_id, "running", {})
+        async with factory() as session:
+            await require_live_run(session, run_id)
+            repository = TranscriptRepository(session)
+            transcript = await repository.get_owner_chat(transcript_id)
+            turns = await repository.list_recent_turns(transcript.id)
+            task_state = await repository.get_active_task_state(transcript.id)
+
+        provider = OpenAIProvider(
+            api_key=api_key,
+            model=settings.openai_model,
+            capability_call_limit=settings.capability_call_limit,
+            capability_completion_reserve=settings.capability_completion_reserve,
+            capability_policy=capability_runtime.enabled_capabilities,
+            input_token_budget=min(settings.working_context_tokens, settings.openai_context_window),
+        )
+        async with maintain_heartbeat(factory, run_id):
+            messages, memory_evidence_handles = await _prepare_provider_messages(provider, transcript, turns)
+
+        executor = RunExecutor(factory, capability_runtime, artifact_store, run_id=run_id, transcript_id=transcript.id)
+        tool_handler = executor.tool_handler
+        provider_evidence_id = None
+
+        async def observation_handler(payload: dict[str, Any]) -> str:
+            nonlocal provider_evidence_id
+            async with factory() as session:
+                provider_evidence_id, _ = await EvidenceStore(session, artifact_store).record(
+                    transcript.id, operation="provider.openai", phase="observed", detail=payload,
+                    run_id=run_id, checkpoint=False, trust="external",
+                )
+                await session.commit()
+                return str(provider_evidence_id)
+
+        async def task_state_handler(payload: dict[str, Any]) -> None:
+            try:
+                delta = TaskStateDelta.model_validate(payload)
+            except ValidationError:
+                delta = None
+            async with factory() as task_session:
+                await require_live_run(task_session, run_id)
+                repository = TranscriptRepository(task_session)
+                if delta is not None:
+                    state = await repository.mutate_active_task_state(
+                        transcript.id, lambda state: merge_semantic_delta(state, delta),
+                        expected_task_id=task_state["task_id"],
+                    )
+                else:
+                    state = await repository.get_active_task_state(transcript.id)
+                await EvidenceStore(task_session, artifact_store).record(
+                    transcript.id, operation="task_state_delta", phase="accepted" if delta else "rejected",
+                    detail={
+                        "delta": payload, "task_id": state.get("task_id"), "revision": state.get("revision"),
+                        "provider_evidence_id": str(provider_evidence_id) if provider_evidence_id else None,
+                    },
+                    run_id=run_id, checkpoint=False, trust="model",
+                )
+                await task_session.commit()
+
+        async def memory_candidate_handler(candidates: list[dict[str, Any]]) -> None:
+            await MemoryCandidateIntake(factory).enqueue_many(
+                candidates,
+                source_transcript_id=transcript.id,
+                source_turn_id=owner_turn_id,
+                source_provider_evidence_id=provider_evidence_id,
+                allowed_evidence_turn_ids={turn_id for turn_id, _span_ref in memory_evidence_handles.values()},
+                evidence_handle_map=memory_evidence_handles,
+                proposer_model=settings.openai_model,
+            )
+
+        async def checkpoint_reader():
+            async with factory() as session:
+                state = await _reconcile_pending_action_checkpoint(session, transcript.id)
+                await session.commit()
+                return active_task_provider_message(state)
+
+        chunks: list[str] = []
+        async with maintain_heartbeat(factory, run_id):
+            async for delta in provider.stream_text(
+                instructions=build_model_instructions(
+                    await capability_runtime.compact_index_current(), owner_timezone=settings.owner_timezone
+                ),
+                messages=messages,
+                tool_handler=tool_handler,
+                task_state_handler=task_state_handler,
+                memory_candidate_handler=memory_candidate_handler,
+                observation_handler=observation_handler,
+                checkpoint_reader=checkpoint_reader,
+            ):
+                chunks.append(delta)
+                await _append_foreground_event(run_id, "delta", {"text": delta})
+
+        answer = "".join(chunks).strip()
+        async with factory() as session:
+            await require_live_run(session, run_id)
+            repository = TranscriptRepository(session)
+            response_blocks = [TextBlock(text=answer)] if answer else []
+            for artifact in executor.output_artifacts:
+                response_blocks.append(ArtifactRefBlock(
+                    artifact_id=UUID(str(artifact["artifact_id"])),
+                    filename=artifact.get("filename"),
+                    media_type=artifact.get("media_type"),
+                    provenance={"source": "capability_output", "operation": artifact.get("operation")},
+                ))
+            if response_blocks:
+                await repository.append_turn(transcript.id, Actor.ATLAS, response_blocks)
+            await AuthorityStore(session).finish_run(run_id)
+            await append_run_event(session, run_id, "completed", {"transcript_id": str(transcript.id)})
+            await session.commit()
+    except BaseException as exc:  # transport observers never own inference lifetime
+        reason = f"Atlas inference interrupted ({type(exc).__name__}); task state was retained."
+        with suppress(Exception):
+            await asyncio.shield(interrupt_run(factory, artifact_store, run_id, reason=reason))
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+
+
+@app.post("/api/conversation/runs", status_code=202)
+async def create_conversation_run(request: ChatRequest):
     text = request.text.strip()
     attachment_paths = [path.strip() for path in request.attachments if path.strip()]
     if attachment_paths:
         await require_capability("atlas.local_storage")
     if not text and not attachment_paths:
         raise HTTPException(status_code=422, detail="Message text or an attachment is required")
-
-    api_key = settings.openai_api_key
-    if api_key is None:
+    if settings.openai_api_key is None:
         raise HTTPException(status_code=503, detail="OpenAI provider is not configured")
 
     factory = get_session_factory()
@@ -1454,19 +1624,26 @@ async def stream_conversation(request: ChatRequest):
             run_id = await AuthorityStore(session).create_run(transcript_id=transcript.id, intent=run_intent)
         except ForegroundBusy as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         blocks = [TextBlock(text=text)]
         for path in attachment_paths:
             resource = await asyncio.to_thread(
-                LocalStorageService(settings.workspace_root, settings.workspace_display_root).acquire_file, path)
+                LocalStorageService(settings.workspace_root, settings.workspace_display_root).acquire_file, path
+            )
             frozen = await EvidenceStore(session, artifact_store).freeze(resource, provenance={
-                "source": "owner_attachment", "run_id": str(run_id), "transcript_id": str(transcript.id), "path": path})
+                "source": "owner_attachment", "run_id": str(run_id),
+                "transcript_id": str(transcript.id), "path": path,
+            })
             snapshot = frozen["resource"]
-            blocks.append(ArtifactRefBlock(artifact_id=UUID(snapshot["artifact_id"]), filename=snapshot["name"],
+            blocks.append(ArtifactRefBlock(
+                artifact_id=UUID(snapshot["artifact_id"]), filename=snapshot["name"],
                 media_type=snapshot.get("media_type"),
-                provenance={"source": "owner_attachment", "path": path, "sha256": snapshot["snapshot_sha256"]}))
+                provenance={"source": "owner_attachment", "path": path, "sha256": snapshot["snapshot_sha256"]},
+            ))
+
         await session.execute(update(OwnerAttentionRow).where(
             OwnerAttentionRow.run_id.in_(select(RunRow.id).where(RunRow.transcript_id == transcript.id)),
-            OwnerAttentionRow.state == "interrupted", OwnerAttentionRow.resolved.is_(False)
+            OwnerAttentionRow.state == "interrupted", OwnerAttentionRow.resolved.is_(False),
         ).values(resolved=True, resolved_at=datetime.now(UTC)))
         owner_turn = await repository.append_turn(transcript.id, Actor.OWNER, blocks)
         await _reconcile_pending_action_checkpoint(session, transcript.id)
@@ -1474,116 +1651,79 @@ async def stream_conversation(request: ChatRequest):
             transcript.id, lambda state: _begin_owner_checkpoint(state, run_intent, owner_turn.id)
         )
         transcript.active_task_state = task_state
+        await append_run_event(session, run_id, "accepted", {
+            "transcript_id": str(transcript.id), "owner_turn_id": str(owner_turn.id),
+        })
         await session.commit()
-        turns = await repository.list_recent_turns(transcript.id)
 
+    _launch_foreground_run(run_id, transcript.id, owner_turn.id)
+    return {
+        "run_id": str(run_id),
+        "transcript_id": str(transcript.id),
+        "events_url": f"/api/runs/{run_id}/events",
+    }
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run(run_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
+    run = await session.get(RunRow, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return _run_projection(run)
+
+
+@app.get("/api/runs/{run_id}/events")
+async def run_event_stream(
+    run_id: UUID,
+    request: Request,
+    after: int | None = Query(default=None, ge=0),
+):
+    factory = get_session_factory()
+    async with factory() as session:
+        run = await session.get(RunRow, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+    header_cursor = request.headers.get("last-event-id")
     try:
-        provider = OpenAIProvider(api_key=api_key, model=settings.openai_model, capability_call_limit=settings.capability_call_limit, capability_completion_reserve=settings.capability_completion_reserve, capability_policy=capability_runtime.enabled_capabilities, input_token_budget=min(settings.working_context_tokens, settings.openai_context_window))
-        async with maintain_heartbeat(factory, run_id):
-            messages, memory_evidence_handles = await _prepare_provider_messages(
-                provider, transcript, turns
-            )
-    except BaseException:
-        await asyncio.shield(interrupt_run(factory, artifact_store, run_id, reason="Context preparation was interrupted; task state was retained."))
-        raise
-    executor = RunExecutor(factory, capability_runtime, artifact_store, run_id=run_id, transcript_id=transcript.id)
-    tool_handler = executor.tool_handler
+        cursor = after if after is not None else int(header_cursor or 0)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Last-Event-ID") from exc
+    if cursor < 0:
+        raise HTTPException(status_code=400, detail="Invalid event cursor")
 
-    provider_evidence_id = None
-
-    async def observation_handler(payload: dict[str, Any]) -> str:
-        nonlocal provider_evidence_id
-        async with factory() as session:
-            provider_evidence_id, _ = await EvidenceStore(session, artifact_store).record(transcript.id,
-                operation="provider.openai", phase="observed", detail=payload, run_id=run_id,
-                checkpoint=False, trust="external")
-            await session.commit()
-            return str(provider_evidence_id)
-
-    async def task_state_handler(payload: dict[str, Any]) -> None:
-        try:
-            delta = TaskStateDelta.model_validate(payload)
-        except ValidationError:
-            delta = None
-        async with factory() as task_session:
-            await require_live_run(task_session, run_id)
-            repository = TranscriptRepository(task_session)
-            if delta is not None:
-                state = await repository.mutate_active_task_state(
-                    transcript.id, lambda state: merge_semantic_delta(state, delta),
-                    expected_task_id=task_state["task_id"],
-                )
-            else:
-                state = await repository.get_active_task_state(transcript.id)
-            await EvidenceStore(task_session, artifact_store).record(transcript.id,
-                operation="task_state_delta", phase="accepted" if delta else "rejected",
-                detail={"delta": payload, "task_id": state.get("task_id"), "revision": state.get("revision"),
-                    "provider_evidence_id": str(provider_evidence_id) if provider_evidence_id else None},
-                run_id=run_id, checkpoint=False, trust="model")
-            await task_session.commit()
-
-    async def memory_candidate_handler(candidates: list[dict[str, Any]]) -> None:
-        await MemoryCandidateIntake(factory).enqueue_many(
-            candidates,
-            source_transcript_id=transcript.id,
-            source_turn_id=owner_turn.id,
-            source_provider_evidence_id=provider_evidence_id,
-            allowed_evidence_turn_ids={
-                turn_id for turn_id, _span_ref in memory_evidence_handles.values()
-            },
-            evidence_handle_map=memory_evidence_handles,
-            proposer_model=settings.openai_model,
-        )
-
-    async def checkpoint_reader():
-        async with factory() as session:
-            state = await _reconcile_pending_action_checkpoint(session, transcript.id)
-            await session.commit()
-            return active_task_provider_message(state)
-
-    async def generate() -> AsyncIterator[str]:
-        chunks: list[str] = []
-        completed = False
-        try:
-            async with maintain_heartbeat(factory, run_id):
-                async for delta in provider.stream_text(
-                    instructions=build_model_instructions(
-                        await capability_runtime.compact_index_current(), owner_timezone=settings.owner_timezone
-                    ),
-                    messages=messages, tool_handler=tool_handler,
-                    task_state_handler=task_state_handler,
-                    memory_candidate_handler=memory_candidate_handler,
-                    observation_handler=observation_handler, checkpoint_reader=checkpoint_reader,
-                ):
-                    chunks.append(delta)
-                    yield json.dumps({"type": "delta", "text": delta}) + "\n"
-            answer = "".join(chunks).strip()
+    async def events() -> AsyncIterator[str]:
+        nonlocal cursor
+        last_keepalive = asyncio.get_running_loop().time()
+        while not await request.is_disconnected():
             async with factory() as session:
-                await require_live_run(session, run_id)
-                repository = TranscriptRepository(session)
-                response_blocks = [TextBlock(text=answer)] if answer else []
-                for artifact in executor.output_artifacts:
-                    response_blocks.append(ArtifactRefBlock(
-                        artifact_id=UUID(str(artifact["artifact_id"])),
-                        filename=artifact.get("filename"),
-                        media_type=artifact.get("media_type"),
-                        provenance={"source": "capability_output", "operation": artifact.get("operation")},
-                    ))
-                if response_blocks:
-                    await repository.append_turn(transcript.id, Actor.ATLAS, response_blocks)
-                await AuthorityStore(session).finish_run(run_id)
-                await session.commit()
-            completed = True
-            yield json.dumps({"type": "done", "transcript_id": str(transcript.id)}) + "\n"
-        except Exception as exc:  # noqa: BLE001 - persist all foreground interruptions
-            yield json.dumps({"type": "error", "message": f"Atlas inference interrupted ({type(exc).__name__}); task state was retained."}) + "\n"
-        finally:
-            if not completed:
-                await asyncio.shield(interrupt_run(factory, artifact_store, run_id,
-                    reason="Foreground inference was interrupted. Continue with a new message; prior effects will not be replayed."))
+                rows = await run_events_after(session, run_id, cursor)
+                run = await session.get(RunRow, run_id)
+            for row in rows:
+                cursor = row.id
+                data = json.dumps(jsonable_encoder(row.payload), separators=(",", ":"))
+                yield f"id: {row.id}\nretry: 2000\nevent: {row.event_type}\ndata: {data}\n\n"
+                last_keepalive = asyncio.get_running_loop().time()
+            if run is None:
+                return
+            terminal = not run.inference_active and run.inference_status not in {"running", "queued"}
+            if terminal and not rows:
+                return
+            now = asyncio.get_running_loop().time()
+            if now - last_keepalive >= 10.0:
+                yield ": keep-alive\n\n"
+                last_keepalive = now
+            await asyncio.sleep(0.5)
 
-    return StreamingResponse(generate(), media_type="application/x-ndjson")
-
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 def _browser_file_response(handle, metadata: dict[str, Any], *, download: bool):
     def chunks():

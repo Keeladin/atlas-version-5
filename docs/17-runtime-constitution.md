@@ -177,6 +177,8 @@ Run outcome aggregates all action outcomes independently of inference completion
 
 Schedule advancement and durable queued occurrence creation commit atomically. Each occurrence keeps immutable owner intent and a unique schedule/time identity. Queued work resumes after restart; interrupted dispatched work is never automatically replayed. Heartbeats fence abandoned inference runs, preserve task/effect evidence, and release their foreground slot with owner attention. Synchronous integrations run outside the main event loop.
 
+Foreground transport observers do not own inference lifetime. Owner submission creates a durable run before observation begins; the runtime continues that run independently of browser connectivity. Owner-facing run events are durably sequenced and exposed over reconnectable SSE with keep-alives and `Last-Event-ID` replay. Conversation reloads expose the canonical active run so a refreshed or replacement browser can reattach without resubmitting the owner turn. A transport disconnect alone is never evidence that inference failed or that an external effect should be replayed.
+
 Canonical resource bytes live in immutable local artifacts, with metadata and provenance in PostgreSQL. Owner attachments, public provider web/citation events, and accepted/rejected model task deltas retain their source relationship. Bounded exact evidence reads preserve original markup and whitespace. Public provider events do not include hidden provider search passages or internal reasoning that the provider never returns.
 
 

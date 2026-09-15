@@ -227,9 +227,11 @@ async def test_foreground_completion_requires_explicit_valid_delta(pg_factory, t
     monkeypatch.setattr(app_module, 'OpenAIProvider', Provider)
     monkeypatch.setattr(app_module.settings, 'openai_api_key_file', key)
     monkeypatch.setattr(app_module, 'artifact_store', ArtifactStore(tmp_path / 'artifacts'))
-    response = await app_module.stream_conversation(app_module.ChatRequest(text='Keep doing the task'))
-    async for _ in response.body_iterator:
-        pass
+    launched = []
+    monkeypatch.setattr(app_module, '_launch_foreground_run', lambda *args: launched.append(args))
+    await app_module.create_conversation_run(app_module.ChatRequest(text='Keep doing the task'))
+    assert len(launched) == 1
+    await app_module._execute_foreground_run(*launched[0])
     async with pg_factory() as session:
         transcript = await TranscriptRepository(session).get_or_create_active()
         assert transcript.active_task_state['status'] == ('complete' if delta == {'status': 'complete'} else 'active')
@@ -259,9 +261,12 @@ async def test_owner_attachment_reference_survives_file_change(pg_factory, tmp_p
     monkeypatch.setattr(app_module, 'artifact_store', artifacts)
     async def enabled(): return {'atlas.local_storage', 'atlas.evidence'}
     monkeypatch.setattr(app_module.capability_runtime, 'enabled_capabilities', enabled)
-    response = await app_module.stream_conversation(app_module.ChatRequest(text='Read this', attachments=['note.txt']))
+    launched = []
+    monkeypatch.setattr(app_module, '_launch_foreground_run', lambda *args: launched.append(args))
+    await app_module.create_conversation_run(app_module.ChatRequest(text='Read this', attachments=['note.txt']))
     attached.write_text('Changed after attachment')
-    async for _ in response.body_iterator: pass
+    assert len(launched) == 1
+    await app_module._execute_foreground_run(*launched[0])
     async with pg_factory() as session:
         owner = (await session.execute(select(TurnRow).where(TurnRow.actor == 'owner'))).scalar_one()
         reference = next(block for block in owner.blocks if block['type'] == 'artifact_ref')
@@ -286,13 +291,16 @@ async def test_cancelled_foreground_retains_task_and_releases_slot(pg_factory, t
     monkeypatch.setattr(app_module, 'OpenAIProvider', Provider)
     monkeypatch.setattr(app_module.settings, 'openai_api_key_file', key)
     monkeypatch.setattr(app_module, 'artifact_store', ArtifactStore(tmp_path / 'artifacts'))
-    response = await app_module.stream_conversation(app_module.ChatRequest(text='Continue'))
+    launched = []
+    monkeypatch.setattr(app_module, '_launch_foreground_run', lambda *args: launched.append(args))
+    await app_module.create_conversation_run(app_module.ChatRequest(text='Continue'))
     from fastapi import HTTPException
     with pytest.raises(HTTPException) as conflict:
-        await app_module.stream_conversation(app_module.ChatRequest(text='Second tab'))
+        await app_module.create_conversation_run(app_module.ChatRequest(text='Second tab'))
     assert conflict.value.status_code == 409
+    assert len(launched) == 1
     with pytest.raises(asyncio.CancelledError):
-        async for _ in response.body_iterator: pass
+        await app_module._execute_foreground_run(*launched[0])
     async with pg_factory() as session:
         transcript = await TranscriptRepository(session).get_or_create_active()
         assert transcript.active_task_state['semantic']['objective'] == 'Keep objective'

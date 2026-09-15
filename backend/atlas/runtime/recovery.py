@@ -8,6 +8,7 @@ from sqlalchemy import or_, select, update
 from atlas.actions.authority import AuthorityStore
 from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow
 from atlas.runtime.observations import EvidenceStore
+from atlas.runtime.run_events import append_run_event
 
 
 class RunInterrupted(RuntimeError):
@@ -82,6 +83,7 @@ async def interrupt_run(factory, artifacts, run_id, *, reason: str) -> None:
             session.add(OwnerAttentionRow(run_id=run_id, state='interrupted',
                 title='Atlas work was interrupted', detail={'message': reason,
                     'resume': 'Continue with a new owner message; exact prior evidence and task state are retained.'}))
+        await append_run_event(session, run_id, 'interrupted', {'message': reason})
         await session.commit()
 
 

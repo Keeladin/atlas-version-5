@@ -10,7 +10,7 @@ import { mergeRestoredAttachments, releaseAttachmentPreviews, turnAttachments, t
 import { ChatAttachmentView } from './ChatAttachmentView'
 import { MobileNavigationDrawer } from './MobileNavigationDrawer'
 import { composerAttachmentDisabled, composerInputDisabled, composerSendDisabled } from './chatComposer'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, localStorageFileUrl, projectStorageFileUrl, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, localStorageFileUrl, projectStorageFileUrl, observeConversationRun, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -161,6 +161,26 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       ])
       installConversation(conversation)
       setConversationContext(context)
+      if (conversation.active_run) {
+        setSending(true)
+        setStreamingText('')
+        void observeConversationRun(
+          conversation.active_run.id,
+          (delta) => setStreamingText((current) => current + delta),
+        ).then(async () => {
+          const refreshed = await getConversation(payload.active_chat_id)
+          installConversation(refreshed)
+          setConversationContext(await getConversationContext(payload.active_chat_id).catch(() => null))
+          setStreamingText('')
+        }).catch(async (cause) => {
+          setError(cause instanceof Error ? cause.message : String(cause))
+          const refreshed = await getConversation(payload.active_chat_id).catch(() => null)
+          if (refreshed) installConversation(refreshed)
+        }).finally(() => {
+          setSending(false)
+          setStreamingText('')
+        })
+      }
     }).catch((cause) => setError(String(cause)))
     getPendingActions().then(setPendingActions).catch(() => setPendingActions([]))
     getRecentActions(4).then(setRecentActions).catch(() => setRecentActions([]))

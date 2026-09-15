@@ -101,7 +101,7 @@ async def test_25a13_marks_all_existing_memories_unverified_and_downgrades(pg_fa
     async with engine.begin() as connection:
         assert (
             await connection.execute(text("SELECT version_num FROM alembic_version"))
-        ).scalar_one() == '25a16'
+        ).scalar_one() == '25a17'
         assert (
             await connection.execute(text(
                 "SELECT count(*) FROM memory_obligations "
@@ -213,4 +213,4 @@ async def test_25a15_adds_wake_claims_and_downgrade_removes_event_tasks(pg_facto
         assert 'wake_claimed_at' not in columns
     await migrate('upgrade', 'head')
     async with engine.begin() as connection:
-        assert (await connection.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a16'
+        assert (await connection.execute(text('SELECT version_num FROM alembic_version'))).scalar_one() == '25a17'

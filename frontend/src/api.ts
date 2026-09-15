@@ -73,10 +73,22 @@ export type Turn = {
   created_at: string
 }
 
+export type ForegroundRun = {
+  id: string
+  transcript_id: string | null
+  status: string
+  inference_status: string
+  inference_active: boolean
+  created_at: string
+  finished_at: string | null
+  events_url: string
+}
+
 export type Conversation = {
   next_before_sequence: number | null
   transcript: { id: string; title: string | null; created_at: string; updated_at: string; closed_at: string | null }
   turns: Turn[]
+  active_run: ForegroundRun | null
 }
 
 export async function getHealth(): Promise<Health> {
@@ -234,6 +246,67 @@ export async function getConversationContextStats(chatId?: string): Promise<Conv
 }
 
 export class ForegroundConflictError extends Error {}
+export class RunInterruptedError extends Error {}
+
+export type StartedForegroundRun = {
+  run_id: string
+  transcript_id: string
+  events_url: string
+}
+
+export async function startConversationRun(
+  text: string,
+  attachments: string[],
+  chatId: string | null = null,
+): Promise<StartedForegroundRun> {
+  const response = await fetch('/api/conversation/runs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, attachments, chat_id: chatId }),
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    const message = body?.detail ?? `Atlas request failed (${response.status})`
+    if (response.status === 409) throw new ForegroundConflictError(message)
+    throw new Error(message)
+  }
+  return body as StartedForegroundRun
+}
+
+export function observeConversationRun(runId: string, onDelta: (delta: string) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`)
+    let settled = false
+
+    const finish = (outcome: 'completed' | 'interrupted', message?: string) => {
+      if (settled) return
+      settled = true
+      source.close()
+      if (outcome === 'completed') resolve()
+      else reject(new RunInterruptedError(message || 'Atlas work was interrupted; task state was retained.'))
+    }
+
+    source.addEventListener('delta', (raw) => {
+      try {
+        const event = JSON.parse((raw as MessageEvent).data) as { text?: string }
+        if (event.text) onDelta(event.text)
+      } catch (cause) {
+        settled = true
+        source.close()
+        reject(cause instanceof Error ? cause : new Error(String(cause)))
+      }
+    })
+    source.addEventListener('completed', () => finish('completed'))
+    source.addEventListener('interrupted', (raw) => {
+      let message: string | undefined
+      try { message = (JSON.parse((raw as MessageEvent).data) as { message?: string }).message } catch { /* use default */ }
+      finish('interrupted', message)
+    })
+    // EventSource reconnects automatically and supplies Last-Event-ID. A transient
+    // transport loss is not an Atlas failure, so onerror intentionally does not settle.
+    source.onerror = () => undefined
+  })
+}
 
 export async function streamMessage(
   text: string,
@@ -241,36 +314,8 @@ export async function streamMessage(
   onDelta: (delta: string) => void,
   chatId: string | null = null,
 ): Promise<void> {
-  const response = await fetch('/api/conversation/stream', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, attachments, chat_id: chatId }),
-  })
-  if (!response.ok) {
-    const body = await response.json().catch(() => null)
-    const message = body?.detail ?? `Atlas request failed (${response.status})`
-    if (response.status === 409) throw new ForegroundConflictError(message)
-    throw new Error(message)
-  }
-  if (!response.body) throw new Error('Atlas returned no response stream')
-
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-
-  while (true) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.trim()) continue
-      const event = JSON.parse(line) as { type: string; text?: string; message?: string }
-      if (event.type === 'delta' && event.text) onDelta(event.text)
-      if (event.type === 'error') throw new Error(event.message ?? 'Provider error')
-    }
-    if (done) break
-  }
+  const run = await startConversationRun(text, attachments, chatId)
+  await observeConversationRun(run.run_id, onDelta)
 }
 
 export type LocalStorageEntry = {
