@@ -95,6 +95,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [conversationContext, setConversationContext] = useState<ConversationContext | null>(null)
   const [draft, setDraft] = useState('')
   const [streamingText, setStreamingText] = useState('')
+  const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<'home' | 'local' | 'drive' | 'projects' | 'repositories'>('home')
@@ -361,6 +362,28 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       setRepositoryDetailErrors((current) => ({ ...current, [repo.full_name]: cause instanceof Error ? cause.message : String(cause) }))
     } finally {
       setRepositoryDetailLoading((current) => current === repo.full_name ? null : current)
+    }
+  }
+
+  async function copyAtlasTurn(turn: Turn) {
+    const text = turnText(turn)
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        textarea.remove()
+      }
+      setCopiedTurnId(turn.id)
+      window.setTimeout(() => setCopiedTurnId((current) => current === turn.id ? null : current), 1600)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not copy response')
     }
   }
 
@@ -780,7 +803,20 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                     <div className="phase-message"><span className="phase-label">PHASE 1</span><h2>The model is in the seat.</h2><p>Conversation is Atlas-owned and durable. Start anywhere.</p></div>
                   ) : (
                     <div className="conversation-thread">
-                      {visibleTurns.map((turn) => <article className={`chat-turn ${turn.actor}`} key={turn.id}><div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div><div className="turn-body"><MarkdownBody text={turnText(turn)} /></div></article>)}
+                      {visibleTurns.map((turn) => (
+                        <article className={`chat-turn ${turn.actor}`} key={turn.id}>
+                          <div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div>
+                          <div className="turn-body"><MarkdownBody text={turnText(turn)} /></div>
+                          {turn.actor === 'atlas' ? (
+                            <div className="turn-actions" aria-label="Atlas response actions">
+                              <button className="turn-action" type="button" onClick={() => { void copyAtlasTurn(turn) }} aria-label="Copy Atlas response" title="Copy">
+                                <span aria-hidden="true" className="turn-action-icon">⧉</span>
+                                <span>{copiedTurnId === turn.id ? 'Copied' : 'Copy'}</span>
+                              </button>
+                            </div>
+                          ) : null}
+                        </article>
+                      ))}
                       {streamingText ? <article className="chat-turn atlas streaming"><div className="turn-actor">Atlas</div><div className="turn-body"><MarkdownBody text={streamingText} /><span className="stream-caret" /></div></article> : null}
                       {error ? <div className="chat-error">{error}</div> : null}<div ref={bottomRef} />
                     </div>
