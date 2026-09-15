@@ -127,7 +127,12 @@ async def test_delete_chat_tombstones_history_and_preserves_verified_memory_grap
         assert memory.source_transcript_id == chat.id
         assert memory.source_turn_id == turn.id
         candidate = await session.get(MemoryCandidateRow, candidate_id)
-        assert candidate is not None and candidate.status == "blocked"
+        assert candidate is not None and candidate.status == "invalidated"
+        assert candidate.content is None
+        assert candidate.fingerprint is None
+        assert candidate.evidence is None
+        assert candidate.decision_json == {}
+        assert candidate.invalidated_at is not None
         provenance = await session.get(MemoryProvenanceRow, provenance_id)
         assert provenance is not None and provenance.source_candidate_id == candidate_id
 

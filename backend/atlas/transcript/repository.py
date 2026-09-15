@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from atlas.persistence.models import (
     ContinuityCapsuleRow,
+    MemoryCandidateRow,
     MemoryDiscoveryStateRow,
     TranscriptIndexChunkRow,
     TranscriptIndexStateRow,
@@ -210,6 +211,24 @@ class TranscriptRepository:
             update(TurnRow)
             .where(TurnRow.transcript_id == chat_id)
             .values(blocks=tombstone, deleted_at=now)
+        )
+        await self.session.execute(
+            update(MemoryCandidateRow)
+            .where(MemoryCandidateRow.source_transcript_id == chat_id)
+            .values(
+                status="invalidated",
+                content=None,
+                fingerprint=None,
+                evidence=None,
+                evidence_set_hash=None,
+                decision_json={},
+                lease_token=None,
+                leased_until=None,
+                review_after=None,
+                processed_at=now,
+                invalidated_at=now,
+                state_version=MemoryCandidateRow.state_version + 1,
+            )
         )
         for model in (
             TranscriptIndexChunkRow, TranscriptIndexStateRow,

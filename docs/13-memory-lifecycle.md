@@ -32,7 +32,7 @@ Closing a transcript removes it from the immediate working set; it does not imme
 
 Deleting an owner chat removes it from normal chat, continuity and memory-index surfaces without cascading through durable-memory provenance. The transcript becomes an `owner_deleted` tombstone, its title, summary and active task state are cleared, and its turn payloads are replaced with a content-free deletion marker and marked deleted. Transcript index chunks/state, continuity capsules and discovery state are removed in the same transaction, and the transcript content revision advances so in-flight memory publication is fenced.
 
-Source transcript, turn and candidate identities remain available as provenance tombstones for durable memories that legitimately outlive the conversation. Deleting a chat therefore does **not** delete already-published durable memory; owner-directed `memory.delete` remains the operation for removing memory content itself. A chat with an actively running foreground inference still cannot be deleted until that inference relinquishes the run.
+Source transcript, turn and candidate identities remain available as provenance tombstones for durable memories that legitimately outlive the conversation. Candidates sourced from the deleted chat are invalidated and their content, fingerprint, inline evidence and decision payload are scrubbed; the candidate ID remains only for lineage. Deleting a chat therefore does **not** delete already-published durable memory; owner-directed `memory.delete` remains the operation for removing memory content itself. A chat with an actively running foreground inference still cannot be deleted until that inference relinquishes the run.
 
 ## 4. Context capsule
 
