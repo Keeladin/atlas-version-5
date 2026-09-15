@@ -668,6 +668,8 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         onClose={() => setMobileNavOpen(false)}
         onNewChat={() => { void startNewChat() }}
         onSelectChat={(chatId) => { void selectChat(chatId) }}
+        onRenameChat={(chat) => { void handleRenameChat(chat) }}
+        onDeleteChat={(chat) => { void handleDeleteChat(chat) }}
         onProjects={() => { void openProjectFolders('') }}
         onRepositories={() => { void openRepositories() }}
         onStorage={() => { void openLocalStorage('') }}

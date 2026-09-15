@@ -1926,3 +1926,198 @@ button.memory-row:hover, button.memory-row.selected { background: var(--bg-inset
   .mobile-nav-chat-list button.active { font-weight: 650; }
   .mobile-nav-chat-list p { margin: 8px 10px; color: var(--fg-muted); font-size: 12px; }
 }
+
+/* Mobile content fix: force desktop storage/repository geometry to collapse after all base rules. */
+@media (max-width: 860px) {
+  .storage-space {
+    width: 100%;
+    min-width: 0;
+    padding: 14px 12px 24px;
+    overflow: visible;
+  }
+
+  .storage-toolbar {
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .storage-location { min-width: 0; }
+  .storage-location span {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .storage-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .storage-browser {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .storage-drop-hint {
+    margin: 10px 10px 0;
+    text-align: left;
+  }
+
+  .storage-summary {
+    grid-template-columns: 1fr;
+    gap: 2px;
+    min-height: auto;
+    padding: 10px 12px;
+  }
+
+  .storage-summary span:last-child {
+    color: var(--fg-disabled);
+    font-size: 10px;
+  }
+
+  .storage-table {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .storage-header { display: none; }
+
+  .storage-row {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    min-height: 62px;
+    padding: 10px 12px;
+  }
+
+  .storage-row > span:first-child {
+    grid-column: 1 / -1;
+    font-size: 13px;
+  }
+
+  .storage-row > span:nth-child(2),
+  .storage-row > span:nth-child(3) {
+    color: var(--fg-muted);
+    font-size: 10px;
+  }
+
+  .storage-row > span:nth-child(3) { text-align: right; }
+  .storage-row > span:nth-child(4) {
+    grid-column: 1 / -1;
+    color: var(--fg-disabled);
+    font: 10px/1.35 var(--font-mono);
+  }
+
+  .repository-summary-row > span:nth-child(4) {
+    grid-column: 1 / -1;
+    text-align: left;
+  }
+
+  .repository-detail {
+    padding: 10px 12px 14px;
+  }
+
+  .repository-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .repository-status-card {
+    padding: 10px;
+  }
+
+  .repository-status-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .repository-local > div {
+    flex-wrap: wrap;
+  }
+
+  .repository-path {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .mobile-nav-chat-entry {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 36px;
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 8px;
+  }
+
+  .mobile-nav-chat-entry:hover,
+  .mobile-nav-chat-entry.active {
+    background: var(--bg-muted);
+  }
+
+  .mobile-nav-chat-entry.active {
+    border-color: var(--border-muted);
+  }
+
+  .mobile-nav-chat-select {
+    width: 100%;
+    min-width: 0;
+    padding: 0 10px !important;
+    background: transparent !important;
+  }
+
+  .mobile-nav-chat-entry.active .mobile-nav-chat-select {
+    font-weight: 650;
+  }
+
+  .mobile-nav-chat-more {
+    width: 32px !important;
+    min-width: 32px;
+    height: 32px;
+    min-height: 32px !important;
+    padding: 0 !important;
+    text-align: center !important;
+    font-size: 18px !important;
+    background: transparent !important;
+    color: var(--fg-muted) !important;
+  }
+
+  .mobile-nav-chat-more:hover:not(:disabled),
+  .mobile-nav-chat-more:focus-visible {
+    background: var(--bg-emphasis) !important;
+    color: var(--fg-default) !important;
+  }
+
+  .mobile-nav-chat-menu {
+    position: absolute;
+    top: 36px;
+    right: 4px;
+    z-index: 90;
+    width: 124px;
+    padding: 4px;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--bg-muted);
+    box-shadow: var(--shadow-floating);
+  }
+
+  .mobile-nav-chat-menu button {
+    width: 100%;
+    min-height: 32px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg-default);
+    text-align: left;
+    font: 500 12px/1.2 var(--font-sans);
+  }
+
+  .mobile-nav-chat-menu button:hover {
+    background: var(--bg-emphasis);
+  }
+
+  .mobile-nav-chat-menu button.danger {
+    color: #ff7b72;
+  }
+}

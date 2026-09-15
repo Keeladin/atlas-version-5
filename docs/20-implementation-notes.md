@@ -508,3 +508,11 @@ Owner attachments now carry their canonical MIME type into the existing durable 
 On mobile, the Atlas logo now opens a left-side primary-navigation drawer instead of linking directly to Control. The drawer exposes New chat, Projects, Repositories, Storage, Scheduled and Control, followed by recent chats with the active chat highlighted. It closes by backdrop tap or left swipe. Chats therefore leaves the crowded mobile activity rail, which remains focused on Needs You, Updates, Latest and context status. Desktop logo behavior remains unchanged and still opens Control.
 
 Validation: full backend suite **534 passed** against disposable PostgreSQL 17/pgvector with Ruff clean. Frontend lint completed with zero warnings/errors, **33 tests passed**, and the production Vite build succeeded.
+
+## 2026-09-15 — Mobile content-layout and chat-management follow-up
+
+The first mobile navigation drawer exposed two presentation gaps. Storage, Projects and Repositories were still inheriting later desktop table geometry, so their phone views collapsed into a narrow left slice. Final mobile cascade rules now force those views to full-width stacked rows/cards and keep expanded repository status readable in one column.
+
+Recents in the drawer now restores chat management through the existing owner handlers: each chat has a compact options menu with Rename and Delete. No second chat-management path or backend API was added.
+
+Validation: frontend lint is clean, **33 frontend tests pass**, and the production Vite build succeeds.

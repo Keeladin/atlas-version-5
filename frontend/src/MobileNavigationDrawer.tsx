@@ -1,4 +1,4 @@
-import { useRef, type TouchEvent } from 'react'
+import { useRef, useState, type TouchEvent } from 'react'
 import type { Chat } from './api'
 
 type DrawerIconName = 'new' | 'projects' | 'repositories' | 'storage' | 'scheduled' | 'control'
@@ -21,6 +21,8 @@ type MobileNavigationDrawerProps = {
   onClose: () => void
   onNewChat: () => void
   onSelectChat: (chatId: string) => void
+  onRenameChat: (chat: Chat) => void
+  onDeleteChat: (chat: Chat) => void
   onProjects: () => void
   onRepositories: () => void
   onStorage: () => void
@@ -30,6 +32,7 @@ type MobileNavigationDrawerProps = {
 
 export function MobileNavigationDrawer(props: MobileNavigationDrawerProps) {
   const touchStartX = useRef<number | null>(null)
+  const [chatMenuId, setChatMenuId] = useState<string | null>(null)
   if (!props.open) return null
 
   function run(action: () => void) {
@@ -64,9 +67,16 @@ export function MobileNavigationDrawer(props: MobileNavigationDrawerProps) {
         <h2>Recents</h2>
         <div className="mobile-nav-chat-list">
           {props.chats.map((chat) => (
-            <button className={chat.id === props.activeChatId ? 'active' : ''} type="button" disabled={props.busy} title={chat.title} key={chat.id} onClick={() => run(() => props.onSelectChat(chat.id))}>
-              <span>{chat.title}</span>
-            </button>
+            <div className={`mobile-nav-chat-entry${chat.id === props.activeChatId ? ' active' : ''}`} key={chat.id}>
+              <button className="mobile-nav-chat-select" type="button" disabled={props.busy} title={chat.title} onClick={() => run(() => props.onSelectChat(chat.id))}>
+                <span>{chat.title}</span>
+              </button>
+              <button className="mobile-nav-chat-more" type="button" disabled={props.busy} aria-label={`Options for ${chat.title}`} title="Chat options" onClick={() => setChatMenuId((current) => current === chat.id ? null : chat.id)}>⋯</button>
+              {chatMenuId === chat.id ? <div className="mobile-nav-chat-menu">
+                <button type="button" onClick={() => { setChatMenuId(null); props.onRenameChat(chat) }}>Rename</button>
+                <button type="button" className="danger" onClick={() => { setChatMenuId(null); props.onDeleteChat(chat) }}>Delete</button>
+              </div> : null}
+            </div>
           ))}
           {!props.chats.length ? <p>No chats yet.</p> : null}
         </div>
