@@ -498,3 +498,13 @@ Successful image artifacts are collected by `RunExecutor`, attached as `artifact
 Focused acceptance on disposable PostgreSQL covers generation persistence without base64 leakage, exact-artifact editing, registry/effect/authority metadata, final-turn artifact collection, storage-key traversal protection, and stale edit references failing before dispatch. Final full-suite and frontend validation are recorded below after the release gate completes.
 
 Final validation on the frozen implementation tree: **534 backend tests passed** against disposable PostgreSQL 17/pgvector with Ruff and `git diff --check` clean. Frontend lint passed with zero warnings/errors, **27 tests passed**, and the production Vite build succeeded. The separate focused image-capability gate passed **6 tests** against PostgreSQL.
+
+## 2026-09-15 — Chat and mobile navigation polish
+
+The owner chat composer no longer becomes unavailable while Atlas holds the foreground turn. Typing and attachment selection remain available so the next thought can be prepared immediately, while Send stays gated until the active turn finishes. This preserves the single-foreground invariant rather than introducing hidden queuing or concurrent owner turns. If an attempted send collides with an existing foreground run, the original message is restored without overwriting text or attachments already prepared for the next turn.
+
+Owner attachments now carry their canonical MIME type into the existing durable `artifact_ref`. Images render as thumbnails in the owner turn and other files render as compact file cards; the optimistic owner turn shows the attachment immediately while Atlas is working. Composer chips also preview selected images. Existing generated-image artifacts continue through the same renderer, and older attachments without MIME metadata retain a filename-extension fallback.
+
+On mobile, the Atlas logo now opens a left-side primary-navigation drawer instead of linking directly to Control. The drawer exposes New chat, Projects, Repositories, Storage, Scheduled and Control, followed by recent chats with the active chat highlighted. It closes by backdrop tap or left swipe. Chats therefore leaves the crowded mobile activity rail, which remains focused on Needs You, Updates, Latest and context status. Desktop logo behavior remains unchanged and still opens Control.
+
+Validation: full backend suite **534 passed** against disposable PostgreSQL 17/pgvector with Ruff clean. Frontend lint completed with zero warnings/errors, **33 tests passed**, and the production Vite build succeeded.

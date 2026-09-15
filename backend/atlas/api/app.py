@@ -1462,6 +1462,7 @@ async def stream_conversation(request: ChatRequest):
                 "source": "owner_attachment", "run_id": str(run_id), "transcript_id": str(transcript.id), "path": path})
             snapshot = frozen["resource"]
             blocks.append(ArtifactRefBlock(artifact_id=UUID(snapshot["artifact_id"]), filename=snapshot["name"],
+                media_type=snapshot.get("media_type"),
                 provenance={"source": "owner_attachment", "path": path, "sha256": snapshot["snapshot_sha256"]}))
         await session.execute(update(OwnerAttentionRow).where(
             OwnerAttentionRow.run_id.in_(select(RunRow.id).where(RunRow.transcript_id == transcript.id)),

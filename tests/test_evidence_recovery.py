@@ -265,6 +265,7 @@ async def test_owner_attachment_reference_survives_file_change(pg_factory, tmp_p
     async with pg_factory() as session:
         owner = (await session.execute(select(TurnRow).where(TurnRow.actor == 'owner'))).scalar_one()
         reference = next(block for block in owner.blocks if block['type'] == 'artifact_ref')
+        assert reference['media_type'] == 'text/plain'
         result = await EvidenceStore(session, artifacts).read(str(owner.id), artifact_id=reference['artifact_id'])
         assert result['text'] == 'Original attached content'
 

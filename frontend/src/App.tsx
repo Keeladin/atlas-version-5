@@ -6,7 +6,11 @@ import './App.css'
 import { MemoryObservabilityPanel } from './MemoryObservability'
 import { scheduleSummary } from './schedules'
 import { approvalFields } from './approval'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { mergeRestoredAttachments, releaseAttachmentPreviews, turnAttachments, type ComposerAttachment } from './chatAttachments'
+import { ChatAttachmentView } from './ChatAttachmentView'
+import { MobileNavigationDrawer } from './MobileNavigationDrawer'
+import { composerAttachmentDisabled, composerInputDisabled, composerSendDisabled } from './chatComposer'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -47,19 +51,6 @@ function turnText(turn: Turn): string {
     .map((block) => block.text)
     .join('\n')
     .replace(/\n\n\[Attached local workspace files?: .*?\]$/s, '')
-}
-
-type TurnImageArtifact = { artifact_id: string; filename?: string | null; media_type?: string | null }
-
-function turnImageArtifacts(turn: Turn): TurnImageArtifact[] {
-  return turn.blocks.flatMap((block) => {
-    if (block.type !== 'artifact_ref') return []
-    const candidate = block as Record<string, unknown>
-    const artifactId = typeof candidate.artifact_id === 'string' ? candidate.artifact_id : ''
-    const mediaType = typeof candidate.media_type === 'string' ? candidate.media_type : null
-    if (!artifactId || !mediaType?.startsWith('image/')) return []
-    return [{ artifact_id: artifactId, filename: typeof candidate.filename === 'string' ? candidate.filename : null, media_type: mediaType }]
-  })
 }
 
 function formatBytes(value: number | null): string {
@@ -134,12 +125,13 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
   const [pendingActions, setPendingActions] = useState<PendingAction[]>([])
   const [recentActions, setRecentActions] = useState<RecentAction[]>([])
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTask[]>([])
-  const [mobileActivity, setMobileActivity] = useState<'chats' | 'needs' | 'updates' | 'latest' | null>(null)
+  const [mobileActivity, setMobileActivity] = useState<'needs' | 'updates' | 'latest' | 'scheduled' | null>(null)
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [notifications, setNotifications] = useState<OwnerNotification[]>([])
   const [unreadCount, setUnreadCount] = useState(0)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const composerFileInputRef = useRef<HTMLInputElement | null>(null)
-  const [composerAttachments, setComposerAttachments] = useState<LocalStorageEntry[]>([])
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([])
   const [composerUploading, setComposerUploading] = useState(false)
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
@@ -203,6 +195,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       await activateChat(chatId)
       setActiveChatId(chatId)
       setDraft('')
+      releaseAttachmentPreviews(composerAttachments)
       setComposerAttachments([])
       setStreamingText('')
       setView('home')
@@ -231,6 +224,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       const chat = await createChat()
       setActiveChatId(chat.id)
       setDraft('')
+      releaseAttachmentPreviews(composerAttachments)
       setComposerAttachments([])
       setTurns([])
       setHistoryCursor(null)
@@ -448,23 +442,38 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     }
   }
 
+  function removeComposerAttachment(path: string) {
+    setComposerAttachments((current) => {
+      releaseAttachmentPreviews(current.filter((item) => item.path === path))
+      return current.filter((item) => item.path !== path)
+    })
+  }
+
   async function addComposerFiles(files: FileList | File[]) {
     const items = Array.from(files)
-    if (!items.length || composerUploading || sending) return
+    if (!items.length || composerUploading) return
+    const uploaded: ComposerAttachment[] = []
     setComposerUploading(true)
     setError(null)
     try {
-      const uploaded: LocalStorageEntry[] = []
-      for (const file of items) uploaded.push(await uploadLocalFile('Imports', file))
+      for (const file of items) {
+        const entry = await uploadLocalFile('Imports', file)
+        uploaded.push({
+          ...entry,
+          media_type: file.type || null,
+          preview_url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null,
+        })
+      }
       setComposerAttachments((current) => [...current, ...uploaded])
     } catch (cause) {
+      releaseAttachmentPreviews(uploaded)
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
       setComposerUploading(false)
     }
   }
 
-  async function submitOwnerMessage(requestText: string, attachments: LocalStorageEntry[], restoreOnConflict: boolean) {
+  async function submitOwnerMessage(requestText: string, attachments: ComposerAttachment[], restoreOnConflict: boolean) {
     if ((!requestText && attachments.length === 0) || sending || composerUploading || !activeChatId) return
     const attachmentPaths = attachments.map((file) => file.path)
     setError(null)
@@ -474,7 +483,15 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       id: `local-${Date.now()}`,
       transcript_id: activeChatId ?? 'local',
       actor: 'owner',
-      blocks: [{ type: 'text', text: requestText }],
+      blocks: [
+        { type: 'text', text: requestText },
+        ...attachments.map((file) => ({
+          type: 'local_attachment',
+          filename: file.name,
+          media_type: file.media_type ?? null,
+          preview_url: file.preview_url ?? null,
+        })),
+      ],
       created_at: new Date().toISOString(),
     }
     setTurns((current) => [...current, optimistic])
@@ -482,6 +499,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       await streamMessage(requestText, attachmentPaths, (delta) => setStreamingText((current) => current + delta), activeChatId)
       const conversation = await getConversation(activeChatId ?? undefined)
       installConversation(conversation)
+      window.setTimeout(() => releaseAttachmentPreviews(attachments), 0)
       setConversationContext(await getConversationContext(activeChatId ?? undefined).catch(() => null))
       setPendingActions(await getPendingActions())
       setRecentActions(await getRecentActions(4))
@@ -490,16 +508,20 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       if (chatList) { setChats(chatList.items); setActiveChatId(chatList.active_chat_id) }
       setStreamingText('')
     } catch (cause) {
+      const conflict = cause instanceof ForegroundConflictError
       setError(cause instanceof Error ? cause.message : String(cause))
-      if (cause instanceof ForegroundConflictError) {
+      if (conflict) {
         if (restoreOnConflict) {
-          setDraft(requestText)
-          setComposerAttachments(attachments)
+          setDraft((current) => requestText ? (current.trim() ? `${requestText}\n\n${current}` : requestText) : current)
+          setComposerAttachments((current) => mergeRestoredAttachments(attachments, current))
         }
         setTurns((current) => current.filter((turn) => turn.id !== optimistic.id))
       }
       const conversation = await getConversation(activeChatId ?? undefined).catch(() => null)
-      if (conversation) installConversation(conversation)
+      if (conversation) {
+        installConversation(conversation)
+        if (!conflict) window.setTimeout(() => releaseAttachmentPreviews(attachments), 0)
+      }
       const attention = await getPendingActions().catch(() => null)
       if (attention) setPendingActions(attention)
     } finally {
@@ -567,6 +589,15 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     )
   }
 
+  function renderScheduledSection() {
+    return (
+      <section className="activity-section scheduled-section">
+        <div className="activity-heading-row"><span className="activity-heading">Scheduled tasks</span><span className="activity-count">{scheduledTasks.filter((task) => task.enabled).length}</span></div>
+        {scheduledTasks.length ? <div className="scheduled-list">{scheduledTasks.slice(0, 8).map((task) => <div className="scheduled-row" key={task.id}><span className={`scheduled-dot${task.enabled ? ' enabled' : ''}`} aria-hidden="true" /><div><strong>{task.title}</strong><p>{scheduleSummary(task)}</p></div></div>)}</div> : <p className="activity-empty">No scheduled tasks yet.</p>}
+      </section>
+    )
+  }
+
   function renderPendingAction(action: PendingAction) {
     const args = action.detail.arguments ?? {}
     const uncertain = action.state === 'uncertain'
@@ -605,9 +636,12 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     <div className="atlas-shell">
       <header className="persistent-bar">
         <div className="brand-cluster">
-          <a className="brand-avatar-link" href="/control" aria-label="Open Control" title="Open Control">
+          <a className="brand-avatar-link brand-avatar-desktop" href="/control" aria-label="Open Control" title="Open Control">
             <img className="brand-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
           </a>
+          <button className="brand-avatar-link brand-avatar-mobile" type="button" aria-label="Open navigation" title="Open navigation" onClick={() => { setMobileActivity(null); setMobileNavOpen(true) }}>
+            <img className="brand-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" />
+          </button>
           <strong>Atlas</strong><span className="version-tag">V5</span>
         </div>
         <div className="persistent-context"><span className="context-item active">Home</span><a className="context-item context-link" href="/control">Control</a></div>
@@ -618,27 +652,38 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
           <span className="status-label transcript-status" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of Atlas working-context budget` : 'Working-context token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />Context {conversationContext ? `${formatTokens(conversationContext.input_tokens)} / ${formatTokens(conversationContext.limit_tokens)}` : '— / 64k'}</span>
         </div>
         <div className="mobile-activity-controls" aria-label="Activity shortcuts">
-          <button type="button" className={mobileActivity === 'chats' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'chats' ? null : 'chats')}>Chats</button>
-          <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'needs' ? null : 'needs')}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
-          <button type="button" className={mobileActivity === 'updates' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'updates' ? null : 'updates')}>Updates <span>{unreadCount}</span></button>
-          <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => setMobileActivity((current) => current === 'latest' ? null : 'latest')}>Latest</button>
+          <button type="button" className={mobileActivity === 'needs' ? 'active' : ''} onClick={() => { setMobileNavOpen(false); setMobileActivity((current) => current === 'needs' ? null : 'needs') }}>Needs You <span>{pendingActions.length + (error ? 1 : 0)}</span></button>
+          <button type="button" className={mobileActivity === 'updates' ? 'active' : ''} onClick={() => { setMobileNavOpen(false); setMobileActivity((current) => current === 'updates' ? null : 'updates') }}>Updates <span>{unreadCount}</span></button>
+          <button type="button" className={mobileActivity === 'latest' ? 'active' : ''} onClick={() => { setMobileNavOpen(false); setMobileActivity((current) => current === 'latest' ? null : 'latest') }}>Latest</button>
           <span className="mobile-token-count" title={conversationContext ? `${Math.round(conversationContext.pressure * 1000) / 10}% of Atlas working-context budget` : 'Working-context token count unavailable'}><ContextDot state={conversationContext?.state ?? null} />{conversationContext ? `${formatTokens(conversationContext.input_tokens)}/${formatTokens(conversationContext.limit_tokens)}` : '—/64k'}</span>
           <button type="button" className="mobile-auth-control" onClick={() => { void onLogout() }}>Log out</button>
         </div>
       </header>
 
+      <MobileNavigationDrawer
+        open={mobileNavOpen}
+        chats={chats}
+        activeChatId={activeChatId}
+        busy={chatBusy || sending}
+        onClose={() => setMobileNavOpen(false)}
+        onNewChat={() => { void startNewChat() }}
+        onSelectChat={(chatId) => { void selectChat(chatId) }}
+        onProjects={() => { void openProjectFolders('') }}
+        onRepositories={() => { void openRepositories() }}
+        onStorage={() => { void openLocalStorage('') }}
+        onScheduled={() => setMobileActivity('scheduled')}
+        onControl={() => window.location.assign('/control')}
+      />
+
       {mobileActivity ? <>
         <button className="mobile-activity-backdrop" type="button" aria-label="Close activity" onClick={() => setMobileActivity(null)} />
-        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'chats' ? 'Chats' : mobileActivity === 'needs' ? 'Needs You' : mobileActivity === 'updates' ? 'Updates' : 'Latest activity'}>
-          {mobileActivity === 'chats' ? <section className="mobile-chat-section">
-            <div className="chat-rail-head"><strong>Chats</strong><button type="button" disabled={chatBusy || sending} onClick={() => { void startNewChat() }}>+ New chat</button></div>
-            {renderChatEntries()}
-          </section> : mobileActivity === 'needs' ? <section className="activity-section attention-section">
+        <aside className="mobile-activity-panel" aria-label={mobileActivity === 'needs' ? 'Needs You' : mobileActivity === 'updates' ? 'Updates' : mobileActivity === 'scheduled' ? 'Scheduled tasks' : 'Latest activity'}>
+          {mobileActivity === 'needs' ? <section className="activity-section attention-section">
             <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
             {error ? <p className="activity-empty">{error}</p> : null}
             {pendingActions.map(renderPendingAction)}
             {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
-          </section> : mobileActivity === 'updates' ? renderUpdatesSection() : <section className="activity-section">
+          </section> : mobileActivity === 'updates' ? renderUpdatesSection() : mobileActivity === 'scheduled' ? renderScheduledSection() : <section className="activity-section">
             <div className="activity-heading-row"><span className="activity-heading">Latest</span><span className="activity-caption">recent activity</span></div>
             {recentActions.length ? <div className="activity-trace">{recentActions.map((action) => <div className="trace-row" key={action.id}><span className="latest-time">{new Date(action.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span><div><strong>{action.summary}</strong><p>{action.operation} · {action.status}</p></div></div>)}</div> : <div className="latest-empty"><span className="latest-time">—</span><div><strong>{visibleTurns.length ? 'Conversation active' : 'No recent activity yet'}</strong><p>{visibleTurns.length ? `${visibleTurns.length} messages loaded from the conversation.` : 'External actions will appear here as Atlas uses capabilities.'}</p></div></div>}
           </section>}
@@ -820,18 +865,9 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                         <article className={`chat-turn ${turn.actor}`} key={turn.id}>
                           <div className="turn-actor">{turn.actor === 'owner' ? 'You' : 'Atlas'}</div>
                           <div className="turn-body"><MarkdownBody text={turnText(turn)} /></div>
-                          {turnImageArtifacts(turn).map((artifact) => {
-                            const url = `/api/artifacts/${encodeURIComponent(artifact.artifact_id)}`
-                            const filename = artifact.filename ?? 'atlas-image.png'
-                            return (
-                              <figure className="turn-image-artifact" key={artifact.artifact_id}>
-                                <a className="turn-image-link" href={url} target="_blank" rel="noreferrer">
-                                  <img src={url} alt={filename} loading="lazy" />
-                                </a>
-                                <figcaption><span>{filename}</span><a href={url} download={filename}>Save image</a></figcaption>
-                              </figure>
-                            )
-                          })}
+                          {turnAttachments(turn).map((attachment) => (
+                            <ChatAttachmentView attachment={attachment} owner={turn.actor === 'owner'} key={attachment.key} />
+                          ))}
                           {turn.actor === 'atlas' ? (
                             <div className="turn-actions" aria-label="Atlas response actions">
                               <button className="turn-action" type="button" onClick={() => { void copyAtlasTurn(turn) }} aria-label="Copy Atlas response" title="Copy">
@@ -849,12 +885,12 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                 </div>
                 <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage() }} onDragOver={(event) => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' } }} onDrop={(event) => { if (event.dataTransfer.files.length) { event.preventDefault(); void addComposerFiles(event.dataTransfer.files) } }}>
                   <input ref={composerFileInputRef} className="composer-file-input" type="file" multiple onChange={(event) => { if (event.target.files) void addComposerFiles(event.target.files); event.currentTarget.value = '' }} />
-                  <button className="attach-button" type="button" aria-label="Add files" title="Add files" disabled={!providerOk || sending || composerUploading} onClick={() => composerFileInputRef.current?.click()}>+</button>
+                  <button className="attach-button" type="button" aria-label="Add files" title="Add files" disabled={composerAttachmentDisabled(providerOk, composerUploading)} onClick={() => composerFileInputRef.current?.click()}><span aria-hidden="true">+</span></button>
                   <div className="composer-entry">
-                    {composerAttachments.length ? <div className="composer-attachments">{composerAttachments.map((file) => <span className="attachment-chip" key={file.path}><span>{file.name}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => setComposerAttachments((current) => current.filter((item) => item.path !== file.path))}>×</button></span>)}</div> : null}
-                    <textarea placeholder={composerUploading ? 'Adding file…' : !activeChatId ? 'Loading chat…' : providerOk ? 'Talk to Atlas…' : 'Model is not configured…'} rows={1} value={draft} disabled={!providerOk || !activeChatId || sending} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void addComposerFiles(event.clipboardData.files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage() } }} />
+                    {composerAttachments.length ? <div className="composer-attachments">{composerAttachments.map((file) => <span className="attachment-chip" key={file.path}>{file.preview_url ? <img className="attachment-chip-preview" src={file.preview_url} alt="" /> : <span className="attachment-chip-badge" aria-hidden="true">FILE</span>}<span className="attachment-chip-name">{file.name}</span><button type="button" aria-label={`Remove ${file.name}`} onClick={() => removeComposerAttachment(file.path)}>×</button></span>)}</div> : null}
+                    <textarea placeholder={composerUploading ? 'Adding file…' : !activeChatId ? 'Loading chat…' : providerOk ? 'Talk to Atlas…' : 'Model is not configured…'} rows={1} value={draft} disabled={composerInputDisabled(providerOk, activeChatId)} onChange={(event) => setDraft(event.target.value)} onPaste={(event) => { if (event.clipboardData.files.length) { event.preventDefault(); void addComposerFiles(event.clipboardData.files) } }} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey && !sending) { event.preventDefault(); void sendMessage() } }} />
                   </div>
-                  <button className="send-button" type="submit" disabled={!providerOk || !activeChatId || sending || composerUploading || (!draft.trim() && composerAttachments.length === 0)}>{sending ? 'Thinking…' : composerUploading ? 'Adding…' : 'Send'}</button>
+                  <button className="send-button" type="submit" disabled={composerSendDisabled(providerOk, activeChatId, sending, composerUploading, Boolean(draft.trim() || composerAttachments.length))}>{sending ? 'Thinking…' : composerUploading ? 'Adding…' : 'Send'}</button>
                 </form>
               </>
             )}
