@@ -3,6 +3,8 @@ from atlas.memory.durable import clean_memory_content, memory_fingerprint
 from atlas.memory.indexer import TranscriptIndexer
 from atlas.persistence.models import (
     DurableMemoryRow,
+    MemoryCandidateRow,
+    MemoryProvenanceRow,
     TranscriptIndexStateRow,
     TranscriptRow,
     TurnRow,
@@ -56,7 +58,7 @@ async def test_first_owner_turn_suggests_title_for_new_chat(pg_factory):
 
 
 @pytest.mark.asyncio
-async def test_delete_chat_removes_chat_history_but_keeps_durable_memory(pg_factory):
+async def test_delete_chat_tombstones_history_and_preserves_verified_memory_graph(pg_factory):
     async with pg_factory() as session:
         repo = TranscriptRepository(session)
         chat = await repo.get_or_create_active()
@@ -65,26 +67,69 @@ async def test_delete_chat_removes_chat_history_but_keeps_durable_memory(pg_fact
         memory = DurableMemoryRow(
             content=content,
             fingerprint=memory_fingerprint(content),
+            grounding_status="verified",
+            owner_assertion_turn_id=turn.id,
             source_transcript_id=chat.id,
             source_turn_id=turn.id,
         )
-        session.add(memory)
-        session.add(TranscriptIndexStateRow(transcript_id=chat.id, index_version="text-v1", last_indexed_sequence=1))
+        candidate = MemoryCandidateRow(
+            status="blocked",
+            kind="preference",
+            content="Blocked candidate payload",
+            scope="cross_chat",
+            confidence=0.9,
+            durability="long_term",
+            source_transcript_id=chat.id,
+            source_turn_id=turn.id,
+        )
+        session.add_all([memory, candidate])
+        await session.flush()
+        provenance = MemoryProvenanceRow(
+            memory_id=memory.id, relationship="candidate_source", source_candidate_id=candidate.id,
+        )
+        session.add(provenance)
+        session.add(TranscriptIndexStateRow(
+            transcript_id=chat.id, index_version="text-v1", last_indexed_sequence=1,
+        ))
         await session.commit()
-        memory_id = memory.id
+        memory_id, candidate_id, provenance_id = memory.id, candidate.id, provenance.id
 
         replacement = await repo.delete_owner_chat(chat.id)
         await session.commit()
         assert replacement.id != chat.id
 
     async with pg_factory() as session:
-        assert await session.get(TranscriptRow, chat.id) is None
-        assert (await session.execute(select(TurnRow).where(TurnRow.transcript_id == chat.id))).first() is None
-        assert await session.get(TranscriptIndexStateRow, {"transcript_id": chat.id, "index_version": "text-v1"}) is None
+        repo = TranscriptRepository(session)
+        with pytest.raises(LookupError):
+            await repo.get_owner_chat(chat.id)
+        assert chat.id not in {item.id for item in await repo.list_owner_chats()}
+
+        tombstone = await session.get(TranscriptRow, chat.id)
+        assert tombstone is not None
+        assert tombstone.kind == "owner_deleted"
+        assert tombstone.title is None
+        assert tombstone.context_summary is None
+
+        turns = list((await session.execute(
+            select(TurnRow).where(TurnRow.transcript_id == chat.id)
+        )).scalars())
+        assert len(turns) == 1
+        assert turns[0].deleted_at is not None
+        assert turns[0].blocks == [{"type": "text", "text": "[Chat deleted by owner]"}]
+        assert await session.get(TranscriptIndexStateRow, {
+            "transcript_id": chat.id, "index_version": "text-v1",
+        }) is None
+
         memory = await session.get(DurableMemoryRow, memory_id)
         assert memory is not None
-        assert memory.source_transcript_id is None
-        assert memory.source_turn_id is None
+        assert memory.grounding_status == "verified"
+        assert memory.owner_assertion_turn_id == turn.id
+        assert memory.source_transcript_id == chat.id
+        assert memory.source_turn_id == turn.id
+        candidate = await session.get(MemoryCandidateRow, candidate_id)
+        assert candidate is not None and candidate.status == "blocked"
+        provenance = await session.get(MemoryProvenanceRow, provenance_id)
+        assert provenance is not None and provenance.source_candidate_id == candidate_id
 
 @pytest.mark.asyncio
 async def test_closed_chat_becomes_fully_searchable_on_next_maintenance_pass(pg_factory):

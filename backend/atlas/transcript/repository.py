@@ -3,10 +3,17 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from atlas.persistence.models import TranscriptRow, TurnRow
+from atlas.persistence.models import (
+    ContinuityCapsuleRow,
+    MemoryDiscoveryStateRow,
+    TranscriptIndexChunkRow,
+    TranscriptIndexStateRow,
+    TranscriptRow,
+    TurnRow,
+)
 
 from .models import Actor, ContentBlock, Transcript, Turn
 
@@ -182,8 +189,33 @@ class TranscriptRepository:
         )).scalar_one_or_none()
         if row is None:
             raise LookupError("Chat not found")
+
+        # Durable memory may legitimately outlive its source conversation. Keep
+        # source identities as tombstones instead of cascading through the memory
+        # evidence graph, while removing the owner-visible/searchable chat content.
         was_active = row.closed_at is None
-        await self.session.delete(row)
+        now = datetime.now(UTC)
+        row.kind = "owner_deleted"
+        row.title = None
+        row.closed_at = now
+        row.updated_at = now
+        row.context_summary = None
+        row.summarized_through_turn_id = None
+        row.active_task_state = {}
+        row.active_task_revision += 1
+        row.content_revision += 1
+
+        tombstone = [{"type": "text", "text": "[Chat deleted by owner]"}]
+        await self.session.execute(
+            update(TurnRow)
+            .where(TurnRow.transcript_id == chat_id)
+            .values(blocks=tombstone, deleted_at=now)
+        )
+        for model in (
+            TranscriptIndexChunkRow, TranscriptIndexStateRow,
+            ContinuityCapsuleRow, MemoryDiscoveryStateRow,
+        ):
+            await self.session.execute(delete(model).where(model.transcript_id == chat_id))
         await self.session.flush()
 
         if was_active:
