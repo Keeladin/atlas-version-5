@@ -78,6 +78,14 @@ class ProjectFolderService(LocalStorageService):
         listing["name"] = "Project folders"
         return listing
 
+    def open_file(self, relative_path: str):
+        self._assert_readable(relative_path)
+        path = self._existing_file(relative_path)
+        root = self.root.resolve(strict=True)
+        canonical = path.relative_to(root).as_posix()
+        self._assert_readable(canonical)
+        return super().open_file(canonical)
+
     def acquire_file(
         self,
         relative_path: str,

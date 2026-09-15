@@ -2,6 +2,7 @@ import base64
 import hashlib
 import mimetypes
 import os
+import stat
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,6 +44,31 @@ class LocalStorageService:
             "display_root": self.display_root,
             "path": requested.relative_to(root).as_posix() if requested != root else "",
             "entries": entries,
+        }
+
+    def open_file(self, relative_path: str):
+        root = self.root.resolve(strict=True)
+        requested = (root / relative_path).resolve(strict=True)
+        if not requested.is_relative_to(root):
+            raise ValueError("Path is outside the approved workspace root")
+        canonical = requested.relative_to(root)
+        parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for part in canonical.parent.parts:
+                next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+                os.close(parent_fd)
+                parent_fd = next_fd
+            fd = os.open(canonical.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                os.close(fd)
+                raise ValueError("Only regular workspace files may be opened")
+        finally:
+            os.close(parent_fd)
+        return os.fdopen(fd, "rb"), {
+            "name": requested.name,
+            "media_type": mimetypes.guess_type(requested.name)[0] or "application/octet-stream",
+            "size_bytes": info.st_size,
         }
 
     def acquire_file(

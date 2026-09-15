@@ -296,6 +296,18 @@ export async function getLocalStorage(path = ''): Promise<LocalStorageListing> {
   return body as LocalStorageListing
 }
 
+export function localStorageFileUrl(path: string, download = false): string {
+  const params = new URLSearchParams({ path })
+  if (download) params.set('download', 'true')
+  return `/api/storage/local/file?${params.toString()}`
+}
+
+export function projectStorageFileUrl(path: string, download = false): string {
+  const params = new URLSearchParams({ path })
+  if (download) params.set('download', 'true')
+  return `/api/storage/projects/file?${params.toString()}`
+}
+
 export async function uploadLocalFile(path: string, file: File): Promise<LocalStorageEntry> {
   const form = new FormData()
   form.append('file', file)

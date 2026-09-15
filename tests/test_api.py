@@ -304,3 +304,26 @@ async def test_memory_observability_stream_emits_sse_snapshot(monkeypatch) -> No
     assert '"stream_token":"' + "c" * 64 + '"' in text
     assert response.media_type == "text/event-stream"
     await response.body_iterator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_workspace_file_route_supports_inline_and_download(tmp_path, monkeypatch) -> None:
+    import atlas.api.app as app_module
+
+    (tmp_path / "note.txt").write_text("owner file")
+    monkeypatch.setattr(app_module.settings, "workspace_root", tmp_path)
+    monkeypatch.setattr(app_module.settings, "workspace_display_root", "/home/jaco/Workspace")
+
+    async def allow(_capability_id):
+        return None
+
+    monkeypatch.setattr(app_module, "require_capability", allow)
+    inline = await app_request("GET", "/api/storage/local/file?path=note.txt")
+    download = await app_request("GET", "/api/storage/local/file?path=note.txt&download=true")
+
+    assert inline.status_code == 200
+    assert inline.text == "owner file"
+    assert inline.headers["content-type"].startswith("text/plain")
+    assert inline.headers["content-disposition"].startswith("inline;")
+    assert download.status_code == 200
+    assert download.headers["content-disposition"].startswith("attachment;")

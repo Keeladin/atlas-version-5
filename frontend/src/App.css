@@ -1037,7 +1037,7 @@ textarea:disabled {
 
 .storage-row {
   width: 100%;
-  grid-template-columns: minmax(220px, 1fr) 100px 90px 190px;
+  grid-template-columns: minmax(220px, 1fr) 90px 80px 170px auto;
   gap: 12px;
   min-height: 42px;
   padding: 0 14px;
@@ -2120,4 +2120,24 @@ button.memory-row:hover, button.memory-row.selected { background: var(--bg-inset
   .mobile-nav-chat-menu button.danger {
     color: #ff7b72;
   }
+}
+
+/* File rows are interactive on desktop and mobile. */
+.storage-file-name { color: var(--fg-default); text-decoration: none; }
+.storage-file-name:hover { text-decoration: underline; }
+.storage-file-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.storage-file-actions a {
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0 8px;
+  border: 1px solid var(--border-default); border-radius: 6px; background: var(--bg-muted);
+  color: var(--fg-default); font: 600 10px/1 var(--font-sans); text-decoration: none;
+}
+.storage-file-actions a:hover { background: var(--bg-emphasis); }
+
+@media (max-width: 860px) {
+  .storage-file-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .storage-file-row .storage-file-actions {
+    grid-column: 1 / -1; justify-content: flex-start; margin-top: 4px;
+  }
+  .storage-file-row .storage-file-actions a { min-height: 32px; padding: 0 11px; font-size: 11px; }
+  button.storage-row > .storage-file-actions { display: none; }
 }

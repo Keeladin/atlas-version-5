@@ -516,3 +516,11 @@ The first mobile navigation drawer exposed two presentation gaps. Storage, Proje
 Recents in the drawer now restores chat management through the existing owner handlers: each chat has a compact options menu with Rename and Delete. No second chat-management path or backend API was added.
 
 Validation: frontend lint is clean, **33 frontend tests pass**, and the production Vite build succeeds.
+
+## 2026-09-15 — Owner file open/download in Storage and Projects
+
+The owner-facing Storage and Project-folder browsers now treat files as interactive resources rather than dead list rows. Directories retain their existing navigation behavior; regular files expose **Open** and **Download** actions on both desktop and mobile, and the filename itself opens the file in a new tab when the browser supports its MIME type.
+
+Two authenticated read-only delivery routes serve Workspace and Project files. Workspace delivery resolves and pins the requested regular file beneath the approved workspace root with no-follow traversal; path escapes and external symlinks are rejected. Project delivery additionally preserves `ProjectFolderService` protected-material checks, so `.env`, key material, secret directories, and aliases to protected targets remain unavailable through the browser route. Download intent changes only `Content-Disposition`; it does not alter filesystem authority.
+
+Validation on the frozen tree: **538 backend tests passed** against disposable PostgreSQL 17/pgvector; focused storage/API acceptance passed **45 tests**; Ruff and `git diff --check` are clean. Frontend lint reports zero warnings/errors, **35 tests passed**, and the production Vite build succeeded.

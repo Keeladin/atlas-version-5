@@ -395,3 +395,47 @@ def test_permitted_git_snapshot_patch_round_trips_modes_and_binary(tmp_path):
     result = subprocess.run(['git', '-C', str(project), 'apply', '--reverse', '--check'],
         input=patch, text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_local_storage_open_file_returns_regular_file_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "manual.pdf"
+    path.write_bytes(b"%PDF-owner-copy")
+    service = LocalStorageService(tmp_path, "/home/jaco/Workspace")
+
+    handle, metadata = service.open_file("manual.pdf")
+    try:
+        assert handle.read() == b"%PDF-owner-copy"
+    finally:
+        handle.close()
+    assert metadata == {"name": "manual.pdf", "media_type": "application/pdf", "size_bytes": 15}
+
+
+def test_local_storage_open_file_rejects_escape_and_external_symlink(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    (root / "alias.txt").symlink_to(outside)
+    service = LocalStorageService(root, str(root))
+
+    with pytest.raises(ValueError, match="outside"):
+        service.open_file("../outside.txt")
+    with pytest.raises(ValueError, match="outside"):
+        service.open_file("alias.txt")
+
+
+def test_project_open_file_keeps_protected_material_blocked(tmp_path: Path) -> None:
+    project = tmp_path / "Demo"
+    project.mkdir()
+    (project / "README.md").write_text("visible")
+    (project / ".env").write_text("TOKEN=secret")
+    service = ProjectFolderService(tmp_path, "/home/jaco/Projects", tmp_path / ".checkpoints")
+
+    handle, metadata = service.open_file("Demo/README.md")
+    try:
+        assert handle.read() == b"visible"
+    finally:
+        handle.close()
+    assert metadata["media_type"] == "text/markdown"
+    with pytest.raises(ValueError, match="cannot be read"):
+        service.open_file("Demo/.env")

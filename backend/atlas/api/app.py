@@ -1585,6 +1585,39 @@ async def stream_conversation(request: ChatRequest):
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
+def _browser_file_response(handle, metadata: dict[str, Any], *, download: bool):
+    def chunks():
+        try:
+            while chunk := handle.read(1024 * 1024):
+                yield chunk
+        finally:
+            handle.close()
+
+    filename = str(metadata["name"]).replace('"', "'").replace("\r", "").replace("\n", "")
+    disposition = "attachment" if download else "inline"
+    return StreamingResponse(
+        chunks(),
+        media_type=str(metadata["media_type"]),
+        headers={
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
+            "Content-Length": str(metadata["size_bytes"]),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+async def _open_browser_file(service, path: str, *, download: bool):
+    try:
+        handle, metadata = await asyncio.to_thread(service.open_file, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    except (NotADirectoryError, IsADirectoryError) as exc:
+        raise HTTPException(status_code=400, detail="Requested path is not a file") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _browser_file_response(handle, metadata, download=download)
+
+
 @app.get("/api/storage/local")
 async def local_storage(path: str = ""):
     await require_capability("atlas.local_storage")
@@ -1597,6 +1630,20 @@ async def local_storage(path: str = ""):
         raise HTTPException(status_code=400, detail="Requested path is not a directory") from exc
     except ValueError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+@app.get("/api/storage/local/file")
+async def local_storage_file(path: str, download: bool = False):
+    await require_capability("atlas.local_storage")
+    service = LocalStorageService(settings.workspace_root, settings.workspace_display_root)
+    return await _open_browser_file(service, path, download=download)
+
+
+@app.get("/api/storage/projects/file")
+async def project_storage_file(path: str, download: bool = False):
+    await require_capability("atlas.project_folders")
+    service = ProjectFolderService(settings.projects_root, settings.projects_display_root)
+    return await _open_browser_file(service, path, download=download)
+
 
 @app.get("/api/storage/drive")
 async def drive_storage(folder_id: str = "root"):

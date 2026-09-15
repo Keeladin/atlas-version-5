@@ -10,7 +10,7 @@ import { mergeRestoredAttachments, releaseAttachmentPreviews, turnAttachments, t
 import { ChatAttachmentView } from './ChatAttachmentView'
 import { MobileNavigationDrawer } from './MobileNavigationDrawer'
 import { composerAttachmentDisabled, composerInputDisabled, composerSendDisabled } from './chatComposer'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, localStorageFileUrl, projectStorageFileUrl, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -68,6 +68,22 @@ const SEVERITY_LABELS: Record<OwnerNotification['severity'], string> = {
 function storageTitle(path: string): string {
   if (!path) return 'Workspace'
   return path.split('/').filter(Boolean).at(-1) ?? 'Workspace'
+}
+
+function StorageEntryRow({ entry, fileUrl, onDirectory }: { entry: LocalStorageEntry; fileUrl: (path: string, download?: boolean) => string; onDirectory: (path: string) => void }) {
+  if (entry.kind === 'directory') {
+    return <button className="storage-row" type="button" role="row" onClick={() => onDirectory(entry.path)}>
+      <span className="storage-name"><span className="storage-icon">▸</span>{entry.name}</span>
+      <span>directory</span><span>—</span><span>{new Date(entry.modified_at).toLocaleString()}</span><span className="storage-file-actions" />
+    </button>
+  }
+  const openUrl = fileUrl(entry.path)
+  const downloadUrl = fileUrl(entry.path, true)
+  return <div className="storage-row storage-file-row" role="row">
+    <a className="storage-name storage-file-name" href={openUrl} target="_blank" rel="noreferrer"><span className="storage-icon">·</span>{entry.name}</a>
+    <span>file</span><span>{formatBytes(entry.size_bytes)}</span><span>{new Date(entry.modified_at).toLocaleString()}</span>
+    <span className="storage-file-actions"><a href={openUrl} target="_blank" rel="noreferrer">Open</a><a href={downloadUrl}>Download</a></span>
+  </div>
 }
 
 function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () => Promise<void> }) {
@@ -748,13 +764,8 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                     <div className="storage-drop-hint">{dragging ? 'Drop files here' : 'Drag files here, paste copied files, or use Add files'}</div>
                     <div className="storage-summary"><span>{storage.entries.length} item{storage.entries.length === 1 ? '' : 's'}</span><span>Approved local workspace</span></div>
                     <div className="storage-table" role="table" aria-label="Workspace contents">
-                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Type</span><span>Size</span><span>Modified</span></div>
-                      {storage.entries.map((entry) => (
-                        <button className="storage-row" type="button" role="row" key={entry.path} disabled={entry.kind !== 'directory'} onClick={() => { if (entry.kind === 'directory') void openLocalStorage(entry.path) }}>
-                          <span className="storage-name"><span className="storage-icon">{entry.kind === 'directory' ? '▸' : '·'}</span>{entry.name}</span>
-                          <span>{entry.kind}</span><span>{formatBytes(entry.size_bytes)}</span><span>{new Date(entry.modified_at).toLocaleString()}</span>
-                        </button>
-                      ))}
+                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Type</span><span>Size</span><span>Modified</span><span>Actions</span></div>
+                      {storage.entries.map((entry) => <StorageEntryRow entry={entry} fileUrl={localStorageFileUrl} onDirectory={(path) => { void openLocalStorage(path) }} key={entry.path} />)}
                     </div>
                     {storage.entries.length === 0 ? <div className="storage-empty">This folder is empty.</div> : null}
                   </div>
@@ -772,8 +783,8 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
                   <div className="storage-browser">
                     <div className="storage-summary"><span>{projectStorage.entries.length} item{projectStorage.entries.length === 1 ? '' : 's'}</span><span>Real local development directories · read only</span></div>
                     <div className="storage-table" role="table" aria-label="Project folder contents">
-                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Type</span><span>Size</span><span>Modified</span></div>
-                      {projectStorage.entries.map((entry) => <button className="storage-row" type="button" role="row" key={entry.path} disabled={entry.kind !== 'directory'} onClick={() => { if (entry.kind === 'directory') void openProjectFolders(entry.path) }}><span className="storage-name"><span className="storage-icon">{entry.kind === 'directory' ? '▸' : '·'}</span>{entry.name}</span><span>{entry.kind}</span><span>{formatBytes(entry.size_bytes)}</span><span>{new Date(entry.modified_at).toLocaleString()}</span></button>)}
+                      <div className="storage-row storage-header" role="row"><span>Name</span><span>Type</span><span>Size</span><span>Modified</span><span>Actions</span></div>
+                      {projectStorage.entries.map((entry) => <StorageEntryRow entry={entry} fileUrl={projectStorageFileUrl} onDirectory={(path) => { void openProjectFolders(path) }} key={entry.path} />)}
                     </div>
                     {projectStorage.entries.length === 0 ? <div className="storage-empty">No project entries here.</div> : null}
                   </div>
