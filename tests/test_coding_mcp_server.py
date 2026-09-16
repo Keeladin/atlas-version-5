@@ -53,6 +53,30 @@ def test_pid_liveness_is_fenced_by_process_birth(monkeypatch):
     assert coding._alive(4321, "222") is False
 
 
+def test_dead_codex_child_without_events_is_recoverable():
+    assert coding._event_status([], running=False) == "interrupted"
+
+
+def test_cancel_escalates_to_sigkill_if_same_process_survives(monkeypatch):
+    alive = iter([True, True, True, False])
+    monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: next(alive))
+    signals = []
+    monkeypatch.setattr(coding.os, "killpg", lambda group, sig: signals.append((group, sig)))
+
+    coding._terminate_process_group(
+        pid=4321,
+        process_group=4321,
+        expected_start_time="birth-4321",
+        term_grace_seconds=0,
+        kill_grace_seconds=0,
+    )
+
+    assert signals == [
+        (4321, coding.signal.SIGTERM),
+        (4321, coding.signal.SIGKILL),
+    ]
+
+
 def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -85,6 +109,7 @@ def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, mo
     assert command[command.index("--ask-for-approval") + 1] == "never"
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert record["runs"][0]["proc_start_time"] == "birth-4321"
+    assert record["status"] == "interrupted"
 
 
 def test_cancel_does_not_rewrite_completed_session(tmp_path, monkeypatch):
