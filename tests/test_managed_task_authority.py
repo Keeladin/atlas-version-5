@@ -1,6 +1,15 @@
+from uuid import UUID
+
 import pytest
+from atlas.artifacts.store import ArtifactStore
 from atlas.capabilities import AuthorityMode, CapabilityRuntime, EffectKind, OperationDescriptor
+from atlas.config import Settings
+from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
+from atlas.persistence.models import ActionRow, OwnerAttentionRow
+from atlas.runtime import managed_tasks_worker as worker
+from atlas.runtime.execution import RunExecutor
 from atlas.runtime.task_state import active_task_provider_message, new_managed_task_state
+from sqlalchemy import select
 
 
 def _operation(operation_id: str, authority: AuthorityMode) -> OperationDescriptor:
@@ -103,3 +112,56 @@ def test_managed_task_checkpoint_exposes_immutable_authority_grants():
     assert message is not None
     assert '"authority_grants":["coding.agent.start_session","coding.agent.send_turn"]' in message["content"]
     assert "may promote Ask me to Auto for those operations only" in message["content"]
+
+
+@pytest.mark.asyncio
+async def test_run_executor_uses_task_grant_without_creating_owner_prompt(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    operation_id = "coding.agent.test_effect"
+    created = await workspace_mcp._create({
+        "objective": "Execute the already approved coding effect",
+        "acceptance_criteria": ["Effect runs without asking twice"],
+        "authority_grants": [operation_id],
+    })
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    calls = []
+    runtime = CapabilityRuntime()
+    runtime.register(
+        _operation(operation_id, AuthorityMode.APPROVAL_REQUIRED),
+        lambda arguments: calls.append(arguments) or {"ok": True},
+    )
+    executor = RunExecutor(
+        pg_factory,
+        runtime,
+        ArtifactStore(settings.artifact_dir),
+        run_id=run_id,
+        transcript_id=UUID(created["transcript_id"]),
+        checkpoint=True,
+    )
+
+    result = await executor.tool_handler(
+        "atlas_capability_call",
+        {"operation_id": operation_id, "arguments": {}},
+    )
+
+    assert result["status"] == "succeeded"
+    assert calls == [{}]
+    async with pg_factory() as session:
+        actions = list((await session.execute(
+            select(ActionRow).where(ActionRow.run_id == run_id)
+        )).scalars())
+        attention = list((await session.execute(
+            select(OwnerAttentionRow).where(OwnerAttentionRow.run_id == run_id)
+        )).scalars())
+    assert any(action.operation == operation_id and action.status == "succeeded" for action in actions)
+    assert not any(item.state == "approval_required" for item in attention)
