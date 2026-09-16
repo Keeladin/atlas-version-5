@@ -25,6 +25,7 @@ CODEX_BIN = os.environ.get("ATLAS_CODEX_BIN", "/home/jaco/.local/node/bin/codex"
 STATE_DIR = Path(
     os.environ.get("ATLAS_CODING_STATE_DIR", "/home/jaco/.local/state/atlas-v5/coding")
 ).expanduser()
+DEFAULT_ROOTS = "/home/jaco/Projects:/home/jaco/Workspace"
 
 
 def _now() -> str:
@@ -165,11 +166,40 @@ def _refresh(record: dict[str, Any]) -> dict[str, Any]:
     return record
 
 
+def _allowed_roots() -> tuple[Path, ...]:
+    raw = os.environ.get("ATLAS_CODING_ROOTS", DEFAULT_ROOTS)
+    roots: list[Path] = []
+    for value in raw.split(os.pathsep):
+        value = value.strip()
+        if not value:
+            continue
+        root = Path(value).expanduser().resolve()
+        if root not in roots:
+            roots.append(root)
+    if not roots:
+        raise ValueError("ATLAS_CODING_ROOTS must contain at least one approved root")
+    return tuple(roots)
+
+
 def _validate_repo(value: Any) -> Path:
-    repo = Path(str(value or "")).expanduser().resolve()
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("repo is required")
+    repo = Path(raw).expanduser().resolve()
     if not repo.is_dir():
         raise ValueError(f"Repository/work directory does not exist: {repo}")
+    roots = _allowed_roots()
+    if not any(repo == root or repo.is_relative_to(root) for root in roots):
+        allowed = ", ".join(str(root) for root in roots)
+        raise ValueError(f"Repository/work directory is outside approved coding roots: {repo} (allowed: {allowed})")
     return repo
+
+
+def _codex_binary() -> Path:
+    path = Path(CODEX_BIN).expanduser().resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise ValueError(f"Codex CLI is unavailable or not executable: {path}")
+    return path
 
 
 def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, Any]:
@@ -184,7 +214,7 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
     stderr_path = run_dir / f"turn-{turn:04d}.stderr.log"
 
     command = [
-        CODEX_BIN,
+        str(_codex_binary()),
         "exec",
         "--json",
         "--dangerously-bypass-approvals-and-sandbox",
