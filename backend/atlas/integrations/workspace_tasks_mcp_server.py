@@ -7,21 +7,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
+from atlas.artifacts.store import ArtifactStore
+from atlas.config import get_settings
 from atlas.db import get_session_factory
-from atlas.persistence.models import TranscriptRow
+from atlas.integrations.mcp_socket import MCPSocketClient
+from atlas.persistence.models import RunRow, TranscriptRow
+from atlas.runtime.recovery import interrupt_run
 from atlas.runtime.task_state import new_managed_task_state
 from atlas.transcript.repository import TranscriptRepository
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_VERSION = "0.1.0"
 TASK_KIND = "managed_task"
+CODING_SOCKET = "/run/atlas-v5/mcp/coding-agent.sock"
 
 
 def _now() -> str:
@@ -84,6 +92,31 @@ def _strings(value: Any, *, maximum: int) -> list[str]:
         if len(result) >= maximum:
             break
     return result
+
+
+def _coding_session_id(state: dict[str, Any]) -> str | None:
+    progress = state.get("progress") if isinstance(state.get("progress"), dict) else {}
+    explicit = str(progress.get("coding_session_id") or "").strip()
+    if explicit:
+        return explicit
+    runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
+    for event in reversed(runtime.get("recent_events") or []):
+        if not isinstance(event, dict):
+            continue
+        if event.get("operation") != "coding.agent.start_session" or event.get("phase") != "succeeded":
+            continue
+        targets = event.get("targets") if isinstance(event.get("targets"), dict) else {}
+        session_id = str(targets.get("session_id") or "").strip()
+        if session_id:
+            return session_id
+    return None
+
+
+async def _cancel_coding_session(session_id: str) -> dict[str, Any]:
+    path = Path(os.environ.get("ATLAS_CODING_MCP_SOCKET", CODING_SOCKET))
+    client = MCPSocketClient(path, timeout=15, connect_timeout=2)
+    result = await asyncio.to_thread(client.call_tool, "cancel_session", {"session_id": session_id})
+    return result if isinstance(result, dict) else {"result": result}
 
 
 async def _create(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -182,11 +215,26 @@ async def _cancel(arguments: dict[str, Any]) -> dict[str, Any]:
     task_id = str(arguments.get("task_id") or "").strip()
     reason = str(arguments.get("reason") or "Cancelled by owner direction").strip()[:500]
     factory = get_session_factory()
+    active_run_ids: list[UUID] = []
+    coding_session_id: str | None = None
+    transcript_id: UUID | None = None
+
+    # Commit the terminal task state first. From this point the runtime contract
+    # says no new managed work may be dispatched even if cleanup needs recovery.
     async with factory() as session:
         row = await _row_for_task(session, task_id, lock=True)
+        transcript_id = row.id
         state = dict(row.active_task_state or {})
         if state.get("status") == "complete":
             raise ValueError("Completed tasks cannot be cancelled")
+        coding_session_id = _coding_session_id(state)
+        active_run_ids = list((await session.execute(
+            select(RunRow.id).where(
+                RunRow.transcript_id == row.id,
+                RunRow.kind == "background",
+                RunRow.inference_active.is_(True),
+            )
+        )).scalars())
         state["status"] = "cancelled"
         state.setdefault("semantic", {})["next_step"] = None
         runtime = state.setdefault("runtime", {})
@@ -200,8 +248,42 @@ async def _cancel(arguments: dict[str, Any]) -> dict[str, Any]:
             row.id, state, expected_revision=row.active_task_revision
         )
         await session.commit()
-        row = await session.get(TranscriptRow, row.id)
-        return _state_projection(row)
+
+    cleanup: dict[str, Any] = {
+        "coding_session_id": coding_session_id,
+        "coding_session": "not_present" if not coding_session_id else "pending",
+        "interrupted_run_ids": [],
+        "warnings": [],
+    }
+    if coding_session_id:
+        try:
+            coding_result = await _cancel_coding_session(coding_session_id)
+            cleanup["coding_session"] = coding_result.get("status") or "cancelled"
+        except (OSError, RuntimeError, ValueError) as exc:
+            cleanup["coding_session"] = "cleanup_failed"
+            cleanup["warnings"].append(f"Coding session cleanup failed: {exc}")
+
+    if active_run_ids:
+        artifacts = ArtifactStore(get_settings().artifact_dir)
+        for run_id in active_run_ids:
+            try:
+                await interrupt_run(
+                    factory,
+                    artifacts,
+                    run_id,
+                    reason=f"Managed task cancelled: {reason}",
+                )
+                cleanup["interrupted_run_ids"].append(str(run_id))
+            except (OSError, RuntimeError, ValueError, SQLAlchemyError) as exc:
+                cleanup["warnings"].append(f"Run {run_id} cleanup failed: {exc}")
+
+    async with factory() as session:
+        row = await session.get(TranscriptRow, transcript_id)
+        if row is None:
+            raise RuntimeError("Managed task disappeared after cancellation")
+        result = _state_projection(row)
+    result["cleanup"] = cleanup
+    return result
 
 
 async def _resume(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -258,7 +340,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "annotations": {"readOnlyHint": True, "destructiveHint": False},
     },
     "cancel": {
-        "description": "Cancel an active managed task. Cancel its coding.agent session first when one is still running.",
+        "description": "Cancel a managed task and stop its active Atlas/Codex execution as one lifecycle operation.",
         "inputSchema": {"type": "object", "properties": {
             "task_id": {"type": "string"}, "reason": {"type": "string", "maxLength": 500}
         }, "required": ["task_id"], "additionalProperties": False},
