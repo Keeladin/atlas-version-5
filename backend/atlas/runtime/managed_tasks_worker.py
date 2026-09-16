@@ -27,7 +27,10 @@ from atlas.db import get_session_factory
 from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow, TranscriptRow
 from atlas.providers import OpenAIProvider
 from atlas.registry.service import build_phase0_registry
-from atlas.runtime.conversation import build_model_instructions, turns_to_provider_messages
+from atlas.runtime.conversation import (
+    build_model_instructions,
+    turns_to_provider_messages,
+)
 from atlas.runtime.execution import RunExecutor
 from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import interrupt_run, maintain_heartbeat, require_live_run
