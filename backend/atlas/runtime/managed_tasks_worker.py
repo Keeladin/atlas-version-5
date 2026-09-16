@@ -113,14 +113,13 @@ def _parse_time(value: Any) -> datetime | None:
 
 
 def _progress_signature(state: dict[str, Any]) -> str:
-    """Hashable material task state; controller/turn bookkeeping is deliberately excluded."""
+    """Hashable material task state; fresh read-only evidence is not progress."""
     runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
     material = {
         "semantic": state.get("semantic") or {},
         "acceptance_criteria": state.get("acceptance_criteria") or [],
         "checkpoints": state.get("checkpoints") or [],
         "progress": state.get("progress") or {},
-        "last_progress_evidence": runtime.get("last_progress_at"),
         "pending_actions": runtime.get("pending_actions") or [],
         "errors": runtime.get("errors") or [],
         "completion_rejected": runtime.get("completion_rejected"),
