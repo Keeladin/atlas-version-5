@@ -104,9 +104,7 @@ def _alive(pid: int | None, expected_start_time: str | None = None) -> bool:
     identity = _process_identity(pid)
     if identity is None or identity[0] == "Z":
         return False
-    if expected_start_time is not None and identity[1] != str(expected_start_time):
-        return False
-    return True
+    return expected_start_time is None or identity[1] == str(expected_start_time)
 
 
 def _events(path: Path) -> list[dict[str, Any]]:
