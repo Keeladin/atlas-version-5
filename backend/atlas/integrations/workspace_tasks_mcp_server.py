@@ -75,6 +75,7 @@ def _state_projection(row: TranscriptRow) -> dict[str, Any]:
         "next_step": semantic.get("next_step"),
         "pending_actions": runtime.get("pending_actions") or [],
         "retry_count": int(runtime.get("retry_count") or 0),
+        "transient_retry_count": int(runtime.get("transient_retry_count") or 0),
         "next_wake_at": runtime.get("next_wake_at"),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -161,6 +162,8 @@ async def _create(arguments: dict[str, Any]) -> dict[str, Any]:
         runtime.update({
             "controller_state": "ready",
             "next_wake_at": _now(),
+            "retry_count": 0,
+            "transient_retry_count": 0,
             "last_worker_run_id": None,
             "last_worker_finished_at": None,
         })
@@ -298,6 +301,7 @@ async def _resume(arguments: dict[str, Any]) -> dict[str, Any]:
         runtime.update({
             "controller_state": "ready",
             "retry_count": 0,
+            "transient_retry_count": 0,
             "next_wake_at": _now(),
             "completion_rejected": runtime.get("completion_rejected"),
         })
