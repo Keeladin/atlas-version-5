@@ -26,9 +26,11 @@ The owner-facing task operations are:
 
 `atlas-v5-managed-tasks.service` polls active managed-task transcripts. It claims one background run under a row lock, rehydrates the protected task checkpoint, and executes a normal Atlas inference turn. If the task remains active, the worker schedules another bounded continuation turn. A pending owner decision moves the task to `waiting_for_owner`; a cancelled or completed task is not claimed again.
 
-Provider or process interruption does not create an ordinary “press Continue” interruption for a managed task. The exact checkpoint and effect evidence are retained and the controller can retry. Already-dispatched effects are never blindly replayed: uncertain effects continue to use the existing action reconciliation and owner-attention path.
+Provider or process interruption does not create an ordinary “press Continue” interruption for a managed task. The exact checkpoint and effect evidence are retained and the controller retries automatically. Already-dispatched effects are never blindly replayed: uncertain effects continue to use the existing action reconciliation and owner-attention path.
 
-Repeated lack of durable progress is bounded. After the configured retry threshold the controller marks the task `stalled` and creates an owner-attention item instead of looping forever.
+The controller keeps two retry budgets deliberately separate. A successful model turn that makes no material task progress consumes the small no-progress budget (`ATLAS_MANAGED_TASK_MAX_NO_PROGRESS`, default 3) and may eventually create a genuine `stalled` owner-attention item. Transient provider/runtime failures instead use a much larger automatic retry budget (`ATLAS_MANAGED_TASK_MAX_TRANSIENT_FAILURES`, default 48) with exponential backoff capped at 15 minutes. They do not consume the no-progress budget. This means rate limits, temporary provider outages, database connection interruptions, worker restarts, or equivalent availability failures do not silently turn into a request for the owner to press Continue.
+
+If the transient retry budget is genuinely exhausted, the task is marked `stalled` with an execution-availability explanation. `workspace.tasks.resume` clears both retry counters and re-enters automatic continuation.
 
 ## Coding agent boundary
 
