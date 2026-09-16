@@ -9,8 +9,7 @@ RuntimeDirectoryPreserve=yes
 SocketUser=root
 SocketGroup=atlas-v5
 SocketMode=0660
-Accept=yes
-MaxConnections=8
+Accept=no
 RemoveOnStop=yes
 
 [Install]
