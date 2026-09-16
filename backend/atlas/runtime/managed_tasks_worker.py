@@ -16,8 +16,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from openai import APIConnectionError, APIStatusError
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import ActionStatus, RunKind
@@ -34,7 +36,12 @@ from atlas.runtime.conversation import (
 )
 from atlas.runtime.execution import RunExecutor
 from atlas.runtime.observations import EvidenceStore
-from atlas.runtime.recovery import interrupt_run, maintain_heartbeat, require_live_run
+from atlas.runtime.recovery import (
+    RunInterrupted,
+    interrupt_run,
+    maintain_heartbeat,
+    require_live_run,
+)
 from atlas.runtime.run_events import append_run_event
 from atlas.runtime.task_state import (
     TaskStateDelta,
@@ -47,6 +54,7 @@ from atlas.transcript.repository import TranscriptRepository
 
 logger = logging.getLogger(__name__)
 TASK_KIND = "managed_task"
+_TRANSIENT_STATUS_CODES = {408, 409, 425, 429}
 
 
 def _poll_seconds() -> int:
@@ -61,6 +69,33 @@ def _max_no_progress() -> int:
         return max(1, min(int(os.environ.get("ATLAS_MANAGED_TASK_MAX_NO_PROGRESS", "3")), 10))
     except ValueError:
         return 3
+
+
+def _max_transient_failures() -> int:
+    try:
+        return max(
+            1,
+            min(int(os.environ.get("ATLAS_MANAGED_TASK_MAX_TRANSIENT_FAILURES", "48")), 200),
+        )
+    except ValueError:
+        return 48
+
+
+def _transient_retry_delay(retries: int) -> int:
+    base = max(15, _poll_seconds())
+    exponent = min(max(0, retries - 1), 6)
+    return min(900, base * (2**exponent))
+
+
+def _is_transient_iteration_failure(exc: BaseException) -> bool:
+    if isinstance(exc, (APIConnectionError, OperationalError, RunInterrupted, TimeoutError, ConnectionError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        status = int(getattr(exc, "status_code", 0) or 0)
+        return status in _TRANSIENT_STATUS_CODES or status >= 500
+    return isinstance(exc, RuntimeError) and str(exc).startswith(
+        "Provider response did not complete;"
+    )
 
 
 def _iso(value: datetime) -> str:
@@ -147,6 +182,7 @@ async def _set_controller_state(
     controller_state: str,
     next_wake_at: datetime | None,
     retry_count: int | None = None,
+    transient_retry_count: int | None = None,
     run_id: UUID | None = None,
     finished: bool = False,
 ) -> dict[str, Any]:
@@ -157,6 +193,8 @@ async def _set_controller_state(
         runtime["next_wake_at"] = _iso(next_wake_at) if next_wake_at else None
         if retry_count is not None:
             runtime["retry_count"] = retry_count
+        if transient_retry_count is not None:
+            runtime["transient_retry_count"] = transient_retry_count
         if run_id is not None:
             runtime["last_worker_run_id"] = str(run_id)
         if finished:
@@ -167,7 +205,14 @@ async def _set_controller_state(
     return await TranscriptRepository(session).mutate_active_task_state(row.id, transform)
 
 
-async def _stall_attention(session, transcript_id: UUID, run_id: UUID, state: dict[str, Any]) -> None:
+async def _stall_attention(
+    session,
+    transcript_id: UUID,
+    run_id: UUID,
+    state: dict[str, Any],
+    *,
+    message: str | None = None,
+) -> None:
     existing = (await session.execute(
         select(OwnerAttentionRow.id)
         .join(RunRow, OwnerAttentionRow.run_id == RunRow.id)
@@ -188,7 +233,7 @@ async def _stall_attention(session, transcript_id: UUID, run_id: UUID, state: di
         detail={
             "task_id": state.get("task_id"),
             "project_id": state.get("project_id"),
-            "message": "Atlas made no durable task progress across the bounded automatic retries.",
+            "message": message or "Atlas made no durable task progress across the bounded automatic retries.",
             "next_step": semantic.get("next_step"),
             "resume": "Resume the task after correcting the blocker; its exact checkpoint and evidence were retained.",
         },
@@ -271,6 +316,8 @@ async def _record_iteration_outcome(
     *,
     initial_progress_signature: str,
     succeeded: bool,
+    failure_kind: str | None = None,
+    failure_message: str | None = None,
 ) -> None:
     factory = get_session_factory()
     async with factory() as session:
@@ -284,7 +331,8 @@ async def _record_iteration_outcome(
         if state.get("status") != "active":
             await _set_controller_state(
                 session, row, controller_state=str(state.get("status") or "complete"),
-                next_wake_at=None, retry_count=0, run_id=run_id, finished=True,
+                next_wake_at=None, retry_count=0, transient_retry_count=0,
+                run_id=run_id, finished=True,
             )
             await session.commit()
             return
@@ -293,25 +341,73 @@ async def _record_iteration_outcome(
         if runtime_state.get("pending_actions"):
             await _set_controller_state(
                 session, row, controller_state="waiting_for_owner", next_wake_at=None,
-                retry_count=0, run_id=run_id, finished=True,
+                retry_count=0, transient_retry_count=0, run_id=run_id, finished=True,
             )
             await session.commit()
             return
 
         progressed = _progress_signature(state) != initial_progress_signature
-        retries = 0 if progressed and succeeded else int(runtime_state.get("retry_count") or 0) + 1
-        if retries >= _max_no_progress():
+        no_progress_retries = int(runtime_state.get("retry_count") or 0)
+        transient_retries = int(runtime_state.get("transient_retry_count") or 0)
+
+        if not succeeded and failure_kind == "transient":
+            transient_retries += 1
+            if transient_retries >= _max_transient_failures():
+                state = await _set_controller_state(
+                    session, row, controller_state="stalled", next_wake_at=None,
+                    retry_count=no_progress_retries,
+                    transient_retry_count=transient_retries,
+                    run_id=run_id, finished=True,
+                )
+                detail = (
+                    f"Atlas exhausted {transient_retries} automatic retries after transient "
+                    "provider/runtime failures. This is an execution-availability blocker, not "
+                    "a lack-of-progress decision."
+                )
+                if failure_message:
+                    detail += f" Last failure: {failure_message[:300]}"
+                await _stall_attention(session, row.id, run_id, state, message=detail)
+            else:
+                delay = _transient_retry_delay(transient_retries)
+                await _set_controller_state(
+                    session, row, controller_state="retrying",
+                    next_wake_at=datetime.now(UTC) + timedelta(seconds=delay),
+                    retry_count=no_progress_retries,
+                    transient_retry_count=transient_retries,
+                    run_id=run_id, finished=True,
+                )
+                await append_run_event(session, run_id, "retry_scheduled", {
+                    "reason": "transient_provider_or_runtime_failure",
+                    "attempt": transient_retries,
+                    "delay_seconds": delay,
+                })
+            await session.commit()
+            return
+
+        transient_retries = 0
+        no_progress_retries = (
+            0 if progressed and succeeded else no_progress_retries + 1
+        )
+        if no_progress_retries >= _max_no_progress():
             state = await _set_controller_state(
                 session, row, controller_state="stalled", next_wake_at=None,
-                retry_count=retries, run_id=run_id, finished=True,
+                retry_count=no_progress_retries,
+                transient_retry_count=transient_retries,
+                run_id=run_id, finished=True,
             )
             await _stall_attention(session, row.id, run_id, state)
         else:
-            delay = _poll_seconds() if progressed and succeeded else min(120, _poll_seconds() * (2 ** max(0, retries - 1)))
+            delay = (
+                _poll_seconds()
+                if progressed and succeeded
+                else min(120, _poll_seconds() * (2 ** max(0, no_progress_retries - 1)))
+            )
             await _set_controller_state(
                 session, row, controller_state="ready",
                 next_wake_at=datetime.now(UTC) + timedelta(seconds=delay),
-                retry_count=retries, run_id=run_id, finished=True,
+                retry_count=no_progress_retries,
+                transient_retry_count=transient_retries,
+                run_id=run_id, finished=True,
             )
         await session.commit()
 
@@ -321,6 +417,8 @@ async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
     artifacts = ArtifactStore(settings.artifact_dir)
     initial_progress_signature = ""
     completed = False
+    failure_kind: str | None = None
+    failure_message: str | None = None
     try:
         async with factory() as session:
             run = await require_live_run(session, run_id)
@@ -457,8 +555,12 @@ async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
             await session.commit()
         completed = True
     except asyncio.CancelledError:
+        failure_kind = "transient"
+        failure_message = "Managed-task worker was cancelled before the turn completed"
         raise
-    except Exception:
+    except Exception as exc:
+        failure_kind = "transient" if _is_transient_iteration_failure(exc) else "execution"
+        failure_message = str(exc)
         logger.exception("Managed task iteration failed: %s", run_id)
     finally:
         if not completed:
@@ -472,6 +574,8 @@ async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
                 run_id,
                 initial_progress_signature=initial_progress_signature,
                 succeeded=completed,
+                failure_kind=failure_kind,
+                failure_message=failure_message,
             )
 
 
