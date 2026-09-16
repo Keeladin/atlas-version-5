@@ -1,6 +1,4 @@
 import pytest
-from sqlalchemy import select
-
 from atlas.config import Settings
 from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
 from atlas.persistence.models import RunRow, TranscriptRow
@@ -12,6 +10,7 @@ from atlas.runtime.task_state import (
     new_managed_task_state,
     record_runtime_event,
 )
+from sqlalchemy import select
 
 
 def _state():
