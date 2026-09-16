@@ -100,4 +100,4 @@ if ! runuser -u atlas-v5 -- /usr/bin/python3 "${BIN_DIR}/atlas_mcp_probe.py" "/r
   exit 1
 fi
 
-echo "Atlas structured host operations and owner-side coding worker are installed. Authority remains centralized in Atlas Control."
+echo "Atlas structured host operations and owner-side coding worker are installed. Authority is controlled in Atlas Control; polkit is not part of this execution path."
