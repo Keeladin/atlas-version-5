@@ -63,13 +63,21 @@ authority = "auto"
 
 def test_example_configuration_parses_and_pins_the_envelope_shape() -> None:
     servers = parse_mcp_servers(EXAMPLE.read_text())
-    ids = {server.id for server in servers}
-    assert ids == {"host.operations"}
-    host = servers[0]
+    by_id = {server.id: server for server in servers}
+    assert set(by_id) == {"host.operations", "coding.agent", "workspace.tasks"}
+
+    host = by_id["host.operations"]
     assert host.transport == "socket" and host.path == Path("/run/atlas-v5/mcp/host-operations.sock")
     assert {"service_restart", "docker_start_restart", "filesystem_write", "packages_change", "host_shutdown"} <= set(host.tools or ())
-    assert host.tool_policies["service_restart"].authority == AuthorityMode.AUTO
-    assert host.tool_policies["service_stop"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert host.tool_policies["service_restart"].authority is None
+    assert host.tool_policies["service_stop"].authority is None
+
+    coding = by_id["coding.agent"]
+    assert coding.transport == "socket" and coding.path == Path("/run/atlas-v5/mcp/coding-agent.sock")
+    assert {"start_session", "get_status", "get_result", "cancel_session"} <= set(coding.tools or ())
+    tasks = by_id["workspace.tasks"]
+    assert tasks.transport == "stdio" and tasks.command == Path("/opt/atlas-v5/venv/bin/python")
+    assert {"create", "list", "get", "cancel", "resume"} == set(tasks.tools or ())
 
 
 @pytest.mark.parametrize("bad,message", [
