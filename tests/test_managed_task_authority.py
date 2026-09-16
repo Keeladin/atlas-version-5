@@ -2,13 +2,21 @@ from uuid import UUID
 
 import pytest
 from atlas.artifacts.store import ArtifactStore
-from atlas.capabilities import AuthorityMode, CapabilityRuntime, EffectKind, OperationDescriptor
+from atlas.capabilities import (
+    AuthorityMode,
+    CapabilityRuntime,
+    EffectKind,
+    OperationDescriptor,
+)
 from atlas.config import Settings
 from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
 from atlas.persistence.models import ActionRow, OwnerAttentionRow
 from atlas.runtime import managed_tasks_worker as worker
 from atlas.runtime.execution import RunExecutor
-from atlas.runtime.task_state import active_task_provider_message, new_managed_task_state
+from atlas.runtime.task_state import (
+    active_task_provider_message,
+    new_managed_task_state,
+)
 from sqlalchemy import select
 
 
