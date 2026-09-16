@@ -26,6 +26,6 @@ ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-ReadWritePaths=/home/jaco/Projects /home/jaco/Workspace /home/jaco/.local/state/atlas-v5/coding
+ReadWritePaths=/home/jaco/Projects /home/jaco/Workspace /home/jaco/.local/state/atlas-v5/coding -/home/jaco/.codex -/home/jaco/.cache
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
