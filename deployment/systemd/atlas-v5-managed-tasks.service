@@ -14,6 +14,7 @@ WorkingDirectory=/opt/atlas-v5/app
 EnvironmentFile=/etc/atlas-v5/config/runtime.env
 Environment=ATLAS_MANAGED_TASK_POLL_SECONDS=15
 Environment=ATLAS_MANAGED_TASK_MAX_NO_PROGRESS=3
+Environment=ATLAS_MANAGED_TASK_MAX_TRANSIENT_FAILURES=48
 ExecStart=/opt/atlas-v5/venv/bin/python -m atlas.runtime.managed_tasks_worker
 Restart=always
 RestartSec=3
