@@ -85,12 +85,26 @@ def _locked(session_id: str) -> Iterator[None]:
         yield
 
 
-def _alive(pid: int | None) -> bool:
+def _process_identity(pid: int | None) -> tuple[str, str] | None:
+    """Return Linux process state + starttime so stale PIDs cannot target a new process."""
     if not pid:
-        return False
+        return None
     try:
-        os.kill(int(pid), 0)
+        raw = Path(f"/proc/{int(pid)}/stat").read_text()
+        _, tail = raw.rsplit(")", 1)
+        fields = tail.strip().split()
+        if len(fields) <= 19:
+            return None
+        return fields[0], fields[19]
     except (OSError, ValueError):
+        return None
+
+
+def _alive(pid: int | None, expected_start_time: str | None = None) -> bool:
+    identity = _process_identity(pid)
+    if identity is None or identity[0] == "Z":
+        return False
+    if expected_start_time is not None and identity[1] != str(expected_start_time):
         return False
     return True
 
@@ -148,7 +162,7 @@ def _refresh(record: dict[str, Any]) -> dict[str, Any]:
     if not runs:
         return record
     run = runs[-1]
-    running = _alive(run.get("pid"))
+    running = _alive(run.get("pid"), run.get("proc_start_time"))
     events = _events(Path(str(run.get("log_path") or "")))
     thread_id = _thread_id(events)
     if thread_id:
@@ -249,10 +263,13 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
         stdout_handle.close()
         stderr_handle.close()
 
+    identity = _process_identity(process.pid)
+    proc_start_time = identity[1] if identity is not None else None
     run = {
         "turn": turn,
         "pid": process.pid,
         "process_group": process.pid,
+        "proc_start_time": proc_start_time,
         "status": "starting",
         "prompt": prompt,
         "log_path": str(log_path),
@@ -273,10 +290,12 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
         thread_id = _thread_id(events)
         if thread_id:
             record["codex_thread_id"] = thread_id
-            record["status"] = "running" if _alive(process.pid) else _event_status(events, False)
+            record["status"] = (
+                "running" if _alive(process.pid, proc_start_time) else _event_status(events, False)
+            )
             _atomic_json(_session_path(session_id), record)
             break
-        if not _alive(process.pid):
+        if not _alive(process.pid, proc_start_time):
             break
         time.sleep(0.05)
     return _refresh(record)
@@ -374,14 +393,24 @@ def cancel_session(arguments: dict[str, Any]) -> dict[str, Any]:
         record = _refresh(_load(session_id))
         runs = record.get("runs") or []
         latest = runs[-1] if runs else None
-        if latest and _alive(latest.get("pid")):
+        running = bool(latest) and _alive(
+            latest.get("pid"), latest.get("proc_start_time")
+        )
+        if running:
             try:
                 os.killpg(int(latest.get("process_group") or latest["pid"]), signal.SIGTERM)
             except ProcessLookupError:
                 pass
             latest["status"] = "cancelled"
             latest["finished_at"] = _now()
-        record["status"] = "cancelled"
+            record["status"] = "cancelled"
+        elif record.get("status") in {"running", "starting", "created"}:
+            # The process has already disappeared, but cancellation still closes
+            # the non-terminal session without rewriting a completed result.
+            record["status"] = "cancelled"
+            if latest:
+                latest["status"] = "cancelled"
+                latest["finished_at"] = latest.get("finished_at") or _now()
         record["updated_at"] = _now()
         _atomic_json(_session_path(session_id), record)
         return _public(record)
