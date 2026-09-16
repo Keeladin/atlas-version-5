@@ -1,0 +1,31 @@
+[Unit]
+Description=Atlas coding agent MCP service
+Documentation=file:///opt/atlas-v5/app/docs/28-managed-workspace-tasks.md
+Requires=atlas-coding-agent.socket
+After=atlas-coding-agent.socket
+
+[Service]
+Type=simple
+User=jaco
+Group=jaco
+WorkingDirectory=/home/jaco
+Environment=ATLAS_CODEX_BIN=/home/jaco/.local/node/bin/codex
+Environment=ATLAS_CODING_STATE_DIR=/home/jaco/.local/state/atlas-v5/coding
+Environment=ATLAS_CODING_ROOTS=/home/jaco/Projects:/home/jaco/Workspace
+ExecStart=/opt/atlas-v5/venv/bin/python -m atlas.integrations.coding_mcp_socket_server
+Restart=on-failure
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/home/jaco/Projects /home/jaco/Workspace /home/jaco/.local/state/atlas-v5/coding -/home/jaco/.codex -/home/jaco/.cache
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
