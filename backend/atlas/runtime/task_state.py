@@ -62,6 +62,7 @@ _MAX_LIST = 5
 _MAX_EVENTS = 32
 _MAX_WORKING_SET = 16
 _MAX_ERRORS = 8
+_MAX_AUTHORITY_GRANTS = 64
 _SAFE_KEYS = (
     "project",
     "path",
@@ -136,6 +137,7 @@ def new_managed_task_state(
     policy_preset: str | None = None,
     project_id: str | None = None,
     handoff: str = "",
+    authority_grants: list[str] | None = None,
 ) -> dict[str, Any]:
     """Durable execution contract created only after the owner agrees the scope."""
     if not objective.strip():
@@ -149,6 +151,9 @@ def new_managed_task_state(
         "project_title": _clip(title or objective, 160),
         "source_chat_id": source_chat_id,
         "policy_preset": policy_preset,
+        "authority_grants": _bounded_strings(
+            authority_grants, limit=_MAX_AUTHORITY_GRANTS
+        ) or [],
         "scope": _bounded_strings(scope, limit=16) or [],
         "acceptance_criteria": [
             {"id": f"A{index}", "text": _clip(text, 500), "status": "pending", "evidence_refs": []}
@@ -455,6 +460,7 @@ def active_task_provider_message(state: dict[str, Any] | None) -> dict[str, str]
             "project_title": state.get("project_title"),
             "source_chat_id": state.get("source_chat_id"),
             "policy_preset": state.get("policy_preset"),
+            "authority_grants": deepcopy(state.get("authority_grants") or []),
             "scope": deepcopy(state.get("scope") or []),
             "acceptance_criteria": deepcopy(state.get("acceptance_criteria") or []),
             "checkpoints": deepcopy(state.get("checkpoints") or []),
@@ -463,6 +469,7 @@ def active_task_provider_message(state: dict[str, Any] | None) -> dict[str, str]
         prefix += (
             "MANAGED TASK CONTROL: this is a durable background objective, not a one-turn chat reply. "
             "Continue working without asking the owner again for authority already contained in the agreed scope and central Atlas policy. "
+            "Exact operation IDs in authority_grants were approved with this task: the runtime may promote Ask me to Auto for those operations only; a current Control Deny or disabled capability still blocks dispatch. "
             "Do not create a scheduled task merely to continue this work. Delegate coding to the Coding agent capability when appropriate, monitor it, and continue from its result. "
             "At the end of every inference set task_state_delta.status=active with next_step while anything remains, or status=complete only after every acceptance criterion is passed with runtime evidence and no action is pending. "
             "The runtime, not the owner, will invoke the next Atlas turn while status remains active. "
