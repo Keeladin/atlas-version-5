@@ -58,7 +58,7 @@ def test_managed_checkpoint_tells_model_runtime_will_continue():
     assert "runtime, not the owner, will invoke the next Atlas turn" in message["content"]
 
 
-def test_material_progress_ignores_turn_counter_but_tracks_evidence():
+def test_material_progress_ignores_poll_evidence_but_tracks_task_change():
     state = _state()
     state["runtime"]["managed_turns"] = 1
     first = worker._progress_signature(state)
@@ -72,7 +72,18 @@ def test_material_progress_ignores_turn_counter_but_tracks_evidence():
         evidence_id="evidence-progress",
         detail={"output": {"session_id": "12345678-1234-1234-1234-123456789abc"}},
     )
-    assert worker._progress_signature(observed) != first
+    assert worker._progress_signature(observed) == first
+
+    advanced = merge_semantic_delta(
+        observed,
+        TaskStateDelta(
+            next_step="Run verification",
+            current_checkpoint="Verify",
+            progress=50,
+            status="active",
+        ),
+    )
+    assert worker._progress_signature(advanced) != first
 
 
 def test_provider_incomplete_is_transient_but_runtime_invariant_failure_is_not():
@@ -118,6 +129,66 @@ async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
     assert [item["task_id"] for item in listed["items"]] == [created["task_id"]]
     fetched = await workspace_mcp._get({"task_id": created["task_id"]})
     assert fetched["acceptance_criteria"][0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_repeated_status_polling_still_reaches_no_progress_stall(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setenv("ATLAS_MANAGED_TASK_MAX_NO_PROGRESS", "3")
+    created = await workspace_mcp._create({
+        "objective": "Detect a stuck coding worker",
+        "acceptance_criteria": ["Repeated status reads do not masquerade as progress"],
+    })
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ))).scalar_one()
+        initial = worker._progress_signature(dict(row.active_task_state or {}))
+
+    for index in range(3):
+        async with pg_factory() as session:
+            row = (await session.execute(select(TranscriptRow).where(
+                TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+            ).with_for_update())).scalar_one()
+            state = record_runtime_event(
+                dict(row.active_task_state or {}),
+                operation="coding.agent.get_status",
+                phase="succeeded",
+                evidence_id=f"poll-{index}",
+                detail={"output": {"status": "running", "session_id": "same-session"}},
+            )
+            await TranscriptRepository(session).update_active_task_state(
+                row.id, state, expected_revision=row.active_task_revision
+            )
+            await session.commit()
+        await worker._record_iteration_outcome(
+            run_id,
+            initial_progress_signature=initial,
+            succeeded=True,
+        )
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ))).scalar_one()
+        runtime = row.active_task_state["runtime"]
+        attention = list((await session.execute(
+            select(OwnerAttentionRow).where(OwnerAttentionRow.run_id == run_id)
+        )).scalars())
+    assert runtime["controller_state"] == "stalled"
+    assert runtime["retry_count"] == 3
+    assert any(item.state == "managed_task_stalled" for item in attention)
 
 
 @pytest.mark.asyncio
