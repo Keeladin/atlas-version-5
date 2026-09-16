@@ -1,5 +1,4 @@
 import pytest
-
 from atlas.integrations import coding_mcp_server as coding
 
 
@@ -42,3 +41,35 @@ def test_coding_roots_use_platform_path_separator(tmp_path, monkeypatch):
     roots = coding._allowed_roots()
     assert roots == (first.resolve(), second.resolve())
     assert coding._validate_repo(project) == project.resolve()
+
+
+def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(coding, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(coding, "_validate_repo", lambda value: repo)
+    monkeypatch.setattr(coding, "_codex_binary", lambda: tmp_path / "codex")
+    monkeypatch.setattr(coding, "_alive", lambda pid: False)
+    captured = {}
+
+    class Process:
+        pid = 4321
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        return Process()
+
+    monkeypatch.setattr(coding.subprocess, "Popen", fake_popen)
+    record = {
+        "session_id": "12345678-1234-1234-1234-123456789abc",
+        "repo": str(repo),
+        "runs": [],
+    }
+
+    coding._launch(record, "Implement the task", resume=False)
+
+    command = captured["command"]
+    assert command[1:3] == ["exec", "--json"]
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
