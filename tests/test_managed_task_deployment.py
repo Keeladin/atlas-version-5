@@ -47,6 +47,8 @@ def test_managed_worker_stays_isolated_as_atlas_runtime_identity():
     assert "PartOf=atlas-v5.service" in service
     assert "atlas-coding-agent.socket" in service
     assert "atlas.runtime.managed_tasks_worker" in service
+    assert "ATLAS_MANAGED_TASK_MAX_NO_PROGRESS=3" in service
+    assert "ATLAS_MANAGED_TASK_MAX_TRANSIENT_FAILURES=48" in service
     assert "ReadWritePaths=/var/lib/atlas-v5" in service
     assert "BindReadOnlyPaths=/home/jaco/Projects:/var/lib/atlas-v5/projects" in service
 
