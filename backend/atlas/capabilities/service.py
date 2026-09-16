@@ -64,6 +64,54 @@ class CapabilityRuntime:
         override = (await self.authority_overrides()).get(operation_id)
         return item.model_copy(update={"authority": override}) if override is not None else item
 
+    async def preflight_authority_grants(self, operation_ids: list[str]) -> list[str]:
+        """Validate exact task grants against current central Control policy before task creation."""
+        enabled = await self.enabled_capabilities()
+        overrides = await self.authority_overrides()
+        normalized: list[str] = []
+        problems: list[str] = []
+        for raw in operation_ids[:64]:
+            operation_id = str(raw or "").strip()
+            if not operation_id or operation_id in normalized:
+                continue
+            descriptor = self._operations.get(operation_id)
+            if descriptor is None:
+                problems.append(f"{operation_id}: operation is not registered")
+                continue
+            if descriptor.capability_id not in enabled:
+                problems.append(f"{operation_id}: capability {descriptor.capability_id} is disabled")
+                continue
+            override = overrides.get(operation_id)
+            hard_forbidden = override == AuthorityMode.FORBIDDEN or (
+                override is None and descriptor.authority == AuthorityMode.FORBIDDEN
+            )
+            if hard_forbidden:
+                problems.append(f"{operation_id}: denied by current Atlas Control policy")
+                continue
+            normalized.append(operation_id)
+        if problems:
+            raise ValueError("Managed-task authority preflight failed: " + "; ".join(problems))
+        return normalized
+
+    async def apply_task_grant(
+        self,
+        operation_id: str,
+        resolved_authority: AuthorityMode,
+    ) -> AuthorityMode:
+        """Promote Ask me to Auto for an owner-approved task grant, never a hard Deny."""
+        if resolved_authority != AuthorityMode.APPROVAL_REQUIRED:
+            return resolved_authority
+        descriptor = self._operations.get(operation_id)
+        if descriptor is None:
+            return resolved_authority
+        overrides = await self.authority_overrides()
+        override = overrides.get(operation_id)
+        if override == AuthorityMode.FORBIDDEN:
+            return AuthorityMode.FORBIDDEN
+        if override is None and descriptor.authority == AuthorityMode.FORBIDDEN:
+            return AuthorityMode.FORBIDDEN
+        return AuthorityMode.AUTO
+
     def register(self, descriptor: OperationDescriptor, executor: Executor, *,
             authority_resolver: AuthorityResolver | None = None) -> None:
         self._operations[descriptor.id] = descriptor
