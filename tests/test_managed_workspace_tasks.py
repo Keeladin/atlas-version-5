@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 from sqlalchemy import select
 
@@ -80,6 +78,21 @@ async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
     assert [item["task_id"] for item in listed["items"]] == [created["task_id"]]
     fetched = await workspace_mcp._get({"task_id": created["task_id"]})
     assert fetched["acceptance_criteria"][0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_workspace_cancel_stops_controller(pg_factory, monkeypatch):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    created = await workspace_mcp._create({
+        "objective": "Cancelable task",
+        "acceptance_criteria": ["Never runs after cancellation"],
+    })
+    cancelled = await workspace_mcp._cancel({
+        "task_id": created["task_id"], "reason": "Owner changed direction"
+    })
+    assert cancelled["status"] == "cancelled"
+    assert cancelled["controller_state"] == "cancelled"
+    assert cancelled["next_wake_at"] is None
 
 
 @pytest.mark.asyncio
