@@ -1,7 +1,7 @@
 import pytest
 from atlas.config import Settings
 from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
-from atlas.persistence.models import RunRow, TranscriptRow
+from atlas.persistence.models import OwnerAttentionRow, RunRow, TranscriptRow
 from atlas.runtime import managed_tasks_worker as worker
 from atlas.runtime.task_state import (
     TaskStateDelta,
@@ -56,6 +56,17 @@ def test_managed_checkpoint_tells_model_runtime_will_continue():
     assert "runtime, not the owner, will invoke the next Atlas turn" in message["content"]
 
 
+def test_cancellation_can_recover_coding_session_from_runtime_evidence():
+    state = record_runtime_event(
+        _state(),
+        operation="coding.agent.start_session",
+        phase="succeeded",
+        evidence_id="evidence-coding",
+        detail={"output": {"session_id": "12345678-1234-1234-1234-123456789abc"}},
+    )
+    assert workspace_mcp._coding_session_id(state) == "12345678-1234-1234-1234-123456789abc"
+
+
 @pytest.mark.asyncio
 async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
     monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
@@ -92,6 +103,43 @@ async def test_workspace_cancel_stops_controller(pg_factory, monkeypatch):
     assert cancelled["status"] == "cancelled"
     assert cancelled["controller_state"] == "cancelled"
     assert cancelled["next_wake_at"] is None
+    assert cancelled["cleanup"]["coding_session"] == "not_present"
+
+
+@pytest.mark.asyncio
+async def test_workspace_cancel_interrupts_active_run_without_needs_you(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    monkeypatch.setattr(workspace_mcp, "get_settings", lambda: settings)
+    created = await workspace_mcp._create({
+        "objective": "Cancel while Atlas is working",
+        "acceptance_criteria": ["Cancellation stops the active inference"],
+    })
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    cancelled = await workspace_mcp._cancel({
+        "task_id": created["task_id"], "reason": "Owner cancelled the managed task"
+    })
+
+    assert cancelled["status"] == "cancelled"
+    assert str(run_id) in cancelled["cleanup"]["interrupted_run_ids"]
+    async with pg_factory() as session:
+        run = await session.get(RunRow, run_id)
+        attention = list((await session.execute(
+            select(OwnerAttentionRow).where(OwnerAttentionRow.run_id == run_id)
+        )).scalars())
+    assert run is not None
+    assert run.inference_active is False
+    assert run.inference_status == "interrupted"
+    assert not any(row.state == "interrupted" for row in attention)
 
 
 @pytest.mark.asyncio
