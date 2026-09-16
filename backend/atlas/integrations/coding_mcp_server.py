@@ -107,6 +107,44 @@ def _alive(pid: int | None, expected_start_time: str | None = None) -> bool:
     return expected_start_time is None or identity[1] == str(expected_start_time)
 
 
+def _terminate_process_group(
+    *,
+    pid: int,
+    process_group: int,
+    expected_start_time: str | None,
+    term_grace_seconds: float = 2.0,
+    kill_grace_seconds: float = 1.0,
+) -> None:
+    """Stop the exact Codex process group and verify it cannot keep mutating the repo."""
+    if not _alive(pid, expected_start_time):
+        return
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + max(0.0, term_grace_seconds)
+    while time.monotonic() < deadline:
+        if not _alive(pid, expected_start_time):
+            return
+        time.sleep(0.05)
+
+    if not _alive(pid, expected_start_time):
+        return
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+    deadline = time.monotonic() + max(0.0, kill_grace_seconds)
+    while time.monotonic() < deadline:
+        if not _alive(pid, expected_start_time):
+            return
+        time.sleep(0.05)
+    if _alive(pid, expected_start_time):
+        raise RuntimeError("Codex process group remained alive after SIGKILL")
+
+
 def _events(path: Path) -> list[dict[str, Any]]:
     if not path.is_file():
         return []
@@ -152,7 +190,9 @@ def _event_status(events: list[dict[str, Any]], running: bool) -> str:
             return "completed"
         if event.get("type") in {"turn.failed", "error"}:
             return "failed"
-    return "starting" if not events else "interrupted"
+    # A launched child that is no longer alive must never remain "starting".
+    # Treat a no-output exit as interrupted so Atlas can resume/retry the thread.
+    return "interrupted"
 
 
 def _refresh(record: dict[str, Any]) -> dict[str, Any]:
@@ -394,15 +434,18 @@ def cancel_session(arguments: dict[str, Any]) -> dict[str, Any]:
         running = bool(latest) and _alive(
             latest.get("pid"), latest.get("proc_start_time")
         )
-        if running:
-            try:
-                os.killpg(int(latest.get("process_group") or latest["pid"]), signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+        if running and latest:
+            pid = int(latest["pid"])
+            process_group = int(latest.get("process_group") or pid)
+            _terminate_process_group(
+                pid=pid,
+                process_group=process_group,
+                expected_start_time=latest.get("proc_start_time"),
+            )
             latest["status"] = "cancelled"
             latest["finished_at"] = _now()
             record["status"] = "cancelled"
-        elif record.get("status") in {"running", "starting", "created"}:
+        elif record.get("status") in {"running", "starting", "created", "interrupted"}:
             # The process has already disappeared, but cancellation still closes
             # the non-terminal session without rewriting a completed result.
             record["status"] = "cancelled"
