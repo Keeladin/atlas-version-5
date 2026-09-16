@@ -37,10 +37,10 @@ class TaskStateDelta(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     objective: str | None = Field(default=None, max_length=800)
-    constraints: list[TaskText] | None = Field(default=None, max_length=8)
-    decisions: list[TaskDecision] | None = Field(default=None, max_length=8)
-    findings: list[TaskText] | None = Field(default=None, max_length=8)
-    open_questions: list[TaskText] | None = Field(default=None, max_length=8)
+    constraints: list[TaskText] | None = Field(default=None, max_length=5)
+    decisions: list[TaskDecision] | None = Field(default=None, max_length=5)
+    findings: list[TaskText] | None = Field(default=None, max_length=5)
+    open_questions: list[TaskText] | None = Field(default=None, max_length=5)
     next_step: str | None = Field(default=None, max_length=500)
     progress: int | None = Field(default=None, ge=0, le=100)
     current_checkpoint: str | None = Field(default=None, max_length=120)
@@ -58,7 +58,7 @@ class TaskStateDelta(BaseModel):
 
 
 _MAX_OWNER_REQUEST = 4000
-_MAX_LIST = 8
+_MAX_LIST = 5
 _MAX_EVENTS = 32
 _MAX_WORKING_SET = 16
 _MAX_ERRORS = 8
