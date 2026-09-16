@@ -8,6 +8,7 @@ or a bounded genuine stall.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 from contextlib import suppress
@@ -74,6 +75,22 @@ def _parse_time(value: Any) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _progress_signature(state: dict[str, Any]) -> str:
+    """Hashable material task state; controller/turn bookkeeping is deliberately excluded."""
+    runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
+    material = {
+        "semantic": state.get("semantic") or {},
+        "acceptance_criteria": state.get("acceptance_criteria") or [],
+        "checkpoints": state.get("checkpoints") or [],
+        "progress": state.get("progress") or {},
+        "last_progress_evidence": runtime.get("last_progress_at"),
+        "pending_actions": runtime.get("pending_actions") or [],
+        "errors": runtime.get("errors") or [],
+        "completion_rejected": runtime.get("completion_rejected"),
+    }
+    return json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
 
 
 async def _reconcile_pending(session, row: TranscriptRow) -> dict[str, Any]:
@@ -252,7 +269,7 @@ async def _claim_one(settings: Settings) -> UUID | None:
 async def _record_iteration_outcome(
     run_id: UUID,
     *,
-    initial_revision: int,
+    initial_progress_signature: str,
     succeeded: bool,
 ) -> None:
     factory = get_session_factory()
@@ -281,7 +298,7 @@ async def _record_iteration_outcome(
             await session.commit()
             return
 
-        progressed = row.active_task_revision > initial_revision
+        progressed = _progress_signature(state) != initial_progress_signature
         retries = 0 if progressed and succeeded else int(runtime_state.get("retry_count") or 0) + 1
         if retries >= _max_no_progress():
             state = await _set_controller_state(
@@ -302,7 +319,7 @@ async def _record_iteration_outcome(
 async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
     factory = get_session_factory()
     artifacts = ArtifactStore(settings.artifact_dir)
-    initial_revision = 0
+    initial_progress_signature = ""
     completed = False
     try:
         async with factory() as session:
@@ -314,7 +331,7 @@ async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
             if row is None:
                 raise RuntimeError("Managed task transcript disappeared")
             state = dict(row.active_task_state or {})
-            initial_revision = row.active_task_revision
+            initial_progress_signature = _progress_signature(state)
             if state.get("mode") != "managed" or state.get("status") != "active":
                 await AuthorityStore(session).finish_run(run_id)
                 await session.commit()
@@ -452,7 +469,9 @@ async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
                 ))
         with suppress(Exception):
             await _record_iteration_outcome(
-                run_id, initial_revision=initial_revision, succeeded=completed
+                run_id,
+                initial_progress_signature=initial_progress_signature,
+                succeeded=completed,
             )
 
 
