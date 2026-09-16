@@ -3,6 +3,7 @@ from atlas.config import Settings
 from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
 from atlas.persistence.models import OwnerAttentionRow, RunRow, TranscriptRow
 from atlas.runtime import managed_tasks_worker as worker
+from atlas.runtime.recovery import RunInterrupted, require_live_run
 from atlas.runtime.task_state import (
     TaskStateDelta,
     active_task_provider_message,
@@ -10,6 +11,7 @@ from atlas.runtime.task_state import (
     new_managed_task_state,
     record_runtime_event,
 )
+from atlas.transcript.repository import TranscriptRepository
 from sqlalchemy import select
 
 
@@ -54,6 +56,23 @@ def test_managed_checkpoint_tells_model_runtime_will_continue():
     assert message is not None
     assert "MANAGED TASK CONTROL" in message["content"]
     assert "runtime, not the owner, will invoke the next Atlas turn" in message["content"]
+
+
+def test_material_progress_ignores_turn_counter_but_tracks_evidence():
+    state = _state()
+    state["runtime"]["managed_turns"] = 1
+    first = worker._progress_signature(state)
+    state["runtime"]["managed_turns"] = 2
+    assert worker._progress_signature(state) == first
+
+    observed = record_runtime_event(
+        state,
+        operation="coding.agent.get_status",
+        phase="succeeded",
+        evidence_id="evidence-progress",
+        detail={"output": {"session_id": "12345678-1234-1234-1234-123456789abc"}},
+    )
+    assert worker._progress_signature(observed) != first
 
 
 def test_cancellation_can_recover_coding_session_from_runtime_evidence():
@@ -104,6 +123,39 @@ async def test_workspace_cancel_stops_controller(pg_factory, monkeypatch):
     assert cancelled["controller_state"] == "cancelled"
     assert cancelled["next_wake_at"] is None
     assert cancelled["cleanup"]["coding_session"] == "not_present"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_task_fences_live_run_before_cleanup(pg_factory, monkeypatch, tmp_path):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    created = await workspace_mcp._create({
+        "objective": "Fence cancellation immediately",
+        "acceptance_criteria": ["No effect dispatch after task cancellation"],
+    })
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ).with_for_update())).scalar_one()
+        state = dict(row.active_task_state or {})
+        state["status"] = "cancelled"
+        state.setdefault("runtime", {})["controller_state"] = "cancelled"
+        await TranscriptRepository(session).update_active_task_state(
+            row.id, state, expected_revision=row.active_task_revision
+        )
+        await session.commit()
+
+    async with pg_factory() as session:
+        with pytest.raises(RunInterrupted, match="managed task was cancelled"):
+            await require_live_run(session, run_id)
 
 
 @pytest.mark.asyncio
