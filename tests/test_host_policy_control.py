@@ -36,7 +36,10 @@ def test_status_reports_effective_files_with_rendered_envelope(tmp_path) -> None
     effective = status["policy"]["effective"]
     assert effective["ok"] and '"com.suse.gatekeeper.readlog": ["atlas-tools"]' in effective["rule"]
     assert effective["units"]["desktop-commander.service"] == ["start", "stop", "restart", "reset-failed"]
-    assert status["servers"]["effective"]["ok"] and {s["id"] for s in status["servers"]["effective"]["servers"]} == {"host.operations"}
+    assert status["servers"]["effective"]["ok"]
+    assert {s["id"] for s in status["servers"]["effective"]["servers"]} == {
+        "host.operations", "coding.agent", "workspace.tasks"
+    }
     assert status["pending"] is None and status["last_result"] is None
 
 
