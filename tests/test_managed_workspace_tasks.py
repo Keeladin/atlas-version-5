@@ -75,6 +75,15 @@ def test_material_progress_ignores_turn_counter_but_tracks_evidence():
     assert worker._progress_signature(observed) != first
 
 
+def test_provider_incomplete_is_transient_but_runtime_invariant_failure_is_not():
+    assert worker._is_transient_iteration_failure(
+        RuntimeError("Provider response did not complete; task state was preserved")
+    )
+    assert not worker._is_transient_iteration_failure(
+        RuntimeError("Managed task transcript disappeared")
+    )
+
+
 def test_cancellation_can_recover_coding_session_from_runtime_evidence():
     state = record_runtime_event(
         _state(),
@@ -102,11 +111,88 @@ async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
     assert created["task_id"]
     assert created["project_id"]
     assert created["scope"][0].startswith("Working directory:")
+    assert created["retry_count"] == 0
+    assert created["transient_retry_count"] == 0
 
     listed = await workspace_mcp._list({})
     assert [item["task_id"] for item in listed["items"]] == [created["task_id"]]
     fetched = await workspace_mcp._get({"task_id": created["task_id"]})
     assert fetched["acceptance_criteria"][0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_transient_failure_does_not_consume_no_progress_budget(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setenv("ATLAS_MANAGED_TASK_POLL_SECONDS", "5")
+    created = await workspace_mcp._create({
+        "objective": "Survive a temporary provider outage",
+        "acceptance_criteria": ["Task resumes without owner Continue"],
+    })
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ))).scalar_one()
+        signature = worker._progress_signature(dict(row.active_task_state or {}))
+
+    await worker._record_iteration_outcome(
+        run_id,
+        initial_progress_signature=signature,
+        succeeded=False,
+        failure_kind="transient",
+        failure_message="rate limited",
+    )
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ))).scalar_one()
+        runtime = row.active_task_state["runtime"]
+    assert runtime["controller_state"] == "retrying"
+    assert runtime["retry_count"] == 0
+    assert runtime["transient_retry_count"] == 1
+    assert runtime["next_wake_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_workspace_resume_resets_both_retry_budgets(pg_factory, monkeypatch):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    created = await workspace_mcp._create({
+        "objective": "Reset a genuine stall",
+        "acceptance_criteria": ["Both retry budgets are cleared"],
+    })
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ).with_for_update())).scalar_one()
+        state = dict(row.active_task_state or {})
+        runtime = state.setdefault("runtime", {})
+        runtime.update({
+            "controller_state": "stalled",
+            "retry_count": 3,
+            "transient_retry_count": 48,
+            "next_wake_at": None,
+        })
+        await TranscriptRepository(session).update_active_task_state(
+            row.id, state, expected_revision=row.active_task_revision
+        )
+        await session.commit()
+
+    resumed = await workspace_mcp._resume({"task_id": created["task_id"]})
+    assert resumed["controller_state"] == "ready"
+    assert resumed["retry_count"] == 0
+    assert resumed["transient_retry_count"] == 0
+    assert resumed["next_wake_at"] is not None
 
 
 @pytest.mark.asyncio
