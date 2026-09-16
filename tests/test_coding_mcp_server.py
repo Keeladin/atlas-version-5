@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from atlas.integrations import coding_mcp_server as coding
 
@@ -43,13 +45,22 @@ def test_coding_roots_use_platform_path_separator(tmp_path, monkeypatch):
     assert coding._validate_repo(project) == project.resolve()
 
 
+def test_pid_liveness_is_fenced_by_process_birth(monkeypatch):
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: ("S", "222"))
+    assert coding._alive(4321, "222") is True
+    assert coding._alive(4321, "111") is False
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: ("Z", "222"))
+    assert coding._alive(4321, "222") is False
+
+
 def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setattr(coding, "STATE_DIR", tmp_path / "state")
     monkeypatch.setattr(coding, "_validate_repo", lambda value: repo)
     monkeypatch.setattr(coding, "_codex_binary", lambda: tmp_path / "codex")
-    monkeypatch.setattr(coding, "_alive", lambda pid: False)
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: ("S", "birth-4321"))
+    monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: False)
     captured = {}
 
     class Process:
@@ -73,3 +84,31 @@ def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, mo
     assert command[command.index("--sandbox") + 1] == "workspace-write"
     assert command[command.index("--ask-for-approval") + 1] == "never"
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert record["runs"][0]["proc_start_time"] == "birth-4321"
+
+
+def test_cancel_does_not_rewrite_completed_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(coding, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: None)
+    session_id = "12345678-1234-1234-1234-123456789abc"
+    log_path = tmp_path / "turn.jsonl"
+    log_path.write_text(json.dumps({"type": "turn.completed"}) + "\n")
+    record = {
+        "session_id": session_id,
+        "status": "completed",
+        "runs": [{
+            "turn": 1,
+            "pid": 9876,
+            "process_group": 9876,
+            "proc_start_time": "old-birth",
+            "status": "completed",
+            "log_path": str(log_path),
+            "finished_at": "2026-09-16T00:00:00+00:00",
+        }],
+    }
+    coding._atomic_json(coding._session_path(session_id), record)
+
+    result = coding.cancel_session({"session_id": session_id})
+
+    assert result["status"] == "completed"
+    assert coding._load(session_id)["status"] == "completed"
