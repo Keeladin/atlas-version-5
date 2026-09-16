@@ -62,7 +62,7 @@ fi
 
 for unit in \
   atlas-host-operations.socket atlas-host-operations@.service \
-  atlas-coding-agent.socket atlas-coding-agent@.service \
+  atlas-coding-agent.socket atlas-coding-agent.service \
   atlas-v5-managed-tasks.service; do
   install -o root -g root -m 0644 "${ROOT_DIR}/deployment/systemd/${unit}" "/etc/systemd/system/${unit}"
 done
@@ -96,7 +96,7 @@ if ! runuser -u atlas-v5 -- /usr/bin/python3 "${BIN_DIR}/atlas_mcp_probe.py" "/r
   exit 1
 fi
 if ! runuser -u atlas-v5 -- /usr/bin/python3 "${BIN_DIR}/atlas_mcp_probe.py" "/run/atlas-v5/mcp/coding-agent.sock"; then
-  echo "Coding agent MCP socket did not answer; check journalctl -u 'atlas-coding-agent@*'." >&2
+  echo "Coding agent MCP socket did not answer; check journalctl -u atlas-coding-agent.service." >&2
   exit 1
 fi
 
