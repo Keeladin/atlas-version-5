@@ -58,11 +58,10 @@ effect = "execute"
 id = "coding.agent"
 family = "Coding agent"
 description = "Direct Codex CLI implementation and review sessions. Atlas Control resolves authority before invoking this capability; the bridge itself does not ask for permission."
-transport = "stdio"
-command = "/opt/atlas-v5/venv/bin/python"
-args = ["-m", "atlas.integrations.coding_mcp_server"]
+transport = "socket"
+path = "/run/atlas-v5/mcp/coding-agent.sock"
 trust = "external"
-timeout_seconds = 30
+timeout_seconds = 60
 tools = [
   "start_session", "send_turn", "get_status", "get_result", "resume_session", "cancel_session",
 ]
@@ -78,4 +77,26 @@ effect = "read"
 [servers.tool.resume_session]
 effect = "execute"
 [servers.tool.cancel_session]
-effect = "execute"
+effect = "delete"
+
+[[servers]]
+id = "workspace.tasks"
+family = "Workspace tasks"
+description = "Create and inspect durable Atlas-managed execution contracts. Atlas continues active tasks automatically; Control remains the authority source for every delegated capability."
+transport = "stdio"
+command = "/opt/atlas-v5/venv/bin/python"
+args = ["-m", "atlas.integrations.workspace_tasks_mcp_server"]
+trust = "internal"
+timeout_seconds = 45
+tools = ["create", "list", "get", "cancel", "resume"]
+
+[servers.tool.create]
+effect = "create"
+[servers.tool.list]
+effect = "read"
+[servers.tool.get]
+effect = "read"
+[servers.tool.cancel]
+effect = "delete"
+[servers.tool.resume]
+effect = "update"
