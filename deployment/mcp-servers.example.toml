@@ -1,6 +1,6 @@
-# Atlas MCP capability surfaces. Owner authority lives only in Control /
-# operation_authority. MCP configuration describes transport, tools and effects;
-# it is deliberately not a second policy engine.
+# Atlas MCP capability surfaces. Owner authority lives in Control / operation_authority.
+# MCP configuration describes transport, tools and effects; it is deliberately not a
+# second policy engine.
 
 [[servers]]
 id = "host.operations"
