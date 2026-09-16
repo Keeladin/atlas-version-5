@@ -55,12 +55,14 @@ async def maintain_heartbeat(factory, run_id):
             await task
 
 
-async def _is_managed_task(session, transcript_id) -> bool:
+async def _managed_task_status(session, transcript_id) -> str | None:
     if transcript_id is None:
-        return False
+        return None
     row = await session.get(TranscriptRow, transcript_id)
     state = row.active_task_state if row is not None else None
-    return isinstance(state, dict) and state.get("mode") == "managed" and state.get("status") == "active"
+    if not isinstance(state, dict) or state.get("mode") != "managed":
+        return None
+    return str(state.get("status") or "active")
 
 
 async def interrupt_run(factory, artifacts, run_id, *, reason: str) -> None:
@@ -69,7 +71,9 @@ async def interrupt_run(factory, artifacts, run_id, *, reason: str) -> None:
         run = await store._lock_run(run_id)
         if run is None or run.inference_status not in {"running", "queued"}:
             return
-        managed_task = await _is_managed_task(session, run.transcript_id)
+        managed_status = await _managed_task_status(session, run.transcript_id)
+        managed_task = managed_status is not None
+        automatic_recovery = managed_status == "active"
         run.inference_active = False
         run.inference_status = "interrupted"
         await session.flush()
@@ -113,16 +117,16 @@ async def interrupt_run(factory, artifacts, run_id, *, reason: str) -> None:
                     "run_id": str(run_id),
                     "reason": reason,
                     "managed_task": managed_task,
-                    "recovery": "automatic" if managed_task else "owner_turn",
+                    "recovery": "automatic" if automatic_recovery else "none" if managed_task else "owner_turn",
                 },
                 run_id=run_id,
                 checkpoint=False,
                 trust="internal",
             )
 
-        # A managed task owns its own continuity. Provider/rate-limit/runtime
-        # interruption is therefore retry state, not an owner decision. Ordinary
-        # conversations keep the existing Needs You behavior.
+        # Managed-task interruption never asks the owner to type Continue. An
+        # active managed task retries automatically; a cancelled/terminal one
+        # simply stays stopped. Ordinary conversations keep Needs You behavior.
         if not managed_task:
             existing = (
                 await session.execute(
@@ -146,16 +150,13 @@ async def interrupt_run(factory, artifacts, run_id, *, reason: str) -> None:
                         },
                     )
                 )
-        await append_run_event(
-            session,
-            run_id,
-            "interrupted",
-            {
-                "message": reason,
-                "managed_task": managed_task,
-                "recovery": "automatic" if managed_task else "owner_turn",
-            },
-        )
+        event_payload = {"message": reason}
+        if managed_task:
+            event_payload.update({
+                "managed_task": True,
+                "recovery": "automatic" if automatic_recovery else "none",
+            })
+        await append_run_event(session, run_id, "interrupted", event_payload)
         await session.commit()
 
 
