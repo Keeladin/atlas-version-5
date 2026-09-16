@@ -1,0 +1,37 @@
+[Unit]
+Description=Atlas V5 managed workspace task worker
+Documentation=file:///opt/atlas-v5/app/docs/28-managed-workspace-tasks.md
+After=network-online.target postgresql.service atlas-v5.service atlas-coding-agent.socket
+Wants=network-online.target atlas-coding-agent.socket
+Requires=postgresql.service
+PartOf=atlas-v5.service
+
+[Service]
+Type=simple
+User=atlas-v5
+Group=atlas-v5
+WorkingDirectory=/opt/atlas-v5/app
+EnvironmentFile=/etc/atlas-v5/config/runtime.env
+Environment=ATLAS_MANAGED_TASK_POLL_SECONDS=15
+Environment=ATLAS_MANAGED_TASK_MAX_NO_PROGRESS=3
+ExecStart=/opt/atlas-v5/venv/bin/python -m atlas.runtime.managed_tasks_worker
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+ReadWritePaths=/var/lib/atlas-v5
+BindPaths=/home/jaco/Workspace:/var/lib/atlas-v5/workspace
+BindReadOnlyPaths=/home/jaco/Projects:/var/lib/atlas-v5/projects
+ReadOnlyPaths=/etc/atlas-v5
+
+[Install]
+WantedBy=atlas-v5.service
