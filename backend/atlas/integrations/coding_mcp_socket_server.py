@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import subprocess
 from typing import Any, BinaryIO
@@ -103,6 +104,9 @@ def _systemd_listener() -> socket.socket:
 
 def main() -> int:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # The persistent MCP service intentionally does not retain Popen objects.
+    # Auto-reap completed Codex children so a zombie cannot look like a running turn.
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
     listener = _systemd_listener()
     while True:
         connection, _ = listener.accept()
