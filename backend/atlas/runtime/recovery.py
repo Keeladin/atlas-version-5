@@ -19,6 +19,15 @@ async def require_live_run(session, run_id):
     run = await AuthorityStore(session)._lock_run(run_id)
     if run is None or not run.inference_active:
         raise RunInterrupted("This inference run no longer owns execution; durable task state was retained")
+    if run.transcript_id is not None:
+        row = await session.get(TranscriptRow, run.transcript_id)
+        state = row.active_task_state if row is not None else None
+        if (
+            isinstance(state, dict)
+            and state.get("mode") == "managed"
+            and state.get("status") == "cancelled"
+        ):
+            raise RunInterrupted("This managed task was cancelled; no further effects may be dispatched")
     return run
 
 
