@@ -13,10 +13,11 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 from uuid import uuid4
 
 PROTOCOL_VERSION = "2025-06-18"
@@ -71,7 +72,7 @@ def _load(session_id: str) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise ValueError(f"Unknown coding session: {session_id}") from exc
     if not isinstance(value, dict):
-        raise ValueError(f"Coding session state is malformed: {session_id}")
+        raise TypeError(f"Coding session state is malformed: {session_id}")
     return value
 
 
@@ -217,7 +218,10 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
         str(_codex_binary()),
         "exec",
         "--json",
-        "--dangerously-bypass-approvals-and-sandbox",
+        "--sandbox",
+        "workspace-write",
+        "--ask-for-approval",
+        "never",
         "-C",
         str(repo),
     ]
@@ -461,7 +465,7 @@ def _handle(payload: dict[str, Any]) -> None:
             return
         try:
             result = handler(arguments)
-        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
             _reply(request_id, result=_tool_result({"error": str(exc), "type": type(exc).__name__}, error=True))
             return
         _reply(request_id, result=_tool_result(result))
