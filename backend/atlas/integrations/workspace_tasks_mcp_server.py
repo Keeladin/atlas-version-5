@@ -69,6 +69,7 @@ def _state_projection(row: TranscriptRow) -> dict[str, Any]:
         "controller_state": runtime.get("controller_state", "ready"),
         "objective": semantic.get("objective"),
         "scope": state.get("scope") or [],
+        "authority_grants": state.get("authority_grants") or [],
         "acceptance_criteria": state.get("acceptance_criteria") or [],
         "checkpoints": state.get("checkpoints") or [],
         "progress": progress,
@@ -126,6 +127,7 @@ async def _create(arguments: dict[str, Any]) -> dict[str, Any]:
     acceptance = _strings(arguments.get("acceptance_criteria"), maximum=32)
     scope = _strings(arguments.get("scope"), maximum=16)
     checkpoints = _strings(arguments.get("checkpoints"), maximum=32)
+    authority_grants = _strings(arguments.get("authority_grants"), maximum=64)
     workspace_path = str(arguments.get("workspace_path") or "").strip()
     if workspace_path:
         scope_line = f"Working directory: {workspace_path}"
@@ -156,6 +158,7 @@ async def _create(arguments: dict[str, Any]) -> dict[str, Any]:
             policy_preset=policy_preset,
             project_id=project_id,
             handoff=handoff,
+            authority_grants=authority_grants,
         )
         state["workspace_path"] = workspace_path or None
         runtime = state.setdefault("runtime", {})
@@ -315,11 +318,12 @@ async def _resume(arguments: dict[str, Any]) -> dict[str, Any]:
 
 TOOLS: dict[str, dict[str, Any]] = {
     "create": {
-        "description": "Create a durable managed task after the owner has agreed the objective, scope and acceptance criteria. The runtime will continue it without repeated owner prompts until completion, a true policy boundary, or a genuine stall.",
+        "description": "Create a durable managed task only after the owner has agreed the objective, scope, acceptance criteria and execution authority. Before creating it, discover the exact operations needed and include them in authority_grants; Atlas runtime preflights those grants so approved work can continue without repeated permission prompts.",
         "inputSchema": {"type": "object", "properties": {
             "title": {"type": "string", "maxLength": 160},
             "objective": {"type": "string", "minLength": 1, "maxLength": 800},
             "scope": {"type": "array", "items": {"type": "string"}, "maxItems": 16},
+            "authority_grants": {"type": "array", "items": {"type": "string", "minLength": 1}, "maxItems": 64},
             "acceptance_criteria": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 32},
             "checkpoints": {"type": "array", "items": {"type": "string"}, "maxItems": 32},
             "workspace_path": {"type": "string", "maxLength": 1000},
@@ -338,7 +342,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "annotations": {"readOnlyHint": True, "destructiveHint": False},
     },
     "get": {
-        "description": "Read one managed task by task ID, including acceptance, checkpoint and controller state.",
+        "description": "Read one managed task by task ID, including acceptance, authority grants, checkpoint and controller state.",
         "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}},
             "required": ["task_id"], "additionalProperties": False},
         "annotations": {"readOnlyHint": True, "destructiveHint": False},
