@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from atlas.integrations import coding_mcp_server as coding
