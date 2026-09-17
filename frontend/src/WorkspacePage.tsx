@@ -9,6 +9,18 @@ function timestamp(value: string | null) {
 
 function label(value: string) { return value.replaceAll('_', ' ') }
 function errorMessage(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
+function activityAge(value: string | null) {
+  if (!value) return 'Not recorded'
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000))
+  if (seconds < 5) return 'just now'
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  return timestamp(value)
+}
+function activityTargets(targets: Record<string, string>) {
+  return Object.entries(targets).map(([key, value]) => `${label(key)}: ${value}`).join(' · ')
+}
 
 export function WorkspaceTaskDetails({ task, busy, onCancel, onResume }: {
   task: WorkspaceTask; busy: boolean; onCancel: () => void; onResume: () => void
@@ -47,6 +59,14 @@ export function WorkspaceTaskDetails({ task, busy, onCancel, onResume }: {
       </section>
       <section className="control-card workspace-execution" aria-label="Execution and progress">
         <div className="workspace-task-heading"><h3>Execution</h3><span className="workspace-status">{label(task.controller_state)}</span></div>
+        {task.live ? <section className="workspace-live" aria-label="Live task activity">
+          <div className="workspace-live-head"><div><span className={`workspace-live-dot ${task.live.worker_state}`} aria-hidden="true" /><strong>Live activity</strong></div><small>Last activity {activityAge(task.live.last_activity_at)}</small></div>
+          <p className="workspace-current-activity">{task.live.current_activity}</p>
+          <dl className="workspace-live-meta"><div><dt>Worker</dt><dd>{label(task.live.worker_state)}</dd></div><div><dt>Executor</dt><dd>{task.live.executor}</dd></div><div><dt>Checkpoint</dt><dd>{checkpoint?.text ?? task.progress.current_checkpoint ?? 'Not selected'}</dd></div><div><dt>Heartbeat</dt><dd>{activityAge(task.live.heartbeat_at)}</dd></div></dl>
+          <div className="workspace-activity-feed">
+            {task.live.recent_activity.length ? task.live.recent_activity.map((item) => <div className="workspace-activity-row" key={item.evidence_id}><time dateTime={item.timestamp ?? undefined}>{item.timestamp ? new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'}</time><div><div className="workspace-activity-title"><strong>{item.summary}</strong><span>{item.executor}</span></div>{item.detail ? <p>{item.detail}</p> : null}{Object.keys(item.targets).length ? <small>{activityTargets(item.targets)}</small> : <small>{item.operation} · {label(item.phase)}</small>}</div></div>) : <p className="workspace-activity-empty">No durable activity events recorded yet.</p>}
+          </div>
+        </section> : null}
         <div className="workspace-progress"><strong>{task.progress.percent == null ? 'Progress not reported' : `${task.progress.percent}%`}</strong><progress aria-label="Task progress" max={100} value={task.progress.percent} /></div>
         {task.findings.length ? <ul className="workspace-text-list">{task.findings.map((finding, index) => <li key={index}>{finding}</li>)}</ul> : null}
         <h3>Next step</h3><p className="workspace-prose">{task.next_step || (active ? 'No next step recorded.' : 'No further work scheduled.')}</p>
@@ -106,6 +126,17 @@ export function WorkspacePage() {
     })
     return () => { current = false }
   }, [selectedId, taskKey])
+
+  useEffect(() => {
+    if (!selectedId || actionBusy) return
+    let current = true
+    const timer = window.setInterval(() => {
+      void getWorkspaceTask(selectedId).then((result) => {
+        if (current) setTaskState({ key: taskKey, result, error: null })
+      }).catch(() => undefined)
+    }, 5000)
+    return () => { current = false; window.clearInterval(timer) }
+  }, [selectedId, taskKey, actionBusy])
 
   async function lifecycle(kind: 'cancel' | 'resume') {
     if (!task || actionLock.current) return

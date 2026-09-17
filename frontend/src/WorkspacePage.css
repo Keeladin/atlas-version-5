@@ -45,6 +45,27 @@
 .workspace-evidence code, .workspace-actions code { font-size: 11px; }
 .workspace-advanced { border-top: 1px solid var(--border-muted); margin-top: 14px; padding-top: 14px; font-size: 12px; }
 .workspace-advanced summary { cursor: pointer; color: var(--fg-muted); }
+.workspace-live { margin: 16px 0 20px; border: 1px solid var(--border-muted); border-radius: 10px; padding: 14px; background: color-mix(in srgb, var(--bg-default) 88%, var(--accent) 12%); }
+.workspace-live-head, .workspace-live-head > div, .workspace-activity-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.workspace-live-head > div { justify-content: flex-start; }
+.workspace-live-head small, .workspace-live-meta dt, .workspace-activity-row time, .workspace-activity-row small { color: var(--fg-muted); font-size: 11px; }
+.workspace-live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-muted); box-shadow: 0 0 0 3px #ffffff0a; }
+.workspace-live-dot.active, .workspace-live-dot.running { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+.workspace-live-dot.retrying { background: var(--attention); }
+.workspace-live-dot.stalled, .workspace-live-dot.failed { background: var(--bad); }
+.workspace-current-activity { margin: 12px 0; font-size: 13px; line-height: 1.5; }
+.workspace-live-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 0 0 12px; }
+.workspace-live-meta div { display: grid; gap: 3px; }
+.workspace-live-meta dd { margin: 0; text-align: left; font-size: 12px; overflow-wrap: anywhere; }
+.workspace-activity-feed { max-height: 320px; overflow-y: auto; border-top: 1px solid var(--border-muted); }
+.workspace-activity-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-muted); }
+.workspace-activity-row > div { min-width: 0; }
+.workspace-activity-title { align-items: baseline; }
+.workspace-activity-title strong { font-size: 12px; }
+.workspace-activity-title span { color: var(--fg-muted); font-size: 10px; white-space: nowrap; }
+.workspace-activity-row p { margin: 5px 0 0; color: var(--fg-muted); font-size: 11px; line-height: 1.45; }
+.workspace-activity-row small { display: block; margin-top: 5px; overflow-wrap: anywhere; }
+.workspace-activity-empty { margin: 12px 0 0; color: var(--fg-muted); font-size: 12px; }
 .workspace-progress { margin: 20px 0; display: grid; gap: 10px; }
 .workspace-progress strong { font-size: 28px; }
 .workspace-progress progress { width: 100%; height: 9px; accent-color: var(--accent); }

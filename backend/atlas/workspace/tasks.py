@@ -20,7 +20,13 @@ from atlas.artifacts.store import ArtifactStore
 from atlas.config import get_settings
 from atlas.db import get_session_factory
 from atlas.integrations.mcp_socket import MCPSocketClient
-from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow, TranscriptRow
+from atlas.persistence.models import (
+    ActionRow,
+    OwnerAttentionRow,
+    RunRow,
+    TranscriptRow,
+    TurnRow,
+)
 from atlas.runtime.recovery import interrupt_run
 from atlas.runtime.task_state import new_managed_task_state
 from atlas.transcript.repository import TranscriptRepository
@@ -47,6 +53,130 @@ async def _resolve_stall_attention(session, transcript_id: UUID) -> None:
         OwnerAttentionRow.state == "managed_task_stalled",
         OwnerAttentionRow.resolved.is_(False),
     ).values(resolved=True, resolved_at=datetime.now(UTC)))
+
+
+def _activity_executor(operation: str) -> str:
+    if operation.startswith("coding.agent."):
+        return "Codex"
+    if operation in {"task_state_delta", "provider.openai"}:
+        return "Atlas"
+    return "Atlas tool"
+
+
+def _activity_summary(operation: str, phase: str, detail: dict[str, Any] | None = None) -> str:
+    labels = {
+        "coding.agent.start_session": "Started Codex work",
+        "coding.agent.get_status": "Checked Codex progress",
+        "coding.agent.get_result": "Read Codex result",
+        "coding.agent.cancel_session": "Stopped Codex session",
+        "storage.projects.status": "Checked repository status",
+        "storage.projects.diff": "Inspected repository changes",
+        "evidence.task.read": "Read task evidence",
+        "task_state_delta": "Updated managed-task state",
+    }
+    if operation == "task_state_delta" and isinstance(detail, dict):
+        delta = detail.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("next_step"), str) and delta["next_step"].strip():
+            return f"Updated plan: {_clip_activity(delta['next_step'], 180)}"
+    return labels.get(operation, operation.replace(".", " · ").replace("_", " ")) + f" · {phase.replace('_', ' ')}"
+
+
+def _clip_activity(value: Any, limit: int = 180) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+async def _live_projection(session, row: TranscriptRow) -> dict[str, Any]:
+    state = dict(row.active_task_state or {})
+    semantic = state.get("semantic") or {}
+    runtime = state.get("runtime") or {}
+    progress = state.get("progress") or {}
+    safe_events = {
+        str(item.get("evidence_id")): item
+        for item in runtime.get("recent_events") or []
+        if isinstance(item, dict) and item.get("evidence_id")
+    }
+    turns = list((await session.execute(
+        select(TurnRow).where(TurnRow.transcript_id == row.id, TurnRow.deleted_at.is_(None))
+        .order_by(TurnRow.sequence.desc()).limit(48)
+    )).scalars())
+    activity: list[dict[str, Any]] = []
+    for turn in turns:
+        if len(activity) >= 12:
+            break
+        if turn.actor == "atlas":
+            text = " ".join(
+                str(block.get("text") or "")
+                for block in (turn.blocks or [])
+                if isinstance(block, dict) and block.get("type") == "text"
+            ).strip()
+            if text:
+                activity.append({
+                    "timestamp": turn.created_at.isoformat() if turn.created_at else None,
+                    "executor": "Atlas",
+                    "operation": "managed_turn",
+                    "phase": "completed",
+                    "summary": "Atlas completed a managed turn",
+                    "detail": _clip_activity(text),
+                    "evidence_id": str(turn.id),
+                    "targets": {},
+                })
+            continue
+        if turn.actor != "tool":
+            continue
+        block = next((
+            item for item in (turn.blocks or [])
+            if isinstance(item, dict) and item.get("type") == "tool_observation"
+        ), None)
+        if not isinstance(block, dict):
+            continue
+        operation = str(block.get("operation") or "tool")
+        phase = str(block.get("phase") or "observed")
+        if operation == "provider.openai":
+            continue
+        detail = block.get("detail") if isinstance(block.get("detail"), dict) else {}
+        safe = safe_events.get(str(turn.id), {})
+        activity.append({
+            "timestamp": turn.created_at.isoformat() if turn.created_at else None,
+            "executor": _activity_executor(operation),
+            "operation": operation,
+            "phase": phase,
+            "summary": _activity_summary(operation, phase, detail),
+            "detail": None,
+            "evidence_id": str(turn.id),
+            "targets": safe.get("targets") if isinstance(safe.get("targets"), dict) else {},
+        })
+
+    latest_run = (await session.execute(
+        select(RunRow).where(RunRow.transcript_id == row.id, RunRow.kind == "background")
+        .order_by(RunRow.created_at.desc()).limit(1)
+    )).scalar_one_or_none()
+    controller_state = str(runtime.get("controller_state") or "ready")
+    worker_state = "active" if latest_run is not None and latest_run.inference_active else controller_state
+    last_activity_at = next((item["timestamp"] for item in activity if item.get("timestamp")), None)
+    if last_activity_at is None and latest_run is not None and latest_run.heartbeat_at is not None:
+        last_activity_at = latest_run.heartbeat_at.isoformat()
+    current_activity = str(semantic.get("next_step") or "").strip()
+    if controller_state == "waiting_for_owner":
+        current_activity = "Waiting for an owner decision."
+    elif controller_state == "stalled":
+        current_activity = current_activity or "Task is stalled and needs owner intervention."
+    elif controller_state == "retrying":
+        current_activity = current_activity or "Retrying the current managed step."
+    elif worker_state == "active":
+        current_activity = current_activity or "Atlas is executing the current managed turn."
+    else:
+        current_activity = current_activity or "Queued for the next managed turn."
+    executor = "Atlas + Codex" if str(progress.get("coding_session_id") or "").strip() else "Atlas"
+    return {
+        "worker_state": worker_state,
+        "current_activity": current_activity,
+        "executor": executor,
+        "last_activity_at": last_activity_at,
+        "heartbeat_at": latest_run.heartbeat_at.isoformat() if latest_run is not None and latest_run.heartbeat_at else None,
+        "run_id": str(latest_run.id) if latest_run is not None else None,
+        "recent_activity": activity,
+    }
 
 
 def _state_projection(row: TranscriptRow) -> dict[str, Any]:
@@ -241,7 +371,10 @@ async def get_task(arguments: dict[str, Any]) -> dict[str, Any]:
     task_id = str(arguments.get("task_id") or "").strip()
     factory = get_session_factory()
     async with factory() as session:
-        return _state_projection(await _row_for_task(session, task_id))
+        row = await _row_for_task(session, task_id)
+        result = _state_projection(row)
+        result["live"] = await _live_projection(session, row)
+        return result
 
 
 async def cancel_task(arguments: dict[str, Any]) -> dict[str, Any]:

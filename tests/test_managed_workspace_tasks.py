@@ -1,8 +1,12 @@
+from uuid import UUID
+
 import pytest
 from atlas.actions.authority import AuthorityStore, ProposalIntegrityError
+from atlas.artifacts.store import ArtifactStore
 from atlas.config import Settings
 from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow, TranscriptRow
 from atlas.runtime import managed_tasks_worker as worker
+from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import RunInterrupted, require_live_run
 from atlas.runtime.task_state import (
     TaskStateDelta,
@@ -130,6 +134,36 @@ async def test_workspace_tasks_persists_and_lists_task(pg_factory, monkeypatch):
     assert [item["task_id"] for item in listed["items"]] == [created["task_id"]]
     fetched = await workspace_tasks.get_task({"task_id": created["task_id"]})
     assert fetched["acceptance_criteria"][0]["status"] == "pending"
+    assert fetched["live"]["worker_state"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_workspace_live_projection_uses_durable_task_evidence(pg_factory, monkeypatch, tmp_path):
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
+    created = await workspace_tasks.create_task({
+        "objective": "Expose live task activity",
+        "acceptance_criteria": ["Owner can see durable activity"],
+    })
+    transcript_id = created["transcript_id"]
+    async with pg_factory() as session:
+        evidence_id, _ = await EvidenceStore(session, ArtifactStore(tmp_path / "artifacts")).record(
+            UUID(transcript_id),
+            operation="storage.projects.status",
+            phase="succeeded",
+            detail={"output": {"path": "/home/jaco/Projects/Atlas version 5"}},
+            checkpoint=True,
+            trust="internal",
+        )
+        await session.commit()
+
+    fetched = await workspace_tasks.get_task({"task_id": created["task_id"]})
+    live = fetched["live"]
+    assert live["current_activity"]
+    assert live["last_activity_at"] is not None
+    assert live["recent_activity"][0]["evidence_id"] == str(evidence_id)
+    assert live["recent_activity"][0]["operation"] == "storage.projects.status"
+    assert live["recent_activity"][0]["summary"].startswith("Checked repository status")
+    assert live["recent_activity"][0]["targets"]["path"] == "/home/jaco/Projects/Atlas version 5"
 
 
 @pytest.mark.asyncio

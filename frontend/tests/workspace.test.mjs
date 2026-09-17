@@ -61,13 +61,15 @@ const task = {
   authority_grants: ['coding.agent.start_session'], acceptance_criteria: [{ id: 'A1', text: 'Checks pass', status: 'passed', evidence_refs: ['evidence-1'] }],
   checkpoints: [{ id: 'C1', text: 'Verify changes', status: 'pending' }], progress: { percent: 50, current_checkpoint: 'C1' },
   next_step: 'Run verification', findings: ['Implementation ready'], pending_actions: [{ action_id: 'action-1', operation: 'test.operation', phase: 'uncertain' }],
-  retry_count: 3, transient_retry_count: 4, next_wake_at: null, created_at: null, updated_at: null,
+  retry_count: 3, transient_retry_count: 4, next_wake_at: null,
+  live: { worker_state: 'active', current_activity: 'Inspect repository evidence', executor: 'Atlas + Codex', last_activity_at: null, heartbeat_at: null, run_id: 'run-1', recent_activity: [{ timestamp: null, executor: 'Atlas tool', operation: 'storage.projects.status', phase: 'succeeded', summary: 'Checked repository status', detail: null, evidence_id: 'live-evidence-1', targets: { path: '/repo' } }] },
+  created_at: null, updated_at: null,
 }
 const details = (change = {}) => renderToStaticMarkup(React.createElement(WorkspaceTaskDetails, { task: { ...task, ...change }, busy: false, onCancel() {}, onResume() {} }))
 
 test('selected task renders contract and execution, evidence, IDs and advanced read-only grants', () => {
   const html = details()
-  for (const text of ['project-identity', 'task-identity', 'Only this worktree', 'evidence-1', 'passed', '50%', 'Verify changes', 'Run verification', 'No-progress retries', 'Transient retries', 'action-1', 'uncertain']) assert.ok(html.includes(text), text)
+  for (const text of ['project-identity', 'task-identity', 'Only this worktree', 'evidence-1', 'passed', '50%', 'Verify changes', 'Run verification', 'No-progress retries', 'Transient retries', 'action-1', 'uncertain', 'Live activity', 'Inspect repository evidence', 'Atlas + Codex', 'Checked repository status', 'path: /repo']) assert.ok(html.includes(text), text)
   assert.match(html, /<details[^>]*>.*coding.agent.start_session.*<\/details>/)
   assert.match(html, />Resume<\/button>/)
   assert.match(html, />Cancel task<\/button>/)

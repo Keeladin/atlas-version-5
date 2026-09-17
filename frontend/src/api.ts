@@ -949,6 +949,15 @@ export type WorkspaceTask = {
   retry_count: number
   transient_retry_count: number
   next_wake_at: string | null
+  live?: {
+    worker_state: string
+    current_activity: string
+    executor: string
+    last_activity_at: string | null
+    heartbeat_at: string | null
+    run_id: string | null
+    recent_activity: { timestamp: string | null; executor: string; operation: string; phase: string; summary: string; detail: string | null; evidence_id: string; targets: Record<string, string> }[]
+  }
   created_at: string | null
   updated_at: string | null
   cleanup?: { coding_session_id: string | null; coding_session: string; cancelled_action_ids: string[]; interrupted_run_ids: string[]; warnings: string[] }
