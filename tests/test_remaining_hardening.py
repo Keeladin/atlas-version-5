@@ -164,6 +164,53 @@ async def test_native_web_is_checked_again_on_each_provider_request():
     assert await provider._current_tools(controls=False) == []
 
 
+def test_project_capability_normalizes_configured_display_roots_only(tmp_path):
+    from atlas.capabilities.factory import _normalize_project_display_path
+    from atlas.config import Settings
+
+    settings = Settings(
+        projects_root=tmp_path / "projects",
+        projects_display_root="/home/jaco/Projects",
+        workspace_display_root="/home/jaco/Workspace",
+    )
+    assert _normalize_project_display_path("Atlas version 5", settings) == "Atlas version 5"
+    assert _normalize_project_display_path("/home/jaco/Projects/Atlas version 5", settings) == "Atlas version 5"
+    assert _normalize_project_display_path("/home/jaco/Workspace/Projects/atlas-remediation/atlas-directive-000013.json", settings) == "atlas-remediation/atlas-directive-000013.json"
+    assert _normalize_project_display_path("/home/jaco/Other/secret", settings) == "/home/jaco/Other/secret"
+
+
+@pytest.mark.asyncio
+async def test_project_capability_accepts_legacy_display_alias_but_keeps_root_boundary(tmp_path, monkeypatch):
+    from atlas.capabilities.factory import build_capability_runtime
+    from atlas.config import Settings
+    from atlas.registry.service import build_phase0_registry
+
+    projects = tmp_path / "projects"
+    repo = projects / "Demo"
+    repo.mkdir(parents=True)
+    (repo / "README.md").write_text("demo\n")
+    import asyncio
+    import subprocess
+    await asyncio.to_thread(subprocess.run, ["git", "init", "-q", str(repo)], check=True)
+    settings = Settings(
+        projects_root=projects,
+        projects_display_root="/home/jaco/Projects",
+        workspace_display_root="/home/jaco/Workspace",
+        project_checkpoint_root=tmp_path / "checkpoints",
+        openai_api_key_file=None,
+        github_token_file=None,
+    )
+    runtime = build_capability_runtime(settings, build_phase0_registry(settings))
+    runtime.policy_reader = None
+
+    status = await runtime.call("storage.projects.status", {"project": "/home/jaco/Workspace/Projects/Demo"})
+    assert status.status == "succeeded"
+    acquired = await runtime.call("storage.projects.acquire", {"path": "/home/jaco/Projects/Demo/README.md"})
+    assert acquired.status == "succeeded"
+    escaped = await runtime.call("storage.projects.acquire", {"path": "/home/jaco/Other/README.md"})
+    assert escaped.status == "failed"
+
+
 @pytest.mark.asyncio
 async def test_production_factory_stages_mutations_and_denies_unknown_policy(tmp_path, monkeypatch):
     from atlas.capabilities.factory import build_capability_runtime

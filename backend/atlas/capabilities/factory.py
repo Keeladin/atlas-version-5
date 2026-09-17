@@ -25,6 +25,30 @@ from atlas.storage.changes import ProjectChanges
 from .service import CapabilityRuntime
 
 
+def _normalize_project_display_path(value: object, settings: Settings) -> str:
+    """Translate configured owner-facing project display paths to runtime-relative paths.
+
+    The storage service remains the authority boundary: unknown absolute paths are
+    returned unchanged and are rejected there.  The legacy Workspace/Projects
+    display alias is retained only for durable task/evidence references created
+    before Projects became the canonical owner project root.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return text
+    roots = [
+        str(settings.projects_display_root).rstrip("/"),
+        f"{str(settings.workspace_display_root).rstrip('/')}/Projects",
+    ]
+    for root in dict.fromkeys(item for item in roots if item):
+        if text == root:
+            return ""
+        prefix = root + "/"
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
 def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) -> CapabilityRuntime:
     runtime = CapabilityRuntime(registry.operations())
     local = LocalStorageService(settings.workspace_root, settings.workspace_display_root)
@@ -143,42 +167,43 @@ def build_capability_runtime(settings: Settings, registry: EnvironmentRegistry) 
     runtime.register_executor("notifications.emit", notifications_emit)
 
     projects = ProjectFolderService(settings.projects_root, settings.projects_display_root, settings.project_checkpoint_root)
+    project_path = lambda value: _normalize_project_display_path(value, settings)
     runtime.register_executor(
         "storage.projects.list",
-        lambda arguments: projects.list_directory(str(arguments.get("path") or "")),
+        lambda arguments: projects.list_directory(project_path(arguments.get("path"))),
     )
     runtime.register_executor(
         "storage.projects.acquire",
         lambda arguments: projects.acquire_file(
-            str(arguments.get("path") or ""),
+            project_path(arguments.get("path")),
             start_line=int(arguments["start_line"]) if arguments.get("start_line") is not None else None,
             max_lines=int(arguments["max_lines"]) if arguments.get("max_lines") is not None else None,
         ),
     )
-    runtime.register_executor("storage.projects.status", lambda arguments: projects.git_status(str(arguments.get("project") or "")))
-    runtime.register_executor("storage.projects.diff", lambda arguments: projects.git_diff(str(arguments.get("project") or "")))
+    runtime.register_executor("storage.projects.status", lambda arguments: projects.git_status(project_path(arguments.get("project"))))
+    runtime.register_executor("storage.projects.diff", lambda arguments: projects.git_diff(project_path(arguments.get("project"))))
     runtime.register_executor(
         "storage.projects.preview",
-        lambda arguments: projects.preview_file(str(arguments.get("path") or ""), str(arguments.get("content") or "")),
+        lambda arguments: projects.preview_file(project_path(arguments.get("path")), str(arguments.get("content") or "")),
     )
     changes = ProjectChanges(projects)
     runtime.register_executor(
         "storage.projects.apply",
         lambda arguments: changes.apply_file(
-            str(arguments.get("path") or ""), str(arguments.get("content") or ""),
+            project_path(arguments.get("path")), str(arguments.get("content") or ""),
             str(arguments.get("expected_sha256") or ""), str(arguments.get("change_token") or ""),
         ),
     )
     runtime.register_executor(
         "storage.projects.move",
         lambda arguments: changes.move_file(
-            str(arguments.get("source_path") or ""), str(arguments.get("target_path") or ""),
+            project_path(arguments.get("source_path")), project_path(arguments.get("target_path")),
             str(arguments.get("expected_sha256") or ""),
         ),
     )
     runtime.register_executor(
         "storage.projects.delete",
-        lambda arguments: changes.delete_file(str(arguments.get("path") or ""), str(arguments.get("expected_sha256") or "")),
+        lambda arguments: changes.delete_file(project_path(arguments.get("path")), str(arguments.get("expected_sha256") or "")),
     )
     runtime.external_servers = register_mcp_servers(settings, registry, runtime)
     if settings.github_configured and settings.github_token_file is not None:
