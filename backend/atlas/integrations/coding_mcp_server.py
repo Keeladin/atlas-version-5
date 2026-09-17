@@ -268,20 +268,21 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
 
     command = [
         str(_codex_binary()),
-        "exec",
-        "--json",
-        "--sandbox",
-        "workspace-write",
         "--ask-for-approval",
         "never",
+        "--sandbox",
+        "workspace-write",
+        "exec",
+        "--json",
         "-C",
         str(repo),
     ]
+    expected_thread_id: str | None = None
     if resume:
-        thread_id = str(record.get("codex_thread_id") or "").strip()
-        if not thread_id:
+        expected_thread_id = str(record.get("codex_thread_id") or "").strip()
+        if not expected_thread_id:
             raise ValueError("Codex thread id is not available yet; wait for the current turn to start")
-        command.extend(["resume", thread_id])
+        command.extend(["resume", expected_thread_id])
     command.append(prompt)
 
     stdout_handle = log_path.open("ab", buffering=0)
@@ -327,6 +328,25 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
         events = _events(log_path)
         thread_id = _thread_id(events)
         if thread_id:
+            if expected_thread_id is not None and thread_id != expected_thread_id:
+                _terminate_process_group(
+                    pid=process.pid,
+                    process_group=process.pid,
+                    expected_start_time=proc_start_time,
+                )
+                run["status"] = "failed"
+                run["finished_at"] = _now()
+                run["last_event_type"] = "thread.started"
+                run["resume_thread_mismatch"] = {
+                    "expected": expected_thread_id,
+                    "observed": thread_id,
+                }
+                record["status"] = "failed"
+                record["updated_at"] = _now()
+                _atomic_json(_session_path(session_id), record)
+                raise RuntimeError(
+                    "Codex resume returned a different thread id; refusing an implicit new session"
+                )
             record["codex_thread_id"] = thread_id
             record["status"] = (
                 "running" if _alive(process.pid, proc_start_time) else _event_status(events, False)
@@ -535,7 +555,7 @@ def _handle(payload: dict[str, Any]) -> None:
             return
         try:
             result = handler(arguments)
-        except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+        except (OSError, RuntimeError, TypeError, ValueError, subprocess.SubprocessError) as exc:
             _reply(request_id, result=_tool_result({"error": str(exc), "type": type(exc).__name__}, error=True))
             return
         _reply(request_id, result=_tool_result(result))
