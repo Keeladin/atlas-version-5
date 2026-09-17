@@ -1,7 +1,10 @@
 import json
 
 import pytest
-from atlas.integrations import coding_mcp_server as coding
+from atlas.integrations import (
+    coding_mcp_server as coding,
+    coding_mcp_socket_server as socket_server,
+)
 
 
 def test_coding_repo_must_be_inside_owner_approved_root(tmp_path, monkeypatch):
@@ -75,6 +78,27 @@ def test_cancel_escalates_to_sigkill_if_same_process_survives(monkeypatch):
         (4321, coding.signal.SIGTERM),
         (4321, coding.signal.SIGKILL),
     ]
+
+
+def test_socket_transport_reports_runtime_error_without_crashing(monkeypatch):
+    def fail(arguments):
+        raise RuntimeError("cancel verification failed")
+
+    monkeypatch.setitem(socket_server.HANDLERS, "explode", fail)
+    response = socket_server._response({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": "explode", "arguments": {}},
+    })
+
+    assert response is not None
+    result = response["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"] == {
+        "error": "cancel verification failed",
+        "type": "RuntimeError",
+    }
 
 
 def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, monkeypatch):
