@@ -91,21 +91,22 @@ if ! command -v setfacl >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! grep -q '^ATLAS_WORKSPACE_ROOT=' /etc/atlas-v5/config/runtime.env; then
-  echo 'ATLAS_WORKSPACE_ROOT=/var/lib/atlas-v5/workspace' >> /etc/atlas-v5/config/runtime.env
-fi
-if ! grep -q '^ATLAS_WORKSPACE_DISPLAY_ROOT=' /etc/atlas-v5/config/runtime.env; then
-  echo 'ATLAS_WORKSPACE_DISPLAY_ROOT=/home/jaco/Workspace' >> /etc/atlas-v5/config/runtime.env
-fi
-if ! grep -q '^ATLAS_PROJECTS_ROOT=' /etc/atlas-v5/config/runtime.env; then
-  echo 'ATLAS_PROJECTS_ROOT=/var/lib/atlas-v5/projects' >> /etc/atlas-v5/config/runtime.env
-fi
-if ! grep -q '^ATLAS_PROJECTS_DISPLAY_ROOT=' /etc/atlas-v5/config/runtime.env; then
-  echo 'ATLAS_PROJECTS_DISPLAY_ROOT=/home/jaco/Projects' >> /etc/atlas-v5/config/runtime.env
-fi
-if ! grep -q '^ATLAS_PROJECT_CHECKPOINT_ROOT=' /etc/atlas-v5/config/runtime.env; then
-  echo 'ATLAS_PROJECT_CHECKPOINT_ROOT=/var/lib/atlas-v5/project-checkpoints' >> /etc/atlas-v5/config/runtime.env
-fi
+# These paths are deployment invariants, not owner preferences. Always reconcile
+# stale values so sandboxed services use their bind-mounted runtime roots rather
+# than attempting to traverse ProtectHome-protected owner paths directly.
+set_runtime_invariant() {
+  local key=$1 value=$2 file=/etc/atlas-v5/config/runtime.env
+  if grep -q "^${key}=" "${file}"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "${file}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${file}"
+  fi
+}
+set_runtime_invariant ATLAS_WORKSPACE_ROOT /var/lib/atlas-v5/workspace
+set_runtime_invariant ATLAS_WORKSPACE_DISPLAY_ROOT /home/jaco/Workspace
+set_runtime_invariant ATLAS_PROJECTS_ROOT /var/lib/atlas-v5/projects
+set_runtime_invariant ATLAS_PROJECTS_DISPLAY_ROOT /home/jaco/Projects
+set_runtime_invariant ATLAS_PROJECT_CHECKPOINT_ROOT /var/lib/atlas-v5/project-checkpoints
 if ! grep -q '^ATLAS_OWNER_TIMEZONE=' /etc/atlas-v5/config/runtime.env; then
   echo 'ATLAS_OWNER_TIMEZONE=Africa/Johannesburg' >> /etc/atlas-v5/config/runtime.env
 fi

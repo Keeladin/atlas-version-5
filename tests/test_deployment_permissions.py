@@ -19,6 +19,15 @@ def test_normal_deploy_does_not_walk_owner_projects() -> None:
     assert "reconcile-project-access.sh" in script
 
 
+def test_deploy_reconciles_sandbox_runtime_roots_even_when_stale() -> None:
+    script = (DEPLOYMENT / "deploy-host.sh").read_text()
+    assert "set_runtime_invariant ATLAS_PROJECTS_ROOT /var/lib/atlas-v5/projects" in script
+    assert "set_runtime_invariant ATLAS_WORKSPACE_ROOT /var/lib/atlas-v5/workspace" in script
+    assert "set_runtime_invariant ATLAS_PROJECT_CHECKPOINT_ROOT /var/lib/atlas-v5/project-checkpoints" in script
+    assert "if ! grep -q '^ATLAS_PROJECTS_ROOT='" not in script
+    assert 'sed -i "s|^${key}=.*|${key}=${value}|"' in script
+
+
 def test_maintenance_acl_grant_is_confined_to_explicit_read_only_roots() -> None:
     script = (DEPLOYMENT / "grant-maintenance-access.sh").read_text()
     acl_lines = [line for line in script.splitlines() if "setfacl" in line and "find" in line]
