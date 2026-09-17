@@ -58,7 +58,7 @@ def test_dead_codex_child_without_events_is_recoverable():
 
 
 def test_cancel_escalates_to_sigkill_if_same_process_survives(monkeypatch):
-    alive = iter([True, True, True, False])
+    alive = iter([True, True, False])
     monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: next(alive))
     signals = []
     monkeypatch.setattr(coding.os, "killpg", lambda group, sig: signals.append((group, sig)))
