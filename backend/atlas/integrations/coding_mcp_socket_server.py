@@ -60,7 +60,13 @@ def _response(payload: dict[str, Any]) -> dict[str, Any] | None:
         else:
             try:
                 result = _tool_result(handler(arguments))
-            except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
+            except (
+                OSError,
+                RuntimeError,
+                TypeError,
+                ValueError,
+                subprocess.SubprocessError,
+            ) as exc:
                 result = _tool_result({"error": str(exc), "type": type(exc).__name__}, error=True)
         return {"jsonrpc": "2.0", "id": request_id, "result": result}
     if request_id is not None:
