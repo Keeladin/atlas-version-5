@@ -1,6 +1,6 @@
 """Shared deterministic dispatch and evidence handling for foreground/scheduled runs."""
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import ActionStatus
@@ -131,6 +131,12 @@ class RunExecutor:
                 args = await self._prepare_managed_task_create(args)
             except ValueError as exc:
                 preflight_error = str(exc)
+        if (
+            operation == 'coding.agent.start_session'
+            and isinstance(args, dict)
+            and not str(args.get('session_id') or '').strip()
+        ):
+            args['session_id'] = str(uuid4())
         # Effect classification must remain stable across owner policy changes.
         # Dispatch checks current permission separately after action identity commits.
         descriptor = self.runtime.descriptor(operation)

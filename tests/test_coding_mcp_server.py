@@ -58,9 +58,9 @@ def test_dead_codex_child_without_events_is_recoverable():
     assert coding._event_status([], running=False) == "interrupted"
 
 
-def test_cancel_escalates_to_sigkill_if_same_process_survives(monkeypatch):
+def test_cancel_escalates_to_sigkill_if_process_group_survives(monkeypatch):
     alive = iter([True, True, False])
-    monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: next(alive))
+    monkeypatch.setattr(coding, "_process_group_alive", lambda **kwargs: next(alive))
     signals = []
     monkeypatch.setattr(coding.os, "killpg", lambda group, sig: signals.append((group, sig)))
 
@@ -76,6 +76,47 @@ def test_cancel_escalates_to_sigkill_if_same_process_survives(monkeypatch):
         (4321, coding.signal.SIGTERM),
         (4321, coding.signal.SIGKILL),
     ]
+
+
+
+
+def test_process_group_liveness_keeps_orphaned_children_visible(monkeypatch):
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: None)
+    monkeypatch.setattr(
+        coding,
+        "_process_group_members",
+        lambda process_group: [(7777, "S", "child-birth")],
+    )
+    assert coding._process_group_alive(
+        pid=4321, process_group=4321, expected_start_time="leader-birth"
+    ) is True
+
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: ("S", "reused-birth"))
+    assert coding._process_group_alive(
+        pid=4321, process_group=4321, expected_start_time="leader-birth"
+    ) is False
+
+
+def test_cancel_before_start_creates_tombstone_and_blocks_late_launch(tmp_path, monkeypatch):
+    monkeypatch.setattr(coding, "STATE_DIR", tmp_path / "state")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(coding, "_validate_repo", lambda value: repo)
+    launched = []
+    monkeypatch.setattr(coding.subprocess, "Popen", lambda *args, **kwargs: launched.append(True))
+    session_id = "12345678-1234-1234-1234-123456789abc"
+
+    cancelled = coding.cancel_session({"session_id": session_id})
+    assert cancelled["status"] == "cancelled"
+    assert coding._load(session_id)["cancelled_before_start"] is True
+
+    with pytest.raises(ValueError, match="cancelled before launch"):
+        coding.start_session({
+            "session_id": session_id,
+            "repo": str(repo),
+            "prompt": "Do not start after cancellation",
+        })
+    assert launched == []
 
 
 def test_socket_transport_reports_runtime_error_without_crashing(monkeypatch):
@@ -106,7 +147,7 @@ def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, mo
     monkeypatch.setattr(coding, "_validate_repo", lambda value: repo)
     monkeypatch.setattr(coding, "_codex_binary", lambda: tmp_path / "codex")
     monkeypatch.setattr(coding, "_process_identity", lambda pid: ("S", "birth-4321"))
-    monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: False)
+    monkeypatch.setattr(coding, "_process_group_alive", lambda **kwargs: False)
     captured = {}
 
     class Process:
@@ -145,7 +186,7 @@ def test_resume_refuses_implicit_new_codex_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(coding, "_validate_repo", lambda value: repo)
     monkeypatch.setattr(coding, "_codex_binary", lambda: tmp_path / "codex")
     monkeypatch.setattr(coding, "_process_identity", lambda pid: ("S", "birth-4321"))
-    monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: True)
+    monkeypatch.setattr(coding, "_process_group_alive", lambda **kwargs: True)
     monkeypatch.setattr(
         coding,
         "_events",

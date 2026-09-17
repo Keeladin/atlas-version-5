@@ -75,9 +75,14 @@ def test_example_configuration_parses_and_pins_the_envelope_shape() -> None:
     coding = by_id["coding.agent"]
     assert coding.transport == "socket" and coding.path == Path("/run/atlas-v5/mcp/coding-agent.sock")
     assert {"start_session", "get_status", "get_result", "cancel_session"} <= set(coding.tools or ())
+    assert coding.tool_policies["start_session"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert coding.tool_policies["send_turn"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert coding.tool_policies["resume_session"].authority == AuthorityMode.APPROVAL_REQUIRED
     tasks = by_id["workspace.tasks"]
     assert tasks.transport == "stdio" and tasks.command == Path("/opt/atlas-v5/venv/bin/python")
     assert {"create", "list", "get", "cancel", "resume"} == set(tasks.tools or ())
+    assert tasks.tool_policies["create"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert tasks.tool_policies["resume"].authority == AuthorityMode.APPROVAL_REQUIRED
 
 
 @pytest.mark.parametrize("bad,message", [

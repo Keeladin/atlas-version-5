@@ -96,6 +96,22 @@ class AuthorityStore:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def _require_managed_task_active(self, run: RunRow | None) -> None:
+        if run is None or run.transcript_id is None:
+            return
+        transcript = await self.session.get(
+            TranscriptRow, run.transcript_id, with_for_update=True, populate_existing=True
+        )
+        state = transcript.active_task_state if transcript is not None else None
+        if (
+            isinstance(state, dict)
+            and state.get("mode") == "managed"
+            and state.get("status") != "active"
+        ):
+            raise ProposalIntegrityError(
+                "Managed task is no longer active; no new effects may be proposed or dispatched"
+            )
+
     async def create_run(self, *, transcript_id: UUID | None, intent: str, kind: RunKind = RunKind.FOREGROUND) -> UUID:
         if kind == RunKind.FOREGROUND and transcript_id is not None:
             await self.session.execute(select(TranscriptRow.id).where(TranscriptRow.id == transcript_id).with_for_update())
@@ -130,7 +146,8 @@ class AuthorityStore:
         return action.id
 
     async def prepare_proposal(self, *, run_id: UUID, operation: str, arguments: dict[str, Any], title: str, capability_id: str = "") -> UUID:
-        await self._lock_run(run_id)
+        run = await self._lock_run(run_id)
+        await self._require_managed_task_active(run)
         now = datetime.now(UTC)
         expires = now + DEFAULT_PROPOSAL_TTL
         proposal = {
@@ -188,7 +205,8 @@ class AuthorityStore:
         return proposal
 
     async def begin_execution(self, action: ActionRow, *, reviewed_target_hash: str | None = None) -> dict[str, Any]:
-        await self._lock_run(action.run_id)
+        run = await self._lock_run(action.run_id)
+        await self._require_managed_task_active(run)
         action = await self.session.get(ActionRow, action.id, populate_existing=True)
         proposal = self.verify_proposal(action)
         if reviewed_target_hash is not None and not hmac.compare_digest(reviewed_target_hash, action.target_hash):
@@ -207,7 +225,8 @@ class AuthorityStore:
     async def begin_automatic_execution(
         self, *, run_id: UUID, operation: str, arguments: dict[str, Any], summary: str, capability_id: str
     ) -> UUID:
-        await self._lock_run(run_id)
+        run = await self._lock_run(run_id)
+        await self._require_managed_task_active(run)
         now = datetime.now(UTC)
         created_at = now.isoformat()
         target_hash = _target_hash(

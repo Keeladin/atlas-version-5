@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from atlas.capabilities import AuthorityMode
 from atlas.integrations.mcp_servers import parse_mcp_servers
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +23,11 @@ def test_managed_mcp_config_uses_central_authority_and_coding_socket():
     assert tasks.transport == "stdio"
     assert tasks.tools == frozenset({"create", "list", "get", "cancel", "resume"})
     assert "authority_rules" not in text
-    assert "approval_required" not in text
+    assert coding.tool_policies["start_session"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert coding.tool_policies["send_turn"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert coding.tool_policies["resume_session"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert tasks.tool_policies["create"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert tasks.tool_policies["resume"].authority == AuthorityMode.APPROVAL_REQUIRED
 
 
 def test_coding_agent_runs_as_owner_behind_group_socket():

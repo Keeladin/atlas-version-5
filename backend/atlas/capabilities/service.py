@@ -16,6 +16,12 @@ Executor = Callable[[dict[str, Any]], Any]
 ProposalSink = Callable[[OperationDescriptor, dict[str, Any]], Any]
 AuthorityResolver = Callable[[dict[str, Any]], Any]  # returns AuthorityMode, or an awaitable of one
 
+_NON_DELEGABLE_MANAGED_OPERATIONS = frozenset({
+    "workspace.tasks.create",
+    "workspace.tasks.cancel",
+    "workspace.tasks.resume",
+})
+
 
 class CapabilityRuntime:
     def __init__(self, operations: list[OperationDescriptor] | None = None) -> None:
@@ -74,6 +80,11 @@ class CapabilityRuntime:
             operation_id = str(raw or "").strip()
             if not operation_id or operation_id in normalized:
                 continue
+            if operation_id in _NON_DELEGABLE_MANAGED_OPERATIONS:
+                problems.append(
+                    f"{operation_id}: managed-task lifecycle authority cannot be delegated"
+                )
+                continue
             descriptor = self._operations.get(operation_id)
             if descriptor is None:
                 problems.append(f"{operation_id}: operation is not registered")
@@ -99,6 +110,8 @@ class CapabilityRuntime:
         resolved_authority: AuthorityMode,
     ) -> AuthorityMode:
         """Promote Ask me to Auto for an owner-approved task grant, never a hard Deny."""
+        if operation_id in _NON_DELEGABLE_MANAGED_OPERATIONS:
+            return resolved_authority
         if resolved_authority != AuthorityMode.APPROVAL_REQUIRED:
             return resolved_authority
         descriptor = self._operations.get(operation_id)

@@ -113,24 +113,14 @@ def _parse_time(value: Any) -> datetime | None:
 
 
 def _progress_signature(state: dict[str, Any]) -> str:
-    """Hashable material task state; fresh read-only/repeated evidence is not progress."""
+    """Hashable material task state; fresh evidence and changing errors are not progress."""
     runtime = state.get("runtime") if isinstance(state.get("runtime"), dict) else {}
-    error_signatures = sorted({
-        (
-            str(item.get("operation") or ""),
-            str(item.get("phase") or ""),
-            str(item.get("message") or ""),
-        )
-        for item in runtime.get("errors") or []
-        if isinstance(item, dict)
-    })
     material = {
         "semantic": state.get("semantic") or {},
         "acceptance_criteria": state.get("acceptance_criteria") or [],
         "checkpoints": state.get("checkpoints") or [],
         "progress": state.get("progress") or {},
         "pending_actions": runtime.get("pending_actions") or [],
-        "errors": error_signatures,
         "completion_rejected": runtime.get("completion_rejected"),
     }
     return json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)

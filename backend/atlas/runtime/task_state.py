@@ -179,7 +179,7 @@ def new_managed_task_state(
     state["runtime"].update({
         "managed_turns": 0,
         "retry_count": 0,
-        "last_progress_at": None,
+        "last_event_evidence_id": None,
         "completion_rejected": None,
     })
     if not state["acceptance_criteria"]:
@@ -264,7 +264,7 @@ def record_runtime_event(
     events.append(event)
     runtime["recent_events"] = events[-_MAX_EVENTS:]
     if result.get("mode") == "managed":
-        runtime["last_progress_at"] = evidence_id
+        runtime["last_event_evidence_id"] = evidence_id
 
     if targets:
         working_set = list(runtime.get("working_set") or [])

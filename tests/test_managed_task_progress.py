@@ -11,7 +11,7 @@ def _state():
     )
 
 
-def test_repeated_identical_error_evidence_is_not_new_progress():
+def test_error_evidence_does_not_count_as_material_progress():
     first_failure = record_runtime_event(
         _state(),
         operation="coding.agent.send_turn",
@@ -37,4 +37,4 @@ def test_repeated_identical_error_evidence_is_not_new_progress():
         evidence_id="failure-evidence-3",
         detail={"message": "Codex worker exited after repository validation failed"},
     )
-    assert worker._progress_signature(changed_failure) != signature
+    assert worker._progress_signature(changed_failure) == signature

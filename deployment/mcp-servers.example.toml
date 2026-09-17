@@ -68,14 +68,17 @@ tools = [
 
 [servers.tool.start_session]
 effect = "execute"
+authority = "approval_required"
 [servers.tool.send_turn]
 effect = "execute"
+authority = "approval_required"
 [servers.tool.get_status]
 effect = "read"
 [servers.tool.get_result]
 effect = "read"
 [servers.tool.resume_session]
 effect = "execute"
+authority = "approval_required"
 [servers.tool.cancel_session]
 effect = "delete"
 
@@ -92,6 +95,7 @@ tools = ["create", "list", "get", "cancel", "resume"]
 
 [servers.tool.create]
 effect = "create"
+authority = "approval_required"
 [servers.tool.list]
 effect = "read"
 [servers.tool.get]
@@ -100,3 +104,4 @@ effect = "read"
 effect = "delete"
 [servers.tool.resume]
 effect = "update"
+authority = "approval_required"

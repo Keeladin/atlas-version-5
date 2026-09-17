@@ -1,7 +1,8 @@
 import pytest
+from atlas.actions.authority import AuthorityStore, ProposalIntegrityError
 from atlas.config import Settings
 from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
-from atlas.persistence.models import OwnerAttentionRow, RunRow, TranscriptRow
+from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow, TranscriptRow
 from atlas.runtime import managed_tasks_worker as worker
 from atlas.runtime.recovery import RunInterrupted, require_live_run
 from atlas.runtime.task_state import (
@@ -380,3 +381,162 @@ async def test_worker_claim_is_single_writer(pg_factory, monkeypatch, tmp_path):
         ))).scalar_one()
         assert row.active_task_state["runtime"]["controller_state"] == "running"
         assert row.active_task_state["runtime"]["last_worker_run_id"] == str(first)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_managed_task_rejects_late_effect_dispatch(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    created = await workspace_mcp._create({
+        "objective": "Fence late effects after cancellation",
+        "acceptance_criteria": ["No effect begins after cancellation"],
+    })
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ).with_for_update())).scalar_one()
+        state = dict(row.active_task_state or {})
+        state["status"] = "cancelled"
+        state.setdefault("runtime", {})["controller_state"] = "cancelled"
+        await TranscriptRepository(session).update_active_task_state(
+            row.id, state, expected_revision=row.active_task_revision
+        )
+        await session.commit()
+
+    async with pg_factory() as session:
+        store = AuthorityStore(session)
+        with pytest.raises(ProposalIntegrityError, match="no longer active"):
+            await store.begin_automatic_execution(
+                run_id=run_id,
+                operation="coding.agent.send_turn",
+                arguments={"session_id": "s", "prompt": "continue"},
+                summary="late effect",
+                capability_id="coding.agent",
+            )
+        await session.rollback()
+
+    async with pg_factory() as session:
+        with pytest.raises(ProposalIntegrityError, match="no longer active"):
+            await AuthorityStore(session).prepare_proposal(
+                run_id=run_id,
+                operation="coding.agent.send_turn",
+                arguments={"session_id": "s", "prompt": "continue"},
+                title="Late proposal",
+                capability_id="coding.agent",
+            )
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_managed_task_rejects_late_proposal_approval(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    created = await workspace_mcp._create({
+        "objective": "Fence stale approvals after cancellation",
+        "acceptance_criteria": ["A stale approval cannot execute"],
+    })
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    async with pg_factory() as session:
+        action_id = await AuthorityStore(session).prepare_proposal(
+            run_id=run_id,
+            operation="coding.agent.send_turn",
+            arguments={"session_id": "s", "prompt": "continue"},
+            title="Continue coding",
+            capability_id="coding.agent",
+        )
+        await session.commit()
+
+    async with pg_factory() as session:
+        row = (await session.execute(select(TranscriptRow).where(
+            TranscriptRow.active_task_state["task_id"].astext == created["task_id"]
+        ).with_for_update())).scalar_one()
+        state = dict(row.active_task_state or {})
+        state["status"] = "cancelled"
+        state.setdefault("runtime", {})["controller_state"] = "cancelled"
+        await TranscriptRepository(session).update_active_task_state(
+            row.id, state, expected_revision=row.active_task_revision
+        )
+        await session.commit()
+
+    async with pg_factory() as session:
+        action = await session.get(ActionRow, action_id)
+        with pytest.raises(ProposalIntegrityError, match="no longer active"):
+            await AuthorityStore(session).begin_execution(action)
+        await session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_workspace_cancel_finds_reserved_coding_session_and_cleans_proposals(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    monkeypatch.setattr(workspace_mcp, "get_settings", lambda: settings)
+    created = await workspace_mcp._create({
+        "objective": "Cancel an in-flight coding start",
+        "acceptance_criteria": ["Reserved coding session is stopped"],
+    })
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+    reserved = "12345678-1234-1234-1234-123456789abc"
+
+    async with pg_factory() as session:
+        store = AuthorityStore(session)
+        prepared_id = await store.prepare_proposal(
+            run_id=run_id,
+            operation="coding.agent.send_turn",
+            arguments={"session_id": reserved, "prompt": "later"},
+            title="Pending coding turn",
+            capability_id="coding.agent",
+        )
+        start_id = await store.begin_automatic_execution(
+            run_id=run_id,
+            operation="coding.agent.start_session",
+            arguments={"session_id": reserved, "repo": "/tmp/repo", "prompt": "start"},
+            summary="Start coding",
+            capability_id="coding.agent",
+        )
+        await session.commit()
+
+    seen = []
+
+    async def fake_cancel(session_id):
+        seen.append(session_id)
+        return {"status": "cancelled", "session_id": session_id}
+
+    monkeypatch.setattr(workspace_mcp, "_cancel_coding_session", fake_cancel)
+    cancelled = await workspace_mcp._cancel({
+        "task_id": created["task_id"],
+        "reason": "Owner cancelled the task",
+    })
+
+    assert seen == [reserved]
+    assert cancelled["cleanup"]["coding_session_id"] == reserved
+    assert str(prepared_id) in cancelled["cleanup"]["cancelled_action_ids"]
+    async with pg_factory() as session:
+        assert (await session.get(ActionRow, prepared_id)).status == "cancelled"
+        assert (await session.get(ActionRow, start_id)).status == "uncertain"

@@ -100,6 +100,39 @@ def _process_identity(pid: int | None) -> tuple[str, str] | None:
         return None
 
 
+def _process_group_members(process_group: int) -> list[tuple[int, str, str]]:
+    """Return live members of one Linux process group as (pid, state, starttime)."""
+    members: list[tuple[int, str, str]] = []
+    for stat_path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            member_pid = int(stat_path.parent.name)
+            raw = stat_path.read_text()
+            _, tail = raw.rsplit(")", 1)
+            fields = tail.strip().split()
+            if len(fields) <= 19:
+                continue
+            state = fields[0]
+            member_group = int(fields[2])
+            if member_group == int(process_group) and state != "Z":
+                members.append((member_pid, state, fields[19]))
+        except (OSError, ValueError):
+            continue
+    return members
+
+
+def _process_group_alive(
+    *, pid: int, process_group: int, expected_start_time: str | None
+) -> bool:
+    leader = _process_identity(pid)
+    if leader is not None and leader[0] != "Z":
+        # A live leader with the wrong birth time is a reused PID/group id, not
+        # the Codex process we launched.
+        return expected_start_time is None or leader[1] == str(expected_start_time)
+    # The leader may have exited while a shell/build child in its process group
+    # is still running. Those children must remain visible to cancellation.
+    return bool(_process_group_members(process_group))
+
+
 def _alive(pid: int | None, expected_start_time: str | None = None) -> bool:
     identity = _process_identity(pid)
     if identity is None or identity[0] == "Z":
@@ -115,8 +148,11 @@ def _terminate_process_group(
     term_grace_seconds: float = 2.0,
     kill_grace_seconds: float = 1.0,
 ) -> None:
-    """Stop the exact Codex process group and verify it cannot keep mutating the repo."""
-    if not _alive(pid, expected_start_time):
+    """Stop the entire original Codex process group, including orphaned children."""
+    alive = lambda: _process_group_alive(
+        pid=pid, process_group=process_group, expected_start_time=expected_start_time
+    )
+    if not alive():
         return
     try:
         os.killpg(process_group, signal.SIGTERM)
@@ -125,11 +161,11 @@ def _terminate_process_group(
 
     deadline = time.monotonic() + max(0.0, term_grace_seconds)
     while time.monotonic() < deadline:
-        if not _alive(pid, expected_start_time):
+        if not alive():
             return
         time.sleep(0.05)
 
-    if not _alive(pid, expected_start_time):
+    if not alive():
         return
     try:
         os.killpg(process_group, signal.SIGKILL)
@@ -138,10 +174,10 @@ def _terminate_process_group(
 
     deadline = time.monotonic() + max(0.0, kill_grace_seconds)
     while time.monotonic() < deadline:
-        if not _alive(pid, expected_start_time):
+        if not alive():
             return
         time.sleep(0.05)
-    if _alive(pid, expected_start_time):
+    if alive():
         raise RuntimeError("Codex process group remained alive after SIGKILL")
 
 
@@ -200,7 +236,13 @@ def _refresh(record: dict[str, Any]) -> dict[str, Any]:
     if not runs:
         return record
     run = runs[-1]
-    running = _alive(run.get("pid"), run.get("proc_start_time"))
+    pid = int(run.get("pid") or 0)
+    process_group = int(run.get("process_group") or pid or 0)
+    running = bool(pid and process_group) and _process_group_alive(
+        pid=pid,
+        process_group=process_group,
+        expected_start_time=run.get("proc_start_time"),
+    )
     events = _events(Path(str(run.get("log_path") or "")))
     thread_id = _thread_id(events)
     if thread_id:
@@ -349,11 +391,21 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
                 )
             record["codex_thread_id"] = thread_id
             record["status"] = (
-                "running" if _alive(process.pid, proc_start_time) else _event_status(events, False)
+                "running"
+                if _process_group_alive(
+                    pid=process.pid,
+                    process_group=process.pid,
+                    expected_start_time=proc_start_time,
+                )
+                else _event_status(events, False)
             )
             _atomic_json(_session_path(session_id), record)
             break
-        if not _alive(process.pid, proc_start_time):
+        if not _process_group_alive(
+            pid=process.pid,
+            process_group=process.pid,
+            expected_start_time=proc_start_time,
+        ):
             break
         time.sleep(0.05)
     return _refresh(record)
@@ -382,20 +434,26 @@ def _public(record: dict[str, Any]) -> dict[str, Any]:
 def start_session(arguments: dict[str, Any]) -> dict[str, Any]:
     repo = _validate_repo(arguments.get("repo"))
     prompt = str(arguments.get("prompt") or "")
-    session_id = str(uuid4())
-    record = {
-        "session_id": session_id,
-        "codex_thread_id": None,
-        "repo": str(repo),
-        "label": str(arguments.get("label") or "Coding task")[:200],
-        "mode": str(arguments.get("mode") or "implement")[:40],
-        "status": "created",
-        "created_at": _now(),
-        "updated_at": _now(),
-        "runs": [],
-    }
-    _atomic_json(_session_path(session_id), record)
+    session_id = str(arguments.get("session_id") or "").strip() or str(uuid4())
+    path = _session_path(session_id)
     with _locked(session_id):
+        if path.exists():
+            existing = _load(session_id)
+            if existing.get("status") == "cancelled" and existing.get("cancelled_before_start"):
+                raise ValueError("Coding session was cancelled before launch")
+            raise ValueError(f"Coding session already exists: {session_id}")
+        record = {
+            "session_id": session_id,
+            "codex_thread_id": None,
+            "repo": str(repo),
+            "label": str(arguments.get("label") or "Coding task")[:200],
+            "mode": str(arguments.get("mode") or "implement")[:40],
+            "status": "created",
+            "created_at": _now(),
+            "updated_at": _now(),
+            "runs": [],
+        }
+        _atomic_json(path, record)
         return _public(_launch(record, prompt, resume=False))
 
 
@@ -447,33 +505,43 @@ def get_result(arguments: dict[str, Any]) -> dict[str, Any]:
 
 def cancel_session(arguments: dict[str, Any]) -> dict[str, Any]:
     session_id = str(arguments.get("session_id") or "")
+    path = _session_path(session_id)
     with _locked(session_id):
+        if not path.exists():
+            now = _now()
+            record = {
+                "session_id": session_id,
+                "codex_thread_id": None,
+                "repo": None,
+                "label": "Coding task",
+                "mode": "implement",
+                "status": "cancelled",
+                "created_at": now,
+                "updated_at": now,
+                "runs": [],
+                "cancelled_before_start": True,
+            }
+            _atomic_json(path, record)
+            return _public(record)
+
         record = _refresh(_load(session_id))
         runs = record.get("runs") or []
         latest = runs[-1] if runs else None
-        running = bool(latest) and _alive(
-            latest.get("pid"), latest.get("proc_start_time")
-        )
-        if running and latest:
-            pid = int(latest["pid"])
-            process_group = int(latest.get("process_group") or pid)
-            _terminate_process_group(
-                pid=pid,
-                process_group=process_group,
-                expected_start_time=latest.get("proc_start_time"),
-            )
-            latest["status"] = "cancelled"
-            latest["finished_at"] = _now()
-            record["status"] = "cancelled"
-        elif record.get("status") in {"running", "starting", "created", "interrupted"}:
-            # The process has already disappeared, but cancellation still closes
-            # the non-terminal session without rewriting a completed result.
-            record["status"] = "cancelled"
+        if record.get("status") in {"running", "starting", "created", "interrupted"}:
             if latest:
+                pid = int(latest.get("pid") or 0)
+                process_group = int(latest.get("process_group") or pid or 0)
+                if pid and process_group:
+                    _terminate_process_group(
+                        pid=pid,
+                        process_group=process_group,
+                        expected_start_time=latest.get("proc_start_time"),
+                    )
                 latest["status"] = "cancelled"
                 latest["finished_at"] = latest.get("finished_at") or _now()
+            record["status"] = "cancelled"
         record["updated_at"] = _now()
-        _atomic_json(_session_path(session_id), record)
+        _atomic_json(path, record)
         return _public(record)
 
 
@@ -481,6 +549,7 @@ TOOLS: dict[str, dict[str, Any]] = {
     "start_session": {
         "description": "Start a fresh Codex CLI coding/review session. Atlas has already resolved owner authority before this call.",
         "inputSchema": {"type": "object", "properties": {
+            "session_id": {"type": "string"},
             "repo": {"type": "string"}, "prompt": {"type": "string"},
             "label": {"type": "string"}, "mode": {"type": "string"},
         }, "required": ["repo", "prompt"], "additionalProperties": False},

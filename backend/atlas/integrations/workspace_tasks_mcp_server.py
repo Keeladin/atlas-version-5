@@ -17,11 +17,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from atlas.actions.authority import AuthorityStore, ProposalIntegrityError
 from atlas.artifacts.store import ArtifactStore
 from atlas.config import get_settings
 from atlas.db import get_session_factory
 from atlas.integrations.mcp_socket import MCPSocketClient
-from atlas.persistence.models import RunRow, TranscriptRow
+from atlas.persistence.models import ActionRow, RunRow, TranscriptRow
 from atlas.runtime.recovery import interrupt_run
 from atlas.runtime.task_state import new_managed_task_state
 from atlas.transcript.repository import TranscriptRepository
@@ -109,6 +110,29 @@ def _coding_session_id(state: dict[str, Any]) -> str | None:
             continue
         targets = event.get("targets") if isinstance(event.get("targets"), dict) else {}
         session_id = str(targets.get("session_id") or "").strip()
+        if session_id:
+            return session_id
+    return None
+
+
+async def _coding_session_id_from_actions(session, transcript_id: UUID) -> str | None:
+    rows = list((await session.execute(
+        select(ActionRow)
+        .join(RunRow, ActionRow.run_id == RunRow.id)
+        .where(
+            RunRow.transcript_id == transcript_id,
+            ActionRow.operation == "coding.agent.start_session",
+        )
+        .order_by(ActionRow.updated_at.desc())
+        .limit(20)
+    )).scalars())
+    for action in rows:
+        evidence = action.evidence if isinstance(action.evidence, dict) else {}
+        arguments = evidence.get("arguments")
+        if not isinstance(arguments, dict):
+            proposal = evidence.get("proposal")
+            arguments = proposal.get("arguments") if isinstance(proposal, dict) else {}
+        session_id = str((arguments or {}).get("session_id") or "").strip()
         if session_id:
             return session_id
     return None
@@ -222,6 +246,7 @@ async def _cancel(arguments: dict[str, Any]) -> dict[str, Any]:
     reason = str(arguments.get("reason") or "Cancelled by owner direction").strip()[:500]
     factory = get_session_factory()
     active_run_ids: list[UUID] = []
+    prepared_action_ids: list[UUID] = []
     coding_session_id: str | None = None
     transcript_id: UUID | None = None
 
@@ -234,6 +259,16 @@ async def _cancel(arguments: dict[str, Any]) -> dict[str, Any]:
         if state.get("status") == "complete":
             raise ValueError("Completed tasks cannot be cancelled")
         coding_session_id = _coding_session_id(state)
+        if not coding_session_id:
+            coding_session_id = await _coding_session_id_from_actions(session, row.id)
+        prepared_action_ids = list((await session.execute(
+            select(ActionRow.id)
+            .join(RunRow, ActionRow.run_id == RunRow.id)
+            .where(
+                RunRow.transcript_id == row.id,
+                ActionRow.status == "prepared",
+            )
+        )).scalars())
         active_run_ids = list((await session.execute(
             select(RunRow.id).where(
                 RunRow.transcript_id == row.id,
@@ -247,6 +282,7 @@ async def _cancel(arguments: dict[str, Any]) -> dict[str, Any]:
         runtime.update({
             "controller_state": "cancelled",
             "next_wake_at": None,
+            "pending_actions": [],
             "cancelled_at": _now(),
             "cancel_reason": reason,
         })
@@ -258,9 +294,25 @@ async def _cancel(arguments: dict[str, Any]) -> dict[str, Any]:
     cleanup: dict[str, Any] = {
         "coding_session_id": coding_session_id,
         "coding_session": "not_present" if not coding_session_id else "pending",
+        "cancelled_action_ids": [],
         "interrupted_run_ids": [],
         "warnings": [],
     }
+    for action_id in prepared_action_ids:
+        async with factory() as action_session:
+            action = await action_session.get(ActionRow, action_id)
+            if action is None or action.status != "prepared":
+                continue
+            try:
+                await AuthorityStore(action_session).cancel(action)
+                await action_session.commit()
+                cleanup["cancelled_action_ids"].append(str(action_id))
+            except ProposalIntegrityError as exc:
+                await action_session.rollback()
+                cleanup["warnings"].append(
+                    f"Prepared action {action_id} cleanup raced with another decision: {exc}"
+                )
+
     if coding_session_id:
         try:
             coding_result = await _cancel_coding_session(coding_session_id)

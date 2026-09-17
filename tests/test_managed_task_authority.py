@@ -104,6 +104,38 @@ async def test_explicit_control_override_can_make_static_forbidden_task_grantabl
     assert await runtime.apply_task_grant(operation.id, resolved) == AuthorityMode.AUTO
 
 
+
+@pytest.mark.asyncio
+async def test_managed_task_lifecycle_operations_cannot_be_delegated():
+    runtime = CapabilityRuntime()
+    for operation_id in (
+        "workspace.tasks.create",
+        "workspace.tasks.cancel",
+        "workspace.tasks.resume",
+    ):
+        runtime.register(
+            OperationDescriptor(
+                id=operation_id,
+                capability_id="workspace.tasks",
+                family="Workspace tasks",
+                description=operation_id,
+                input_schema={"type": "object", "properties": {}},
+                effect=EffectKind.UPDATE,
+                authority=AuthorityMode.APPROVAL_REQUIRED,
+            ),
+            lambda arguments: {"ok": True},
+        )
+
+    async def enabled():
+        return {"workspace.tasks"}
+
+    runtime.policy_reader = enabled
+    with pytest.raises(ValueError, match="lifecycle authority cannot be delegated"):
+        await runtime.preflight_authority_grants(["workspace.tasks.create"])
+    assert await runtime.apply_task_grant(
+        "workspace.tasks.create", AuthorityMode.APPROVAL_REQUIRED
+    ) == AuthorityMode.APPROVAL_REQUIRED
+
 def test_managed_task_checkpoint_exposes_immutable_authority_grants():
     state = new_managed_task_state(
         title="Implement Atlas",
