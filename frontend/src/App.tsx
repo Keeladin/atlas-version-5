@@ -9,6 +9,8 @@ import { approvalFields } from './approval'
 import { mergeRestoredAttachments, releaseAttachmentPreviews, turnAttachments, type ComposerAttachment } from './chatAttachments'
 import { ChatAttachmentView } from './ChatAttachmentView'
 import { MobileNavigationDrawer } from './MobileNavigationDrawer'
+import { TopNavigation } from './TopNavigation'
+import { WorkspacePage } from './WorkspacePage'
 import { composerAttachmentDisabled, composerInputDisabled, composerSendDisabled } from './chatComposer'
 import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, localStorageFileUrl, projectStorageFileUrl, observeConversationRun, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
@@ -680,7 +682,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
           </button>
           <strong>Atlas</strong><span className="version-tag">V5</span>
         </div>
-        <div className="persistent-context"><span className="context-item active">Home</span><a className="context-item context-link" href="/control">Control</a></div>
+        <div className="persistent-context"><TopNavigation current="home" /></div>
         <div className="persistent-status">
           <span className="status-label"><StatusDot ok={runtimeOk} />Runtime</span>
           <span className="status-label"><StatusDot ok={databaseOk} />PostgreSQL</span>
@@ -711,6 +713,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         onStorage={() => { void openLocalStorage('') }}
         onScheduled={() => setMobileActivity('scheduled')}
         onControl={() => window.location.assign('/control')}
+        onWorkspace={() => window.location.assign('/workspace')}
       />
 
       {mobileActivity ? <>
@@ -1292,7 +1295,7 @@ function ControlPage({ health }: { health: Health | null }) {
 
   return (
     <div className="control-shell">
-      <header className="control-topbar"><div className="control-title-cluster"><img className="control-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" /><div><div className="eyebrow">ATLAS V5</div><h1>Control</h1></div></div><a className="control-link" href="/">Back to Atlas</a></header>
+      <header className="control-topbar"><div className="control-title-cluster"><img className="control-avatar" src="/atlas-icon.webp" alt="" aria-hidden="true" /><div><div className="eyebrow">ATLAS V5</div><h1>Control</h1></div></div><TopNavigation current="control" /></header>
       <main className="control-grid control-dashboard">
         <section className="control-card"><div className="panel-title">Runtime</div><div className="control-hero-state"><StatusDot ok={health?.status === 'ok'} /><strong>{health?.status === 'ok' ? 'Online' : 'Checking'}</strong></div><p>v{health?.version ?? '—'} · {health?.environment ?? '—'}</p><div className="control-runtime-actions"><button className="control-restart-button" type="button" onClick={() => { void handleRestart() }} disabled={restartState === 'requesting' || restartState === 'waiting'}>{restartState === 'requesting' || restartState === 'waiting' ? 'Restarting…' : 'Restart Atlas'}</button>{restartMessage ? <span className={restartState === 'error' ? 'warning-text' : ''}>{restartMessage}</span> : null}</div></section>
         <section className="control-card"><div className="panel-title">System</div><div className="control-hero-state"><StatusDot ok={Boolean(health?.database.ok)} /><strong>{health?.database.ok ? 'Healthy' : 'Degraded'}</strong></div><p>PostgreSQL {health?.database.ok ? 'connected' : 'unavailable'} · {health?.registry_entries ?? '—'} registry entries</p></section>
@@ -1342,6 +1345,7 @@ function ControlPage({ health }: { health: Health | null }) {
 function AuthenticatedApp({ onLogout }: { onLogout: () => Promise<void> }) {
   const [health, setHealth] = useState<Health | null>(null)
   useEffect(() => { getHealth().then(setHealth).catch(() => setHealth(null)) }, [])
+  if (window.location.pathname.startsWith('/workspace')) return <WorkspacePage />
   if (window.location.pathname.startsWith('/control')) return <ControlPage health={health} />
   return <AtlasPage health={health} onLogout={onLogout} />
 }

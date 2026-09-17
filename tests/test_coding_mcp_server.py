@@ -140,7 +140,8 @@ def test_socket_transport_reports_runtime_error_without_crashing(monkeypatch):
     }
 
 
-def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resume", [False, True])
+def test_codex_launch_is_noninteractive_under_outer_systemd_sandbox(tmp_path, monkeypatch, resume):
     repo = tmp_path / "repo"
     repo.mkdir()
     monkeypatch.setattr(coding, "STATE_DIR", tmp_path / "state")
@@ -162,19 +163,21 @@ def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, mo
         "session_id": "12345678-1234-1234-1234-123456789abc",
         "repo": str(repo),
         "runs": [],
+        "codex_thread_id": "existing-thread",
     }
 
-    coding._launch(record, "Implement the task", resume=False)
+    coding._launch(record, "Implement the task", resume=resume)
 
     command = captured["command"]
     assert command[1:5] == [
         "--ask-for-approval",
         "never",
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
     ]
     assert command[5:7] == ["exec", "--json"]
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert ("resume" in command) is resume
     assert record["runs"][0]["proc_start_time"] == "birth-4321"
     assert record["status"] == "interrupted"
 

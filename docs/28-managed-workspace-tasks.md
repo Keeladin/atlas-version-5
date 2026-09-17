@@ -40,6 +40,18 @@ The coding MCP is exposed over `/run/atlas-v5/mcp/coding-agent.sock`. The Atlas 
 
 The coding service is constrained by systemd. `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, and explicit `ReadWritePaths` confine writable owner paths. The Python bridge additionally resolves symlinks and rejects work directories outside `ATLAS_CODING_ROOTS` (normally `/home/jaco/Projects` and `/home/jaco/Workspace`).
 
+On this Ubuntu host Codex runs with `--ask-for-approval never --sandbox danger-full-access`.
+The coding-agent **systemd service is the outer sandbox**: it runs as `jaco`, with
+`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes`, and explicit
+writable project/workspace and coding-state/cache paths (see the checked-in unit).
+The bridge still validates working directories against `ATLAS_CODING_ROOTS`.
+Nested Codex `workspace-write` fails here with
+`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`; the bridge therefore
+relies on that externally confined service instead of the nested sandbox. Launching
+the bridge directly does not establish the systemd boundary. The bridge never uses
+`--dangerously-bypass-approvals-and-sandbox`. Changing source does not update the
+running service; installation/restart remains a deliberate deployment action.
+
 Coding operations are:
 
 - `coding.agent.start_session`
@@ -56,3 +68,34 @@ Outside an approved managed task, Codex start/send/resume operations default to 
 `deployment/install-host-mcp.sh` installs the host broker, coding-agent socket, and managed-task worker units. It smoke-tests the host and coding MCP sockets as the `atlas-v5` runtime identity. The managed-task worker is enabled but is started with the main Atlas service so deployment does not accidentally execute background work during the maintenance window.
 
 No task grant bypasses a current Control `Deny`, disabled capability, host scope, sandbox, or technical validation boundary. Merge and deployment remain ordinary operations: they run automatically inside a task only when the owner-approved task grant explicitly contains those exact operations and Control does not deny them.
+
+## Owner Workspace dashboard and REST
+
+`/workspace` is the owner dashboard for observing and controlling durable tasks.
+Home remains the chat surface where scope is discussed and agreed before Atlas
+creates a task. Projects / Project folders retain their file-cabinet behavior.
+Workspace shows the task and project IDs, immutable objective/scope, acceptance
+states and evidence references beside execution progress, checkpoints, next step,
+controller state, pending actions, retry counters, and timestamps. Authority grants
+are read-only under details. All/active/terminal filters and paginated history keep
+finished tasks accessible. Refresh reloads current state; there is no automatic polling.
+
+The global owner authentication and production origin boundary protects:
+
+- `GET /api/workspace/tasks?status=all|active|terminal&limit=20&offset=0`
+  returns `items` and `next_offset` (null on the last page). Filtering precedes
+  pagination; ordering is latest update then task transcript ID.
+- `GET /api/workspace/tasks/{task_id}` returns the shared task projection.
+- `POST /api/workspace/tasks/{task_id}/cancel` cancels an active task, fences new
+  dispatch, and attempts action/run/Codex cleanup. Cleanup warnings are returned
+  separately from the durable cancellation result and shown in Workspace.
+- `POST /api/workspace/tasks/{task_id}/resume` resumes an active **stalled** task,
+  resetting both retry counters. Other controller states conflict.
+
+These authenticated owner controls execute immediately through the same service
+used by MCP. Model-side lifecycle authority is still non-delegable. Terminal tasks
+are read-only; conflicting lifecycle requests return HTTP 409, missing tasks 404,
+and invalid UUIDs or query inputs 422. Workspace asks for browser confirmation
+before cancellation. There is no owner REST task-create endpoint or manual authoring
+form. Resume/cancel resolve the prior controller-stall alert without dismissing
+unresolved effect uncertainty.

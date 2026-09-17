@@ -1,7 +1,6 @@
 import pytest
 from atlas.actions.authority import AuthorityStore, ProposalIntegrityError
 from atlas.config import Settings
-from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
 from atlas.persistence.models import ActionRow, OwnerAttentionRow, RunRow, TranscriptRow
 from atlas.runtime import managed_tasks_worker as worker
 from atlas.runtime.recovery import RunInterrupted, require_live_run
@@ -13,6 +12,7 @@ from atlas.runtime.task_state import (
     record_runtime_event,
 )
 from atlas.transcript.repository import TranscriptRepository
+from atlas.workspace import tasks as workspace_tasks
 from sqlalchemy import select
 
 
@@ -104,13 +104,13 @@ def test_cancellation_can_recover_coding_session_from_runtime_evidence():
         evidence_id="evidence-coding",
         detail={"output": {"session_id": "12345678-1234-1234-1234-123456789abc"}},
     )
-    assert workspace_mcp._coding_session_id(state) == "12345678-1234-1234-1234-123456789abc"
+    assert workspace_tasks._coding_session_id(state) == "12345678-1234-1234-1234-123456789abc"
 
 
 @pytest.mark.asyncio
-async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
-    created = await workspace_mcp._create({
+async def test_workspace_tasks_persists_and_lists_task(pg_factory, monkeypatch):
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
+    created = await workspace_tasks.create_task({
         "title": "Workspace task",
         "objective": "Finish the agreed implementation",
         "scope": ["Do not deploy"],
@@ -126,9 +126,9 @@ async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
     assert created["retry_count"] == 0
     assert created["transient_retry_count"] == 0
 
-    listed = await workspace_mcp._list({})
+    listed = await workspace_tasks.list_tasks({})
     assert [item["task_id"] for item in listed["items"]] == [created["task_id"]]
-    fetched = await workspace_mcp._get({"task_id": created["task_id"]})
+    fetched = await workspace_tasks.get_task({"task_id": created["task_id"]})
     assert fetched["acceptance_criteria"][0]["status"] == "pending"
 
 
@@ -136,10 +136,10 @@ async def test_workspace_mcp_persists_and_lists_task(pg_factory, monkeypatch):
 async def test_repeated_status_polling_still_reaches_no_progress_stall(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
     monkeypatch.setenv("ATLAS_MANAGED_TASK_MAX_NO_PROGRESS", "3")
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "objective": "Detect a stuck coding worker",
         "acceptance_criteria": ["Repeated status reads do not masquerade as progress"],
     })
@@ -196,10 +196,10 @@ async def test_repeated_status_polling_still_reaches_no_progress_stall(
 async def test_transient_failure_does_not_consume_no_progress_budget(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
     monkeypatch.setenv("ATLAS_MANAGED_TASK_POLL_SECONDS", "5")
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "objective": "Survive a temporary provider outage",
         "acceptance_criteria": ["Task resumes without owner Continue"],
     })
@@ -238,8 +238,8 @@ async def test_transient_failure_does_not_consume_no_progress_budget(
 
 @pytest.mark.asyncio
 async def test_workspace_resume_resets_both_retry_budgets(pg_factory, monkeypatch):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
-    created = await workspace_mcp._create({
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
+    created = await workspace_tasks.create_task({
         "objective": "Reset a genuine stall",
         "acceptance_criteria": ["Both retry budgets are cleared"],
     })
@@ -260,7 +260,7 @@ async def test_workspace_resume_resets_both_retry_budgets(pg_factory, monkeypatc
         )
         await session.commit()
 
-    resumed = await workspace_mcp._resume({"task_id": created["task_id"]})
+    resumed = await workspace_tasks.resume_task({"task_id": created["task_id"]})
     assert resumed["controller_state"] == "ready"
     assert resumed["retry_count"] == 0
     assert resumed["transient_retry_count"] == 0
@@ -269,12 +269,12 @@ async def test_workspace_resume_resets_both_retry_budgets(pg_factory, monkeypatc
 
 @pytest.mark.asyncio
 async def test_workspace_cancel_stops_controller(pg_factory, monkeypatch):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
-    created = await workspace_mcp._create({
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
+    created = await workspace_tasks.create_task({
         "objective": "Cancelable task",
         "acceptance_criteria": ["Never runs after cancellation"],
     })
-    cancelled = await workspace_mcp._cancel({
+    cancelled = await workspace_tasks.cancel_task({
         "task_id": created["task_id"], "reason": "Owner changed direction"
     })
     assert cancelled["status"] == "cancelled"
@@ -285,14 +285,14 @@ async def test_workspace_cancel_stops_controller(pg_factory, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cancelled_task_fences_live_run_before_cleanup(pg_factory, monkeypatch, tmp_path):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
     settings = Settings(
         state_dir=tmp_path / "state",
         artifact_dir=tmp_path / "artifacts",
         database_url=None,
     )
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "objective": "Fence cancellation immediately",
         "acceptance_criteria": ["No effect dispatch after task cancellation"],
     })
@@ -320,22 +320,22 @@ async def test_cancelled_task_fences_live_run_before_cleanup(pg_factory, monkeyp
 async def test_workspace_cancel_interrupts_active_run_without_needs_you(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
     settings = Settings(
         state_dir=tmp_path / "state",
         artifact_dir=tmp_path / "artifacts",
         database_url=None,
     )
-    monkeypatch.setattr(workspace_mcp, "get_settings", lambda: settings)
-    created = await workspace_mcp._create({
+    monkeypatch.setattr(workspace_tasks, "get_settings", lambda: settings)
+    created = await workspace_tasks.create_task({
         "objective": "Cancel while Atlas is working",
         "acceptance_criteria": ["Cancellation stops the active inference"],
     })
     run_id = await worker._claim_one(settings)
     assert run_id is not None
 
-    cancelled = await workspace_mcp._cancel({
+    cancelled = await workspace_tasks.cancel_task({
         "task_id": created["task_id"], "reason": "Owner cancelled the managed task"
     })
 
@@ -354,9 +354,9 @@ async def test_workspace_cancel_interrupts_active_run_without_needs_you(
 
 @pytest.mark.asyncio
 async def test_worker_claim_is_single_writer(pg_factory, monkeypatch, tmp_path):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "title": "Claim me",
         "objective": "Exercise the managed controller",
         "acceptance_criteria": ["One background run owns the turn"],
@@ -387,9 +387,9 @@ async def test_worker_claim_is_single_writer(pg_factory, monkeypatch, tmp_path):
 async def test_cancelled_managed_task_rejects_late_effect_dispatch(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "objective": "Fence late effects after cancellation",
         "acceptance_criteria": ["No effect begins after cancellation"],
     })
@@ -441,9 +441,9 @@ async def test_cancelled_managed_task_rejects_late_effect_dispatch(
 async def test_cancelled_managed_task_rejects_late_proposal_approval(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "objective": "Fence stale approvals after cancellation",
         "acceptance_criteria": ["A stale approval cannot execute"],
     })
@@ -488,15 +488,15 @@ async def test_cancelled_managed_task_rejects_late_proposal_approval(
 async def test_workspace_cancel_finds_reserved_coding_session_and_cleans_proposals(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
     settings = Settings(
         state_dir=tmp_path / "state",
         artifact_dir=tmp_path / "artifacts",
         database_url=None,
     )
-    monkeypatch.setattr(workspace_mcp, "get_settings", lambda: settings)
-    created = await workspace_mcp._create({
+    monkeypatch.setattr(workspace_tasks, "get_settings", lambda: settings)
+    created = await workspace_tasks.create_task({
         "objective": "Cancel an in-flight coding start",
         "acceptance_criteria": ["Reserved coding session is stopped"],
     })
@@ -528,8 +528,8 @@ async def test_workspace_cancel_finds_reserved_coding_session_and_cleans_proposa
         seen.append(session_id)
         return {"status": "cancelled", "session_id": session_id}
 
-    monkeypatch.setattr(workspace_mcp, "_cancel_coding_session", fake_cancel)
-    cancelled = await workspace_mcp._cancel({
+    monkeypatch.setattr(workspace_tasks, "_cancel_coding_session", fake_cancel)
+    cancelled = await workspace_tasks.cancel_task({
         "task_id": created["task_id"],
         "reason": "Owner cancelled the task",
     })

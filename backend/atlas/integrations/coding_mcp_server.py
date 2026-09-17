@@ -312,8 +312,9 @@ def _launch(record: dict[str, Any], prompt: str, *, resume: bool) -> dict[str, A
         str(_codex_binary()),
         "--ask-for-approval",
         "never",
+        # systemd is the outer sandbox on this host; nested bwrap cannot set up loopback.
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
         "exec",
         "--json",
         "-C",

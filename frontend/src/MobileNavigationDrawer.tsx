@@ -1,11 +1,12 @@
 import { useRef, useState, type TouchEvent } from 'react'
 import type { Chat } from './api'
 
-type DrawerIconName = 'new' | 'projects' | 'repositories' | 'storage' | 'scheduled' | 'control'
+type DrawerIconName = 'new' | 'projects' | 'repositories' | 'storage' | 'scheduled' | 'control' | 'workspace'
 
 function DrawerIcon({ name }: { name: DrawerIconName }) {
   const common = { width: 22, height: 22, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
   if (name === 'new') return <svg {...common} aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>
+  if (name === 'workspace') return <svg {...common} aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M12 9h6M12 14h4" /></svg>
   if (name === 'projects') return <svg {...common} aria-hidden="true"><path d="M3 7.5h7l2 2h9v9.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /><path d="M3 7.5V5a2 2 0 0 1 2-2h5l2 2h5" /></svg>
   if (name === 'repositories') return <svg {...common} aria-hidden="true"><circle cx="6" cy="5" r="2" /><circle cx="18" cy="19" r="2" /><circle cx="6" cy="19" r="2" /><path d="M6 7v10" /><path d="M8 5h4a4 4 0 0 1 4 4v8" /></svg>
   if (name === 'storage') return <svg {...common} aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M7 8h10" /><path d="M7 16h.01M11 16h.01" /></svg>
@@ -28,6 +29,7 @@ type MobileNavigationDrawerProps = {
   onStorage: () => void
   onScheduled: () => void
   onControl: () => void
+  onWorkspace: () => void
 }
 
 export function MobileNavigationDrawer(props: MobileNavigationDrawerProps) {
@@ -56,6 +58,7 @@ export function MobileNavigationDrawer(props: MobileNavigationDrawerProps) {
       </div>
       <nav className="mobile-nav-primary">
         <button type="button" disabled={props.busy} onClick={() => run(props.onNewChat)}><DrawerIcon name="new" /><span>New chat</span></button>
+        <button type="button" onClick={() => run(props.onWorkspace)}><DrawerIcon name="workspace" /><span>Workspace</span></button>
         <button type="button" onClick={() => run(props.onProjects)}><DrawerIcon name="projects" /><span>Projects</span></button>
         <button type="button" onClick={() => run(props.onRepositories)}><DrawerIcon name="repositories" /><span>Repositories</span></button>
         <button type="button" onClick={() => run(props.onStorage)}><DrawerIcon name="storage" /><span>Storage</span></button>

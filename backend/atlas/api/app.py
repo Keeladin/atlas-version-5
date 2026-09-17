@@ -114,6 +114,7 @@ from atlas.storage import LocalStorageService, ProjectFolderService
 from atlas.storage.changes import ProjectChanges
 from atlas.transcript.models import Actor, ArtifactRefBlock, TextBlock
 from atlas.transcript.repository import TranscriptRepository
+from atlas.workspace.api import router as workspace_router
 
 from .deps import get_session
 
@@ -171,6 +172,7 @@ app = FastAPI(title="Atlas V5", version=__version__, lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(notifications_router)
 app.include_router(push_router)
+app.include_router(workspace_router)
 
 
 def _auth_service(session: AsyncSession) -> AuthService:
@@ -1948,6 +1950,8 @@ async def upload_artifact(
 
 @app.get("/control", include_in_schema=False)
 @app.get("/control/", include_in_schema=False)
+@app.get("/workspace", include_in_schema=False)
+@app.get("/workspace/", include_in_schema=False)
 async def control_page() -> FileResponse:
     index = settings.frontend_dist / "index.html"
     if not index.is_file():

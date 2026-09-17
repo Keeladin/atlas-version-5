@@ -919,3 +919,57 @@ export function setHostFilesystemScopes(scopes: HostFilesystemScopes): Promise<H
   return notificationRequest('/api/control/host-scopes',
     { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(scopes) }, 'Host filesystem scope update')
 }
+
+export type WorkspaceTaskFilter = 'all' | 'active' | 'terminal'
+export type WorkspaceTask = {
+  transcript_id: string
+  task_id: string
+  project_id: string
+  title: string
+  status: 'active' | 'complete' | 'cancelled'
+  controller_state: string
+  objective: string
+  scope: string[]
+  authority_grants: string[]
+  acceptance_criteria: { id: string; text: string; status: 'pending' | 'passed' | 'failed'; evidence_refs: string[] }[]
+  checkpoints: { id: string; text: string; status: string }[]
+  progress: { percent?: number; current_checkpoint?: string | null; completed_checkpoints?: string[]; coding_session_id?: string | null }
+  next_step: string | null
+  findings: string[]
+  completion_rejected: string | null
+  cancel_reason: string | null
+  pending_actions: { action_id: string; operation: string; phase: string; evidence_id?: string }[]
+  retry_count: number
+  transient_retry_count: number
+  next_wake_at: string | null
+  created_at: string | null
+  updated_at: string | null
+  cleanup?: { coding_session_id: string | null; coding_session: string; cancelled_action_ids: string[]; interrupted_run_ids: string[]; warnings: string[] }
+}
+export type WorkspaceTaskList = { items: WorkspaceTask[]; next_offset: number | null }
+
+async function workspaceRequest<T>(path: string, method = 'GET'): Promise<T> {
+  const response = await fetch(`/api/workspace/tasks${path}`, { method, credentials: 'same-origin' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    const detail = typeof body?.detail === 'string' ? body.detail : `Workspace request failed (${response.status})`
+    throw new Error(detail)
+  }
+  return body as T
+}
+
+export function listWorkspaceTasks(status: WorkspaceTaskFilter = 'all', offset = 0): Promise<WorkspaceTaskList> {
+  return workspaceRequest(`?${new URLSearchParams({ status, offset: String(offset), limit: '20' })}`)
+}
+
+export function getWorkspaceTask(taskId: string): Promise<WorkspaceTask> {
+  return workspaceRequest(`/${encodeURIComponent(taskId)}`)
+}
+
+export function cancelWorkspaceTask(taskId: string): Promise<WorkspaceTask> {
+  return workspaceRequest(`/${encodeURIComponent(taskId)}/cancel`, 'POST')
+}
+
+export function resumeWorkspaceTask(taskId: string): Promise<WorkspaceTask> {
+  return workspaceRequest(`/${encodeURIComponent(taskId)}/resume`, 'POST')
+}

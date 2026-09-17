@@ -9,7 +9,6 @@ from atlas.capabilities import (
     OperationDescriptor,
 )
 from atlas.config import Settings
-from atlas.integrations import workspace_tasks_mcp_server as workspace_mcp
 from atlas.persistence.models import ActionRow, OwnerAttentionRow
 from atlas.runtime import managed_tasks_worker as worker
 from atlas.runtime.execution import RunExecutor
@@ -17,6 +16,7 @@ from atlas.runtime.task_state import (
     active_task_provider_message,
     new_managed_task_state,
 )
+from atlas.workspace import tasks as workspace_tasks
 from sqlalchemy import select
 
 
@@ -158,10 +158,10 @@ def test_managed_task_checkpoint_exposes_immutable_authority_grants():
 async def test_run_executor_uses_task_grant_without_creating_owner_prompt(
     pg_factory, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(workspace_mcp, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
     monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
     operation_id = "coding.agent.test_effect"
-    created = await workspace_mcp._create({
+    created = await workspace_tasks.create_task({
         "objective": "Execute the already approved coding effect",
         "acceptance_criteria": ["Effect runs without asking twice"],
         "authority_grants": [operation_id],

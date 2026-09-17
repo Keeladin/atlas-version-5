@@ -103,6 +103,9 @@ a { color: inherit; }
   padding-left: 12px;
 }
 
+.top-navigation { display: flex; align-items: center; gap: 4px; }
+.top-navigation a { text-decoration: none; }
+
 .context-item,
 .status-label,
 .topbar-link {
@@ -611,12 +614,22 @@ textarea:disabled {
 }
 
 .control-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  padding: 8px 0;
+  background: var(--bg-default);
   max-width: 1200px;
   min-height: 60px;
   margin: 0 auto 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+}
+
+@media (max-width: 700px) {
+  .control-topbar { flex-wrap: wrap; gap: 14px; }
+  .top-navigation a { min-height: 36px; }
 }
 
 .control-title-cluster {
