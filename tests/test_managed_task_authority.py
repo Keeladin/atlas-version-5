@@ -9,7 +9,7 @@ from atlas.capabilities import (
     OperationDescriptor,
 )
 from atlas.config import Settings
-from atlas.persistence.models import ActionRow, OwnerAttentionRow
+from atlas.persistence.models import ActionRow, OwnerAttentionRow, TranscriptRow
 from atlas.runtime import managed_tasks_worker as worker
 from atlas.runtime.execution import RunExecutor
 from atlas.runtime.task_state import (
@@ -205,3 +205,60 @@ async def test_run_executor_uses_task_grant_without_creating_owner_prompt(
         )).scalars())
     assert any(action.operation == operation_id and action.status == "succeeded" for action in actions)
     assert not any(item.state == "approval_required" for item in attention)
+
+
+@pytest.mark.asyncio
+async def test_pending_coding_approval_is_superseded_when_coding_becomes_auto(
+    pg_factory, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(workspace_tasks, "get_session_factory", lambda: pg_factory)
+    monkeypatch.setattr(worker, "get_session_factory", lambda: pg_factory)
+    created = await workspace_tasks.create_task({
+        "objective": "Continue coding without repeated owner prompts",
+        "acceptance_criteria": ["Coding continues automatically when enabled"],
+    })
+    settings = Settings(
+        state_dir=tmp_path / "state",
+        artifact_dir=tmp_path / "artifacts",
+        database_url=None,
+    )
+    run_id = await worker._claim_one(settings)
+    assert run_id is not None
+
+    calls = []
+    ask_runtime = CapabilityRuntime()
+    operation = _operation("coding.agent.send_turn", AuthorityMode.APPROVAL_REQUIRED)
+    ask_runtime.register(operation, lambda arguments: calls.append(arguments) or {"ok": True})
+    executor = RunExecutor(
+        pg_factory, ask_runtime, ArtifactStore(settings.artifact_dir),
+        run_id=run_id, transcript_id=UUID(created["transcript_id"]), checkpoint=True,
+    )
+    proposed = await executor.tool_handler(
+        "atlas_capability_call",
+        {"operation_id": operation.id, "arguments": {}},
+    )
+    assert proposed["status"] == "approval_required"
+    assert calls == []
+
+    auto_runtime = CapabilityRuntime()
+    auto_runtime.register(
+        _operation(operation.id, AuthorityMode.AUTO),
+        lambda arguments: {"ok": True},
+    )
+    async with pg_factory() as session:
+        row = await session.get(TranscriptRow, UUID(created["transcript_id"]), with_for_update=True)
+        state = await worker._reconcile_pending(session, row, auto_runtime)
+        await session.commit()
+        actions = list((await session.execute(
+            select(ActionRow).where(ActionRow.run_id == run_id)
+        )).scalars())
+        attention = list((await session.execute(
+            select(OwnerAttentionRow).where(OwnerAttentionRow.run_id == run_id)
+        )).scalars())
+
+    assert state["runtime"]["pending_actions"] == []
+    stale = next(action for action in actions if action.operation == operation.id)
+    assert stale.status == "cancelled"
+    assert stale.evidence["cancel_reason"] == "superseded_by_current_auto_authority"
+    assert all(item.resolved for item in attention if item.action_id == stale.id)
+    assert calls == []

@@ -8,7 +8,7 @@ DEPLOYMENT = ROOT / "deployment"
 SYSTEMD = DEPLOYMENT / "systemd"
 
 
-def test_managed_mcp_config_uses_central_authority_and_coding_socket():
+def test_managed_mcp_config_makes_enabled_coding_automatic_and_keeps_task_lifecycle_gated():
     text = (DEPLOYMENT / "mcp-servers.example.toml").read_text()
     servers = {item.id: item for item in parse_mcp_servers(text)}
 
@@ -23,9 +23,10 @@ def test_managed_mcp_config_uses_central_authority_and_coding_socket():
     assert tasks.transport == "stdio"
     assert tasks.tools == frozenset({"create", "list", "get", "cancel", "resume"})
     assert "authority_rules" not in text
-    assert coding.tool_policies["start_session"].authority == AuthorityMode.APPROVAL_REQUIRED
-    assert coding.tool_policies["send_turn"].authority == AuthorityMode.APPROVAL_REQUIRED
-    assert coding.tool_policies["resume_session"].authority == AuthorityMode.APPROVAL_REQUIRED
+    assert coding.tool_policies["start_session"].authority == AuthorityMode.AUTO
+    assert coding.tool_policies["send_turn"].authority == AuthorityMode.AUTO
+    assert coding.tool_policies["resume_session"].authority == AuthorityMode.AUTO
+    assert coding.tool_policies["cancel_session"].authority == AuthorityMode.AUTO
     assert tasks.tool_policies["create"].authority == AuthorityMode.APPROVAL_REQUIRED
     assert tasks.tool_policies["resume"].authority == AuthorityMode.APPROVAL_REQUIRED
 

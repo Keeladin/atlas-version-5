@@ -57,7 +57,7 @@ effect = "execute"
 [[servers]]
 id = "coding.agent"
 family = "Coding agent"
-description = "Direct Codex CLI implementation and review sessions. Atlas Control resolves authority before invoking this capability; the bridge itself does not ask for permission."
+description = "Direct Codex CLI implementation and review sessions. When this capability is enabled, normal coding-session operations run automatically; an explicit Atlas Control Deny still blocks them."
 transport = "socket"
 path = "/run/atlas-v5/mcp/coding-agent.sock"
 trust = "external"
@@ -68,19 +68,20 @@ tools = [
 
 [servers.tool.start_session]
 effect = "execute"
-authority = "approval_required"
+authority = "auto"
 [servers.tool.send_turn]
 effect = "execute"
-authority = "approval_required"
+authority = "auto"
 [servers.tool.get_status]
 effect = "read"
 [servers.tool.get_result]
 effect = "read"
 [servers.tool.resume_session]
 effect = "execute"
-authority = "approval_required"
+authority = "auto"
 [servers.tool.cancel_session]
 effect = "delete"
+authority = "auto"
 
 [[servers]]
 id = "workspace.tasks"

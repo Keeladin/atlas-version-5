@@ -24,6 +24,7 @@ from sqlalchemy.exc import OperationalError
 from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import ActionStatus, RunKind
 from atlas.artifacts.store import ArtifactStore
+from atlas.capabilities import AuthorityMode
 from atlas.capabilities.factory import build_capability_runtime
 from atlas.config import Settings, get_settings
 from atlas.db import get_session_factory
@@ -126,7 +127,7 @@ def _progress_signature(state: dict[str, Any]) -> str:
     return json.dumps(material, sort_keys=True, separators=(",", ":"), default=str)
 
 
-async def _reconcile_pending(session, row: TranscriptRow) -> dict[str, Any]:
+async def _reconcile_pending(session, row: TranscriptRow, runtime=None) -> dict[str, Any]:
     state = dict(row.active_task_state or {})
     pending = list((state.get("runtime") or {}).get("pending_actions") or [])
     action_ids: list[UUID] = []
@@ -153,6 +154,28 @@ async def _reconcile_pending(session, row: TranscriptRow) -> dict[str, Any]:
     resolved: set[str] = set()
     for action in actions:
         action_id = str(action.id)
+        if (
+            runtime is not None
+            and action.status == ActionStatus.PREPARED.value
+            and action.operation.startswith("coding.agent.")
+        ):
+            evidence = action.evidence if isinstance(action.evidence, dict) else {}
+            proposal = evidence.get("proposal") if isinstance(evidence.get("proposal"), dict) else {}
+            arguments = proposal.get("arguments") if isinstance(proposal.get("arguments"), dict) else {}
+            try:
+                authority = await runtime.resolve_authority(action.operation, arguments)
+            except (KeyError, ValueError):
+                authority = None
+            if authority == AuthorityMode.AUTO:
+                await AuthorityStore(session).cancel(action)
+                refreshed = await session.get(ActionRow, action.id, populate_existing=True)
+                if refreshed is not None:
+                    refreshed.evidence = {
+                        **(refreshed.evidence or {}),
+                        "cancel_reason": "superseded_by_current_auto_authority",
+                    }
+                resolved.add(action_id)
+                continue
         if action.status in {
             ActionStatus.SUCCEEDED.value,
             ActionStatus.FAILED.value,
@@ -238,7 +261,7 @@ async def _stall_attention(
     ))
 
 
-async def _claim_one(settings: Settings) -> UUID | None:
+async def _claim_one(settings: Settings, runtime=None) -> UUID | None:
     now = datetime.now(UTC)
     factory = get_session_factory()
     async with factory() as session:
@@ -253,7 +276,7 @@ async def _claim_one(settings: Settings) -> UUID | None:
             state = dict(row.active_task_state or {})
             if state.get("mode") != "managed" or state.get("status") != "active":
                 continue
-            state = await _reconcile_pending(session, row)
+            state = await _reconcile_pending(session, row, runtime)
             runtime_state = state.get("runtime") or {}
             pending = runtime_state.get("pending_actions") or []
             if pending:
@@ -586,7 +609,7 @@ async def append_run_event_for_worker(run_id: UUID, event_type: str, payload: di
 
 
 async def run_once(settings: Settings, runtime) -> int:
-    run_id = await _claim_one(settings)
+    run_id = await _claim_one(settings, runtime)
     if run_id is None:
         return 0
     await _execute_one(run_id, settings, runtime)
