@@ -126,12 +126,61 @@ def test_codex_launch_is_noninteractive_but_keeps_workspace_sandbox(tmp_path, mo
     coding._launch(record, "Implement the task", resume=False)
 
     command = captured["command"]
-    assert command[1:3] == ["exec", "--json"]
-    assert command[command.index("--sandbox") + 1] == "workspace-write"
-    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert command[1:5] == [
+        "--ask-for-approval",
+        "never",
+        "--sandbox",
+        "workspace-write",
+    ]
+    assert command[5:7] == ["exec", "--json"]
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
     assert record["runs"][0]["proc_start_time"] == "birth-4321"
     assert record["status"] == "interrupted"
+
+
+def test_resume_refuses_implicit_new_codex_thread(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(coding, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(coding, "_validate_repo", lambda value: repo)
+    monkeypatch.setattr(coding, "_codex_binary", lambda: tmp_path / "codex")
+    monkeypatch.setattr(coding, "_process_identity", lambda pid: ("S", "birth-4321"))
+    monkeypatch.setattr(coding, "_alive", lambda pid, expected_start_time=None: True)
+    monkeypatch.setattr(
+        coding,
+        "_events",
+        lambda path: [{"type": "thread.started", "thread_id": "unexpected-thread"}],
+    )
+    terminated = []
+    monkeypatch.setattr(
+        coding,
+        "_terminate_process_group",
+        lambda **kwargs: terminated.append(kwargs),
+    )
+
+    class Process:
+        pid = 4321
+
+    monkeypatch.setattr(coding.subprocess, "Popen", lambda command, **kwargs: Process())
+    session_id = "12345678-1234-1234-1234-123456789abc"
+    record = {
+        "session_id": session_id,
+        "codex_thread_id": "expected-thread",
+        "repo": str(repo),
+        "runs": [],
+    }
+
+    with pytest.raises(RuntimeError, match="different thread id"):
+        coding._launch(record, "Continue the task", resume=True)
+
+    assert terminated and terminated[0]["pid"] == 4321
+    persisted = coding._load(session_id)
+    assert persisted["status"] == "failed"
+    assert persisted["codex_thread_id"] == "expected-thread"
+    assert persisted["runs"][0]["resume_thread_mismatch"] == {
+        "expected": "expected-thread",
+        "observed": "unexpected-thread",
+    }
 
 
 def test_cancel_does_not_rewrite_completed_session(tmp_path, monkeypatch):
