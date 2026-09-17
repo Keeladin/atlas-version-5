@@ -1,11 +1,11 @@
 """Shared deterministic dispatch and evidence handling for foreground/scheduled runs."""
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from atlas.actions.authority import AuthorityStore
 from atlas.actions.models import ActionStatus
-from atlas.capabilities import AuthorityMode, EffectKind
-from atlas.persistence.models import ActionRow, OwnerAttentionRow
+from atlas.capabilities import AuthorityMode, CapabilityCallResult, EffectKind
+from atlas.persistence.models import ActionRow, OwnerAttentionRow, TranscriptRow
 from atlas.runtime.invocation import current_run_id, current_transcript_id
 from atlas.runtime.observations import EvidenceStore
 from atlas.runtime.recovery import require_live_run
@@ -48,6 +48,26 @@ class RunExecutor:
         self._output_artifact_ids.add(artifact_id)
         self.output_artifacts.append({**artifact, 'operation': result.operation_id})
 
+    async def _managed_task_grants(self) -> set[str]:
+        async with self.factory() as session:
+            row = await session.get(TranscriptRow, self.transcript_id)
+            state = dict(row.active_task_state or {}) if row is not None else {}
+        if state.get('mode') != 'managed' or state.get('status') != 'active':
+            return set()
+        return {
+            str(item).strip()
+            for item in (state.get('authority_grants') or [])
+            if str(item).strip()
+        }
+
+    async def _prepare_managed_task_create(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        prepared = dict(arguments)
+        raw_grants = prepared.get('authority_grants')
+        grants = [str(item).strip() for item in raw_grants] if isinstance(raw_grants, list) else []
+        prepared['authority_grants'] = await self.runtime.preflight_authority_grants(grants)
+        prepared.setdefault('source_chat_id', str(self.transcript_id))
+        return prepared
+
     async def record(self, session, operation, phase, detail, *, action_id=None, arguments=None, trust='external'):
         return await EvidenceStore(session, self.artifacts).record(self.transcript_id,
             operation=operation, phase=phase, detail=detail, run_id=self.run_id,
@@ -87,7 +107,13 @@ class RunExecutor:
             await session.commit()
         if name == 'atlas_capability_search':
             query = str(arguments.get('query') or '')
-            result = {'operations': await self.runtime.search_cards_current(query, int(arguments.get('limit') or 8))}
+            cards = await self.runtime.search_cards_current(query, int(arguments.get('limit') or 8))
+            grants = await self._managed_task_grants()
+            for card in cards:
+                if str(card.get('id') or '') in grants and card.get('authority') == AuthorityMode.APPROVAL_REQUIRED.value:
+                    card['authority'] = AuthorityMode.AUTO.value
+                    card['authority_source'] = 'managed_task_grant'
+            result = {'operations': cards}
             async with self.factory() as session:
                 evidence_id, _ = await EvidenceStore(session, self.artifacts).record(self.transcript_id,
                     operation=name, phase='searched', detail={'query': query, 'result': result},
@@ -97,13 +123,27 @@ class RunExecutor:
         if name != 'atlas_capability_call':
             return {'status': 'unavailable', 'message': 'Unknown Atlas capability control tool.'}
         operation = str(arguments.get('operation_id') or '')
-        args = arguments.get('arguments', {})
+        raw_args = arguments.get('arguments', {})
+        args = dict(raw_args) if isinstance(raw_args, dict) else raw_args
+        preflight_error: str | None = None
+        if operation == 'workspace.tasks.create' and isinstance(args, dict):
+            try:
+                args = await self._prepare_managed_task_create(args)
+            except ValueError as exc:
+                preflight_error = str(exc)
+        if (
+            operation == 'coding.agent.start_session'
+            and isinstance(args, dict)
+            and not str(args.get('session_id') or '').strip()
+        ):
+            args['session_id'] = str(uuid4())
         # Effect classification must remain stable across owner policy changes.
         # Dispatch checks current permission separately after action identity commits.
         descriptor = self.runtime.descriptor(operation)
-        validation_error = self.runtime.validate_arguments(operation, args)
+        validation_error = preflight_error or self.runtime.validate_arguments(operation, args)
         action_id = None
         proposal_evidence = None
+        task_grant_applied = False
 
         async def propose(item, prepared_args):
             nonlocal proposal_evidence
@@ -121,6 +161,13 @@ class RunExecutor:
         if descriptor is not None and validation_error is None:
             try:
                 authority = await self.runtime.resolve_authority(operation, args)
+                if operation in await self._managed_task_grants():
+                    granted = await self.runtime.apply_task_grant(operation, authority)
+                    task_grant_applied = (
+                        authority == AuthorityMode.APPROVAL_REQUIRED
+                        and granted == AuthorityMode.AUTO
+                    )
+                    authority = granted
             except Exception:  # noqa: BLE001 - runtime.call reports the failure as a tool result
                 authority = None
         automatic_effect = (descriptor is not None and descriptor.effect != EffectKind.READ
@@ -130,16 +177,38 @@ class RunExecutor:
                 await require_live_run(session, self.run_id)
                 action_id = await AuthorityStore(session).begin_automatic_execution(run_id=self.run_id,
                     operation=operation, arguments=args, summary=descriptor.description, capability_id=descriptor.capability_id)
-                await self.record(session, operation, 'executing', {'status': 'executing'},
-                    action_id=action_id, arguments=args, trust='internal')
+                await self.record(session, operation, 'executing', {
+                    'status': 'executing',
+                    'authority_source': 'managed_task_grant' if task_grant_applied else 'atlas_control',
+                }, action_id=action_id, arguments=args, trust='internal')
                 await session.commit()
-        context_token = current_transcript_id.set(self.transcript_id)
-        run_token = current_run_id.set(self.run_id)
-        try:
-            result = await self.runtime.call(operation, args, proposal_sink=propose, authority=authority)
-        finally:
-            current_run_id.reset(run_token)
-            current_transcript_id.reset(context_token)
+        if preflight_error is not None:
+            result = CapabilityCallResult(
+                status='failed',
+                operation_id=operation,
+                output={'failure_phase': 'before_dispatch'},
+                message=preflight_error,
+            )
+        else:
+            context_token = current_transcript_id.set(self.transcript_id)
+            run_token = current_run_id.set(self.run_id)
+            try:
+                result = await self.runtime.call(operation, args, proposal_sink=propose, authority=authority)
+            finally:
+                current_run_id.reset(run_token)
+                current_transcript_id.reset(context_token)
+            if (
+                operation == 'workspace.tasks.create'
+                and result.status == 'succeeded'
+                and isinstance(result.output, dict)
+            ):
+                result.output = {
+                    **result.output,
+                    'authority_preflight': {
+                        'verified': True,
+                        'operations': list(args.get('authority_grants') or []),
+                    },
+                }
         self.remember_output_artifact(result)
         if proposal_evidence is not None:
             evidence_id = proposal_evidence

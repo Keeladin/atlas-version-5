@@ -1,0 +1,16 @@
+[Unit]
+Description=Atlas coding agent MCP socket
+Documentation=file:///opt/atlas-v5/app/docs/28-managed-workspace-tasks.md
+
+[Socket]
+ListenStream=/run/atlas-v5/mcp/coding-agent.sock
+RuntimeDirectory=atlas-v5/mcp
+RuntimeDirectoryPreserve=yes
+SocketUser=root
+SocketGroup=atlas-v5
+SocketMode=0660
+Accept=no
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

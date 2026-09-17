@@ -1,10 +1,11 @@
-# Atlas V5 host operations. Owner authority lives in Control / operation_authority.
-# This file describes the structured broker surface only; it is not a second policy engine.
+# Atlas MCP capability surfaces. Owner authority lives in Control / operation_authority.
+# MCP configuration describes transport, tools and effects; it is deliberately not a
+# second policy engine.
 
 [[servers]]
 id = "host.operations"
 family = "Host operations"
-description = "Structured host administration through Atlas's local root broker. No arbitrary shell command is exposed. Owner Auto / Ask me / Deny settings are enforced by Atlas before dispatch."
+description = "Structured host administration through Atlas's local root broker. Owner Auto / Ask me / Deny settings are enforced centrally by Atlas before dispatch."
 transport = "socket"
 path = "/run/atlas-v5/mcp/host-operations.sock"
 trust = "external"
@@ -16,62 +17,91 @@ tools = [
   "packages_inspect", "packages_change", "host_resources", "host_restart", "host_shutdown",
 ]
 
-[servers.defaults]
-read_only_authority = "auto"
-destructive_authority = "approval_required"
-non_destructive_authority = "auto"
-
 [servers.tool.services_inspect]
 effect = "read"
-authority = "auto"
 [servers.tool.service_logs]
 effect = "read"
-authority = "auto"
 [servers.tool.service_start]
 effect = "execute"
-authority = "auto"
 [servers.tool.service_restart]
 effect = "execute"
-authority = "auto"
 [servers.tool.service_stop]
 effect = "execute"
-authority = "approval_required"
 [servers.tool.service_enable_disable]
 effect = "update"
-authority = "approval_required"
 [servers.tool.docker_inspect]
 effect = "read"
-authority = "auto"
 [servers.tool.docker_start_restart]
 effect = "execute"
-authority = "auto"
 [servers.tool.docker_stop]
 effect = "execute"
-authority = "approval_required"
 [servers.tool.docker_create_remove]
 effect = "update"
-authority = "approval_required"
 [servers.tool.filesystem_read]
 effect = "read"
-authority = "auto"
 [servers.tool.filesystem_write]
 effect = "update"
-authority = "auto"
 [servers.tool.filesystem_delete]
 effect = "delete"
-authority = "approval_required"
 [servers.tool.packages_inspect]
 effect = "read"
-authority = "auto"
 [servers.tool.packages_change]
 effect = "update"
-authority = "approval_required"
 [servers.tool.host_resources]
 effect = "read"
-authority = "auto"
 [servers.tool.host_restart]
 effect = "execute"
-authority = "approval_required"
 [servers.tool.host_shutdown]
 effect = "execute"
+
+[[servers]]
+id = "coding.agent"
+family = "Coding agent"
+description = "Direct Codex CLI implementation and review sessions. Atlas Control resolves authority before invoking this capability; the bridge itself does not ask for permission."
+transport = "socket"
+path = "/run/atlas-v5/mcp/coding-agent.sock"
+trust = "external"
+timeout_seconds = 60
+tools = [
+  "start_session", "send_turn", "get_status", "get_result", "resume_session", "cancel_session",
+]
+
+[servers.tool.start_session]
+effect = "execute"
+authority = "approval_required"
+[servers.tool.send_turn]
+effect = "execute"
+authority = "approval_required"
+[servers.tool.get_status]
+effect = "read"
+[servers.tool.get_result]
+effect = "read"
+[servers.tool.resume_session]
+effect = "execute"
+authority = "approval_required"
+[servers.tool.cancel_session]
+effect = "delete"
+
+[[servers]]
+id = "workspace.tasks"
+family = "Workspace tasks"
+description = "Create and inspect durable Atlas-managed execution contracts. Atlas continues active tasks automatically; Control remains the authority source for every delegated capability."
+transport = "stdio"
+command = "/opt/atlas-v5/venv/bin/python"
+args = ["-m", "atlas.integrations.workspace_tasks_mcp_server"]
+trust = "internal"
+timeout_seconds = 45
+tools = ["create", "list", "get", "cancel", "resume"]
+
+[servers.tool.create]
+effect = "create"
+authority = "approval_required"
+[servers.tool.list]
+effect = "read"
+[servers.tool.get]
+effect = "read"
+[servers.tool.cancel]
+effect = "delete"
+[servers.tool.resume]
+effect = "update"
 authority = "approval_required"
