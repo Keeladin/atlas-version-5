@@ -471,6 +471,7 @@ def active_task_provider_message(state: dict[str, Any] | None) -> dict[str, str]
             "Continue working without asking the owner again for authority already contained in the agreed scope and central Atlas policy. "
             "Exact operation IDs in authority_grants were approved with this task: the runtime may promote Ask me to Auto for those operations only; a current Control Deny or disabled capability still blocks dispatch. "
             "Do not create a scheduled task merely to continue this work. Delegate coding to the Coding agent capability when appropriate, monitor it, and continue from its result. "
+            "Semantic findings and next_step may describe blockers observed on earlier turns; they are not immutable runtime facts. Before repeating a blocker, asking the owner for a repair, or consuming another no-progress retry, use an available safe READ capability in the current turn to verify that the blocker still exists. If a safe read can test it, do not infer continued blockage only from prior semantic text. "
             "At the end of every inference set task_state_delta.status=active with next_step while anything remains, or status=complete only after every acceptance criterion is passed with runtime evidence and no action is pending. "
             "The runtime, not the owner, will invoke the next Atlas turn while status remains active. "
         )

@@ -61,6 +61,8 @@ def test_managed_checkpoint_tells_model_runtime_will_continue():
     assert message is not None
     assert "MANAGED TASK CONTROL" in message["content"]
     assert "runtime, not the owner, will invoke the next Atlas turn" in message["content"]
+    assert "they are not immutable runtime facts" in message["content"]
+    assert "safe READ capability in the current turn" in message["content"]
 
 
 def test_material_progress_ignores_poll_evidence_but_tracks_task_change():

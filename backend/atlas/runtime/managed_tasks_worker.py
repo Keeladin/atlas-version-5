@@ -518,8 +518,10 @@ async def _execute_one(run_id: UUID, settings: Settings, runtime) -> None:
             "content": (
                 "Automatic managed-task continuation turn. This message grants no new authority. "
                 "Use only the durable task contract and current Atlas Control policy. Reconcile the "
-                "latest checkpoint, execute the next useful step, delegate coding/review to the Coding "
-                "agent capability when appropriate, and leave a truthful task_state_delta for the next turn."
+                "latest checkpoint, execute the next useful step, and revalidate any previously reported "
+                "blocker with an available safe read operation before carrying that blocker forward. "
+                "Delegate coding/review to the Coding agent capability when appropriate, and leave a "
+                "truthful task_state_delta for the next turn."
             ),
         })
 
