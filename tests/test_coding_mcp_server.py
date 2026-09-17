@@ -1,10 +1,8 @@
 import json
 
 import pytest
-from atlas.integrations import (
-    coding_mcp_server as coding,
-    coding_mcp_socket_server as socket_server,
-)
+from atlas.integrations import coding_mcp_server as coding
+from atlas.integrations import coding_mcp_socket_server as socket_server
 
 
 def test_coding_repo_must_be_inside_owner_approved_root(tmp_path, monkeypatch):
