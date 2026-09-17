@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ForegroundConflictError, RunInterruptedError, dismissAttention, streamMessage } from '../src/api.ts'
+import { ForegroundConflictError, RunInterruptedError, dismissAttention, dismissInformationalAttention, streamMessage } from '../src/api.ts'
 
 let eventScript = () => {}
 
@@ -96,4 +96,15 @@ test('interruption dismissal targets the durable attention item', async () => {
     return new Response('{}')
   }
   try { await dismissAttention('attention id') } finally { globalThis.fetch = original }
+})
+
+
+test('informational attention cleanup uses the protected bulk-dismiss route', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    assert.equal(input, '/api/attention/informational/dismiss-all')
+    assert.equal(init?.method, 'POST')
+    return new Response(JSON.stringify({ count: 7 }), { headers: { 'Content-Type': 'application/json' } })
+  }
+  try { assert.equal(await dismissInformationalAttention(), 7) } finally { globalThis.fetch = original }
 })

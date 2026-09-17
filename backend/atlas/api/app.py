@@ -763,6 +763,13 @@ async def dismiss_attention(attention_id: UUID, session: Annotated[AsyncSession,
     return {"status": "dismissed", "attention_id": str(attention_id)}
 
 
+@app.post("/api/attention/informational/dismiss-all")
+async def dismiss_all_informational_attention(session: Annotated[AsyncSession, Depends(get_session)]):
+    count = await AuthorityStore(session).dismiss_informational_notices()
+    await session.commit()
+    return {"status": "dismissed", "count": count}
+
+
 @app.post("/api/actions/{action_id}/acknowledge")
 async def acknowledge_action(action_id: UUID, session: Annotated[AsyncSession, Depends(get_session)]):
     try:

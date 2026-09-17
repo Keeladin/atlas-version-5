@@ -249,7 +249,10 @@ class AuthorityStore:
 
     async def pending(self) -> list[dict[str, Any]]:
         rows = (await self.session.execute(
-            select(OwnerAttentionRow).where(OwnerAttentionRow.resolved.is_(False)).order_by(OwnerAttentionRow.created_at)
+            select(OwnerAttentionRow).where(OwnerAttentionRow.resolved.is_(False)).order_by(
+                OwnerAttentionRow.action_id.is_not(None).desc(),
+                OwnerAttentionRow.created_at.desc(),
+            )
         )).scalars().all()
         items: list[dict[str, Any]] = []
         for row in rows:
@@ -284,6 +287,19 @@ class AuthorityStore:
             return
         attention.resolved = True
         attention.resolved_at = datetime.now(UTC)
+
+    async def dismiss_informational_notices(self) -> int:
+        now = datetime.now(UTC)
+        result = await self.session.execute(
+            update(OwnerAttentionRow)
+            .where(
+                OwnerAttentionRow.resolved.is_(False),
+                OwnerAttentionRow.action_id.is_(None),
+                OwnerAttentionRow.state.in_({"interrupted", "staged_change"}),
+            )
+            .values(resolved=True, resolved_at=now)
+        )
+        return int(result.rowcount or 0)
 
     async def acknowledge_uncertain(self, action_id: UUID) -> None:
         action = await self.session.get(ActionRow, action_id)

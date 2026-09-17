@@ -560,6 +560,13 @@ export async function dismissAttention(attentionId: string): Promise<void> {
   if (!response.ok) throw new Error(body?.detail ?? `Attention dismissal failed (${response.status})`)
 }
 
+export async function dismissInformationalAttention(): Promise<number> {
+  const response = await fetch('/api/attention/informational/dismiss-all', { method: 'POST' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(body?.detail ?? `Attention cleanup failed (${response.status})`)
+  return Number(body?.count ?? 0)
+}
+
 export async function acknowledgeAction(actionId: string): Promise<void> {
   const response = await fetch(`/api/actions/${encodeURIComponent(actionId)}/acknowledge`, { method: 'POST' })
   const body = await response.json().catch(() => null)

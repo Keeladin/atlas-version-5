@@ -460,3 +460,32 @@ async def test_interruption_dismissal_cannot_hide_other_attention_types(pg_facto
             await AuthorityStore(session).dismiss_interruption(attention_id)
         await session.rollback()
         assert (await session.get(OwnerAttentionRow, attention_id)).resolved is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_attention_cleanup_only_resolves_informational_notices(pg_factory):
+    _transcript_id, run_id = await create_run(pg_factory)
+    async with pg_factory() as session:
+        informational_old = OwnerAttentionRow(run_id=run_id, state='interrupted', title='Old interruption', detail={}, resolved=False)
+        informational_new = OwnerAttentionRow(run_id=run_id, state='staged_change', title='Staged change', detail={}, resolved=False)
+        protected = OwnerAttentionRow(run_id=run_id, state='uncertain', title='Needs decision', detail={}, resolved=False)
+        action = ActionRow(run_id=run_id, operation='test.action', target_hash='x' * 64, status='uncertain', evidence={})
+        session.add_all([informational_old, informational_new, protected, action])
+        await session.flush()
+        protected_action = OwnerAttentionRow(
+            run_id=run_id, action_id=action.id, state='interrupted', title='Action interruption', detail={}, resolved=False,
+        )
+        session.add(protected_action)
+        await session.commit()
+        protected_ids = {protected.id, protected_action.id}
+
+    async with pg_factory() as session:
+        count = await AuthorityStore(session).dismiss_informational_notices()
+        await session.commit()
+        assert count == 2
+
+    async with pg_factory() as session:
+        open_rows = (await session.execute(select(OwnerAttentionRow).where(OwnerAttentionRow.resolved.is_(False)))).scalars().all()
+        assert {row.id for row in open_rows} == protected_ids
+        pending = await AuthorityStore(session).pending()
+        assert pending[0]['action_id'] == str(action.id)

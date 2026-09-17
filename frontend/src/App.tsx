@@ -12,7 +12,7 @@ import { MobileNavigationDrawer } from './MobileNavigationDrawer'
 import { TopNavigation } from './TopNavigation'
 import { WorkspacePage } from './WorkspacePage'
 import { composerAttachmentDisabled, composerInputDisabled, composerSendDisabled } from './chatComposer'
-import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, localStorageFileUrl, projectStorageFileUrl, observeConversationRun, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
+import { activateChat, createChat, deleteChat, getChats, renameChat, configureGitHubConnection, configureGoogleConnection, configureModelConnection, discoverModelModels, getOwnerCapabilities, setOwnerCapability, testControlConnection, type ControlConnection, type OwnerCapability, ForegroundConflictError, acknowledgeAction, decideAction, dismissAttention, dismissInformationalAttention, getAuthStatus, getControlConfiguration, getConversation, getConversationContext, getConversationContextStats, getDriveStorage, getHealth, getLocalStorage, getLoginOptions, getProjectFolders, localStorageFileUrl, projectStorageFileUrl, observeConversationRun, getRegistrationOptions, getRepositories, getRepositoryStatus, getPendingActions, getRecentActions, getScheduledTasks, getNotifications, markAllNotificationsRead, markNotificationRead, resolveNotification, getPushSubscriptions, deletePushSubscription, sendTestPush, getOperationAuthorities, setOperationAuthority, getHostFilesystemScopes, setHostFilesystemScopes, logout, restartApi, streamMessage, uploadLocalFile, verifyLogin, verifyRegistration, type AuthStatus, type Chat, type ControlConfiguration, type Conversation, type ConversationContext, type ConversationContextStats, type DriveStorageListing, type Health, type LocalStorageEntry, type LocalStorageListing, type RepositoryListing, type RepositoryEntry, type RepositoryStatus, type PendingAction, type OwnerNotification, type OperationAuthority, type OperationAuthorityValue, type HostFilesystemScopes, type PushSubscriptionSummary, type RecentAction, type ScheduledTask, type Turn } from './api'
 import { currentPushEndpoint, disablePushOnThisDevice, enablePushOnThisDevice, pushSupport, type PushSupport } from './push'
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -577,6 +577,15 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
     await submitOwnerMessage(text, attachments, true)
   }
 
+  async function handleClearInformationalAttention() {
+    try {
+      await dismissInformationalAttention()
+      setPendingActions(await getPendingActions())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
   async function handleInterruptionContinue() {
     if (!providerOk || sending || composerUploading) return
     setView('home')
@@ -635,6 +644,10 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
       </section>
     )
   }
+
+  const dismissibleAttentionCount = pendingActions.filter((item) =>
+    item.action_id === null && (item.state === 'interrupted' || item.state === 'staged_change'),
+  ).length
 
   function renderPendingAction(action: PendingAction) {
     const args = action.detail.arguments ?? {}
@@ -720,7 +733,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
         <button className="mobile-activity-backdrop" type="button" aria-label="Close activity" onClick={() => setMobileActivity(null)} />
         <aside className="mobile-activity-panel" aria-label={mobileActivity === 'needs' ? 'Needs You' : mobileActivity === 'updates' ? 'Updates' : mobileActivity === 'scheduled' ? 'Scheduled tasks' : 'Latest activity'}>
           {mobileActivity === 'needs' ? <section className="activity-section attention-section">
-            <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
+            <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span>{dismissibleAttentionCount ? <button type="button" className="activity-inline-button" onClick={() => { void handleClearInformationalAttention() }}>Clear notices</button> : null}</div>
             {error ? <p className="activity-empty">{error}</p> : null}
             {pendingActions.map(renderPendingAction)}
             {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
@@ -934,7 +947,7 @@ function AtlasPage({ health, onLogout }: { health: Health | null; onLogout: () =
 
           <aside className="activity-rail" aria-label="Atlas activity">
             <section className="activity-section attention-section">
-              <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span></div>
+              <div className="activity-heading-row"><span className="activity-heading">Needs You</span><span className="activity-count">{pendingActions.length + (error ? 1 : 0)}</span>{dismissibleAttentionCount ? <button type="button" className="activity-inline-button" onClick={() => { void handleClearInformationalAttention() }}>Clear notices</button> : null}</div>
               {error ? <p className="activity-empty">{error}</p> : null}
               {pendingActions.map(renderPendingAction)}
               {!error && pendingActions.length === 0 ? <p className="activity-empty">Nothing needs your attention.</p> : null}
