@@ -107,7 +107,13 @@ def call(name: str, a: dict[str, Any]) -> Any:
         return run(["docker","create","--name",safe_token(a["name"],"container"),safe_token(a["image"],"image"),*[str(x) for x in a.get("command",[])]])
     if name == "filesystem_read":
         target = allowed(a["path"], "read"); maxb=int(a.get("max_bytes",262144)); data=target.read_bytes()[:maxb]
-        return {"path":str(target),"content":data.decode("utf-8",errors="replace"),"truncated":target.stat().st_size>len(data)}
+        if b"\x00" in data:
+            raise ValueError("filesystem_read supports UTF-8 text files only; binary content is not returned inline")
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError("filesystem_read supports UTF-8 text files only; binary content is not returned inline") from exc
+        return {"path":str(target),"content":content,"truncated":target.stat().st_size>len(data)}
     if name == "filesystem_write":
         target=allowed(a["path"],"write")
         if a.get("create_parents"): target.parent.mkdir(parents=True,exist_ok=True)

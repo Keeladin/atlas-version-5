@@ -50,3 +50,22 @@ def test_package_inspect_rejects_option_injection(monkeypatch) -> None:
     monkeypatch.setattr(broker, "run", lambda argv, timeout=120: {"argv": argv})
     with pytest.raises(ValueError, match="invalid package"):
         broker.call("packages_inspect", {"package": "--option"})
+
+
+def test_filesystem_read_returns_utf8_text_and_rejects_binary(monkeypatch, tmp_path: Path) -> None:
+    base = tmp_path / "allowed"
+    base.mkdir()
+    scopes = tmp_path / "scopes.json"
+    scopes.write_text('{"read":["%s"],"write":[],"delete":[]}'.replace("%s", str(base)))
+    monkeypatch.setattr(broker, "SCOPES", scopes)
+
+    text_file = base / "note.txt"
+    text_file.write_text("hello Atlas\n", encoding="utf-8")
+    result = broker.call("filesystem_read", {"path": str(text_file)})
+    assert result["content"] == "hello Atlas\n"
+    assert result["truncated"] is False
+
+    binary_file = base / "node"
+    binary_file.write_bytes(b"\x7fELF\x02\x01\x00binary")
+    with pytest.raises(ValueError, match="UTF-8 text files only"):
+        broker.call("filesystem_read", {"path": str(binary_file)})

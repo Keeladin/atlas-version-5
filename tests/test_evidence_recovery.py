@@ -67,6 +67,32 @@ async def test_exact_resource_is_stored_once_and_replayed_without_normalization(
 
 
 @pytest.mark.asyncio
+async def test_nul_bearing_tool_text_is_artifacted_before_postgres_jsonb(pg_factory, tmp_path):
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    transcript_id, run_id = await create_run(pg_factory)
+    original = "\x7fELF\x02\x01\x00binary"
+    async with pg_factory() as session:
+        store = EvidenceStore(session, artifacts)
+        evidence_id, frozen = await store.record(
+            transcript_id,
+            operation="host.operations.filesystem_read",
+            phase="succeeded",
+            detail={"output": {"content": original}},
+            run_id=run_id,
+        )
+        await session.commit()
+        row = await session.get(TurnRow, evidence_id)
+        serialized = json.dumps(row.blocks)
+        assert "\\u0000" not in serialized
+        safe = frozen["output"]["content"]
+        assert safe["contains_nul"] is True
+        assert "\x00" not in safe["preview"]
+        artifact = await session.get(ArtifactRow, safe["text_artifact"]["artifact_id"])
+        assert artifact is not None
+        assert artifacts.path_for(artifact.storage_key).read_bytes() == original.encode("utf-8")
+
+
+@pytest.mark.asyncio
 async def test_exact_evidence_read_exposes_source_class_and_runtime_provenance(pg_factory, tmp_path):
     artifacts = ArtifactStore(tmp_path / 'artifacts')
     transcript_id, run_id = await create_run(pg_factory)

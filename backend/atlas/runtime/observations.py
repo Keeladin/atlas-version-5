@@ -30,6 +30,20 @@ class EvidenceStore:
             'snapshot_size_bytes': artifact.size_bytes}
 
     async def freeze(self, value: Any, *, provenance: dict) -> Any:
+        if isinstance(value, str) and "\x00" in value:
+            data = value.encode("utf-8")
+            reference = await self._blob(
+                data,
+                media_type="application/octet-stream",
+                name="nul-containing-text.bin",
+                provenance={**provenance, "encoding": "utf-8", "reason": "nul_in_text_payload"},
+            )
+            return {
+                "text_artifact": reference,
+                "encoding": "utf-8",
+                "contains_nul": True,
+                "preview": value.replace("\x00", "�")[:2000],
+            }
         if isinstance(value, list):
             return [await self.freeze(item, provenance=provenance) for item in value]
         if not isinstance(value, dict):
