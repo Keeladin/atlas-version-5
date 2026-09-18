@@ -39,6 +39,7 @@ def test_coding_agent_runs_as_owner_behind_group_socket():
     assert "Accept=no" in socket
     assert "User=jaco" in service and "Group=jaco" in service
     assert "coding_mcp_socket_server" in service
+    assert "Environment=PATH=/home/jaco/.local/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" in service
     assert "ATLAS_CODING_ROOTS=/home/jaco/Projects:/home/jaco/Workspace" in service
     assert "NoNewPrivileges=yes" in service
     assert "ProtectSystem=strict" in service

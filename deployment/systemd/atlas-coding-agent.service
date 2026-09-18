@@ -10,6 +10,7 @@ User=jaco
 Group=jaco
 WorkingDirectory=/home/jaco
 Environment=ATLAS_CODEX_BIN=/home/jaco/.local/node/bin/codex
+Environment=PATH=/home/jaco/.local/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=ATLAS_CODING_STATE_DIR=/home/jaco/.local/state/atlas-v5/coding
 Environment=ATLAS_CODING_ROOTS=/home/jaco/Projects:/home/jaco/Workspace
 ExecStart=/opt/atlas-v5/venv/bin/python -m atlas.integrations.coding_mcp_socket_server
